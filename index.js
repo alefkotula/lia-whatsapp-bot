@@ -3,6 +3,7 @@ const bodyParser = require("body-parser");
 const twilio = require("twilio");
 const { Pool } = require("pg");
 const OpenAI = require("openai");
+const { toFile } = require("openai/uploads"); // ✅ mais estável que new File(...) no Node
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -31,6 +32,17 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+// ✅ Isso aqui é o “logo depois de criar o Pool”
+// (evita quedas silenciosas e te mostra erros reais do banco)
+pool.on("error", (err) => {
+  console.error("❌ Postgres pool error:", err);
+});
+
+async function verifyDB() {
+  const r = await pool.query("SELECT 1 as ok;");
+  console.log("✅ Postgres conectado:", r.rows?.[0]?.ok === 1);
+}
+
 async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS wa_users (
@@ -41,12 +53,21 @@ async function initDB() {
   `);
   console.log("✅ Tabela wa_users pronta.");
 }
-initDB().catch((e) => console.error("❌ initDB erro:", e));
+
+(async () => {
+  try {
+    await verifyDB();
+    await initDB();
+  } catch (e) {
+    console.error("❌ DB init erro:", e);
+  }
+})();
 
 // ====== MEMORY HELPERS ======
 async function getUserState(phone) {
   const { rows } = await pool.query("SELECT state FROM wa_users WHERE phone=$1", [phone]);
   if (rows.length) return rows[0].state || {};
+
   // cria registro vazio
   await pool.query(
     "INSERT INTO wa_users (phone, state) VALUES ($1, $2::jsonb) ON CONFLICT (phone) DO NOTHING",
@@ -84,9 +105,8 @@ async function downloadTwilioMedia(url) {
 
 // ====== OPENAI TRANSCRIBE (áudio) ======
 async function transcribeAudio(buffer) {
-  // OpenAI speech-to-text: via "audio.transcriptions.create"
-  // enviamos como arquivo in-memory (buffer)
-  const file = new File([buffer], "audio.ogg", { type: "audio/ogg" });
+  // ✅ estável: converte Buffer -> File compatível com OpenAI SDK
+  const file = await toFile(buffer, "audio.ogg");
 
   const transcription = await openai.audio.transcriptions.create({
     file,
@@ -168,7 +188,6 @@ async function runLia(incomingText, state) {
   try {
     parsed = JSON.parse(content);
   } catch (e) {
-    // fallback seguro
     parsed = {
       reply: "Entendi 🙏 Me conta com calma… o que está te incomodando mais ultimamente?",
       stage: "qualificacao",
@@ -186,7 +205,7 @@ async function runLia(incomingText, state) {
 app.post("/whatsapp", async (req, res) => {
   try {
     const from = req.body.From || ""; // ex: "whatsapp:+55..."
-    const phone = from.replace("whatsapp:", "").trim();
+    const phone = from.replace("whatsapp:", "").trim() || "unknown";
 
     const incomingText = (req.body.Body || "").trim();
     const numMedia = parseInt(req.body.NumMedia || "0", 10);
@@ -206,7 +225,9 @@ app.post("/whatsapp", async (req, res) => {
         const buf = await downloadTwilioMedia(mediaUrl);
         const transcript = await transcribeAudio(buf);
         console.log("🗣️ Transcrição:", transcript);
-        finalText = transcript ? `[ÁUDIO TRANSCRITO] ${transcript}` : "[ÁUDIO] (não consegui transcrever)";
+        finalText = transcript
+          ? `[ÁUDIO TRANSCRITO] ${transcript}`
+          : "[ÁUDIO] (não consegui transcrever)";
       } else {
         finalText = incomingText || "[MÍDIA RECEBIDA] Pode me explicar em uma frase o que você precisa?";
       }
