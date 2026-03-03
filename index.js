@@ -1,7 +1,6 @@
 const express = require("express");
 const bodyParser = require("body-parser");
 const twilio = require("twilio");
-const fetch = require("node-fetch");
 const { Pool } = require("pg");
 const OpenAI = require("openai");
 
