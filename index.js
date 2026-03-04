@@ -3,7 +3,6 @@ const bodyParser = require("body-parser");
 const twilio = require("twilio");
 const { Pool } = require("pg");
 const OpenAI = require("openai");
-const { toFile } = require("openai/uploads"); // ✅ mais estável que new File(...) no Node
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -19,7 +18,6 @@ const {
 if (!OPENAI_API_KEY || !TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
   console.error("❌ Falta OPENAI_API_KEY / TWILIO_* nas env vars.");
 }
-
 if (!DATABASE_URL) {
   console.error("❌ Falta DATABASE_URL nas env vars.");
 }
@@ -29,19 +27,10 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 // ====== POSTGRES ======
 const pool = new Pool({
   connectionString: DATABASE_URL,
+  // Em Render, normalmente funciona sem SSL explícito em Internal URL,
+  // mas manter assim costuma ser ok.
   ssl: { rejectUnauthorized: false },
 });
-
-// ✅ Isso aqui é o “logo depois de criar o Pool”
-// (evita quedas silenciosas e te mostra erros reais do banco)
-pool.on("error", (err) => {
-  console.error("❌ Postgres pool error:", err);
-});
-
-async function verifyDB() {
-  const r = await pool.query("SELECT 1 as ok;");
-  console.log("✅ Postgres conectado:", r.rows?.[0]?.ok === 1);
-}
 
 async function initDB() {
   await pool.query(`
@@ -53,22 +42,12 @@ async function initDB() {
   `);
   console.log("✅ Tabela wa_users pronta.");
 }
-
-(async () => {
-  try {
-    await verifyDB();
-    await initDB();
-  } catch (e) {
-    console.error("❌ DB init erro:", e);
-  }
-})();
+initDB().catch((e) => console.error("❌ initDB erro:", e));
 
 // ====== MEMORY HELPERS ======
 async function getUserState(phone) {
   const { rows } = await pool.query("SELECT state FROM wa_users WHERE phone=$1", [phone]);
   if (rows.length) return rows[0].state || {};
-
-  // cria registro vazio
   await pool.query(
     "INSERT INTO wa_users (phone, state) VALUES ($1, $2::jsonb) ON CONFLICT (phone) DO NOTHING",
     [phone, JSON.stringify({})]
@@ -105,8 +84,8 @@ async function downloadTwilioMedia(url) {
 
 // ====== OPENAI TRANSCRIBE (áudio) ======
 async function transcribeAudio(buffer) {
-  // ✅ estável: converte Buffer -> File compatível com OpenAI SDK
-  const file = await toFile(buffer, "audio.ogg");
+  // Node 22+ tem File global no Render (se não tiver, a transcrição falha — mas normalmente tem)
+  const file = new File([buffer], "audio.ogg", { type: "audio/ogg" });
 
   const transcription = await openai.audio.transcriptions.create({
     file,
@@ -116,67 +95,163 @@ async function transcribeAudio(buffer) {
   return (transcription.text || "").trim();
 }
 
-// ====== PROMPT V4 (JSON output) ======
+// ====== GUARDRAILS (anti-robô, 1 pergunta, timing) ======
+function stripOverGreeting(text) {
+  // Remove "Oi!" repetido no meio (mantém se for a 1ª mensagem)
+  return text
+    .replace(/(^|\n)\s*Oi!\s*/g, "$1")
+    .replace(/(^|\n)\s*Olá!\s*/g, "$1")
+    .trim();
+}
+
+function ensureOneQuestion(text) {
+  // Mantém só a 1ª pergunta com "?" e tenta cortar o resto.
+  const idx = text.indexOf("?");
+  if (idx === -1) return text;
+  const first = text.slice(0, idx + 1);
+  // remove qualquer coisa depois que pareça uma 2ª pergunta
+  return first.trim();
+}
+
+function capLength(text, maxChars = 420) {
+  const t = (text || "").trim();
+  if (t.length <= maxChars) return t;
+  return t.slice(0, maxChars).trim();
+}
+
+function normalizeReply(text, isFirstMessage = false) {
+  let out = (text || "").trim();
+
+  // Evita repetição de "Oi!" no meio
+  if (!isFirstMessage) out = stripOverGreeting(out);
+
+  // Força 1 pergunta por vez
+  out = ensureOneQuestion(out);
+
+  // Tamanho humano (curto)
+  out = capLength(out, 420);
+
+  // Se ficou vazio por algum motivo, fallback
+  if (!out) out = "Entendi 🙏 Me conta com calma… o que está te incomodando mais ultimamente?";
+  return out;
+}
+
+// ====== PROMPT V5 (closer humana + etapas + exemplos) ======
 function buildSystemPrompt() {
   return `
-Você é "Lia", secretária/closer da equipe do Dr. Alef Kotula (médico, pós em Cannabis Medicinal, atendimento 100% online).
-Seu objetivo é CONVERTER em AGENDAMENTO de consulta.
+Você é "Lia", secretária/closer da equipe do Dr. Alef Kotula (médico formado na Rússia + pós-graduação internacional em Cannabis Medicinal, atendimento 100% online).
+Sua missão: acolher, qualificar em poucas mensagens e conduzir (com elegância) ao AGENDAMENTO da consulta.
 
-Regras absolutas:
-- NÃO prescrever dose, NÃO indicar marca/produto, NÃO orientar compra.
-- NÃO prometer cura. Pode citar que pacientes têm bons resultados e que há evidências, com linguagem responsável.
-- Se houver sinais de urgência (dor no peito, falta de ar, desmaio, sintomas neurológicos súbitos, risco de autoagressão): orientar emergência e ENCERRAR.
+REGRAS ABSOLUTAS (nunca quebrar):
+- NÃO prescrever dose, NÃO recomendar marca, NÃO orientar compra.
+- NÃO prometer cura nem garantir resultado.
+- Pode dizer "muitos pacientes relatam melhora" e "há evidências" com linguagem responsável.
+- Se houver URGÊNCIA (dor no peito, falta de ar, desmaio, sinais neurológicos súbitos, risco de autoagressão): orientar emergência e ENCERRAR.
+- Não atacar médicos do Brasil nem comparar de forma agressiva. Use autoridade sem desrespeito.
 
-Estilo:
-- Humana, quente, curta, com escuta ativa. Nada robótico.
-- Priorize dor (maioria dos leads).
-- Faça 2 a 5 perguntas curtas para qualificar.
-- Use autoridade do Dr. Alef: formado na Rússia (Europa) + pós internacional (sem atacar médicos do Brasil).
-- Ciência só quando aumentar confiança: use números simples (%), sem exagero.
+ESTILO (obrigatório):
+- Soar 100% humana: frases curtas, calor, escuta ativa, sem repetição, sem “Oi!” a cada mensagem.
+- 1 PERGUNTA POR VEZ. Sempre.
+- Priorize dor (maioria dos leads). Quando for dor: peça intensidade 0–10 cedo, mas com tato.
+- Não empurrar consulta cedo: primeiro construir confiança.
+- Se o lead resistir ("não falei que quero consultar", "não quero consulta"): recuar, validar e continuar qualificando sem insistência.
 
-Estratégia de preço:
-- Se a pessoa pedir preço de cara: faça 2-3 perguntas rápidas antes.
-- Ofereça 3 opções: Consulta 45min R$347 | Consulta + retorno (~30 dias) R$447 (recomendada) | Retorno avulso R$200.
-- Use leve escassez real ("agenda costuma fechar rápido") sem mentir.
+ESTRUTURA (sempre seguir a etapa adequada):
+1) EMPATIA (validar emoção)
+2) CONEXÃO (aprofundar 1 detalhe)
+3) VALIDAÇÃO (mostrar que entendeu)
+4) AUTORIDADE (apresentar Dr. Alef de forma breve e relevante)
+5) CURIOSIDADE (pergunta que gera interesse)
+6) CONVITE NATURAL (só depois de aquecer)
+7) RESISTÊNCIA (recuar, não insistir; oferecer informação e manter diálogo)
+8) PREÇO (só se pedirem; ou após aquecer; nunca “do nada”)
+9) AGENDAMENTO (2 opções de horário; confirmar e instruir próximo passo)
 
-Memória:
-- Sempre que descobrir: nome, queixa principal, tempo, intensidade (0-10), impacto, tratamentos prévios, objeções, preferências de horário — salve em "updates".
+REGRAS DE PREÇO:
+- Se o lead pedir preço de cara: faça 2–3 perguntas rápidas antes de falar valores.
+- Apresente 3 opções (sem cara de tabela):
+  • Consulta (45 min): R$347
+  • Consulta + retorno (~30 dias): R$447 (recomendada)
+  • Retorno avulso: R$200
+- Escassez leve e real: "a agenda costuma fechar rápido" (sem mentir).
 
-IMPORTANTE: Você deve responder SEMPRE em JSON puro, sem texto fora do JSON.
-Formato:
+CIÊNCIA (usar só quando aumenta confiança):
+- Se citar estudo, traduza em linguagem simples e percentual.
+- Sempre com ressalva: cada organismo reage de um jeito, por isso avaliação individual.
+
+MEMÓRIA (persistente):
+- Sempre que descobrir algo, registre em "updates": nome, queixa_principal, tempo_dor, dor_intensidade(0-10), local_dor, impacto, tratamentos_previos, medo_principal, objecoes, disponibilidade_horario, etapa(stage).
+
+FORMATO DE SAÍDA:
+Responda SEMPRE em JSON puro, sem texto fora do JSON:
 {
   "reply": "texto para enviar no WhatsApp",
-  "stage": "qualificacao|aquecimento|preco|agendamento|pos_agendamento|urgencia",
-  "updates": { "nome": "...", "dor_intensidade": 7, "tempo_dor": "...", ... }
+  "stage": "empatia|qualificacao|aquecimento|educacao|preco|agendamento|pos_agendamento|urgencia",
+  "updates": { ... }
 }
+
+EXEMPLOS (siga o estilo):
+
+Ex1 (Lead: "tenho fibromialgia há 4 anos"):
+reply: "Poxa… fibromialgia costuma desgastar muito. Me conta: a dor pega mais em quais partes do corpo?"
+stage: "empatia"
+
+Ex2 (Lead: "dor 7 e já tentei tramadol e não melhora"):
+reply: "Entendi… dor 7 é pesado mesmo. Hoje, o que ela atrapalha mais: sono ou suas atividades do dia a dia?"
+stage: "qualificacao"
+
+Ex3 (Lead: "não sei quem é esse doutor"):
+reply: "Claro 🙂 O Dr. Alef é médico formado na Rússia e fez pós internacional em Cannabis Medicinal. Quer que eu te explique rapidinho como funciona a consulta online?"
+stage: "autoridade"
+
+Ex4 (Lead: "qual o valor?"):
+reply: "Te falo sim 🙂 Só pra eu te orientar certo: sua dor é mais constante ou tem crises?"
+stage: "qualificacao"
+
+Ex5 (Lead: "eu não quero consulta"):
+reply: "Tranquilo, sem problema nenhum 🙂 Pra eu te ajudar melhor por aqui: hoje o que te incomoda mais — a dor, o sono ou a ansiedade?"
+stage: "resistencia"
+
+Ex6 (Lead aqueceu e confia):
+reply: "Pelo que você descreveu, faz sentido uma avaliação médica pra montar um plano bem direcionado. Quer que eu te passe dois horários pra escolher?"
+stage: "agendamento"
+
+Ex7 (Pedido de prova/ciência):
+reply: "Tem evidência sim. Em fibromialgia, alguns estudos mostram melhora importante de dor em parte dos pacientes — mas varia de pessoa pra pessoa. Sua dor hoje fica mais em que nota de 0 a 10?"
+stage: "educacao"
 `;
 }
 
-function buildUserPrompt(incomingText, state) {
+function buildUserPrompt(incomingText, state, meta) {
   const memory = JSON.stringify(state || {});
+  const m = meta || {};
   return `
-MEMÓRIA (estado atual do lead):
+MEMÓRIA ATUAL (estado do lead):
 ${memory}
+
+META:
+- É primeira mensagem? ${m.isFirstMessage ? "SIM" : "NÃO"}
+- Veio de áudio transcrito? ${m.cameFromAudio ? "SIM" : "NÃO"}
 
 MENSAGEM DO LEAD:
 ${incomingText}
 
-Tarefa:
-- Produza a melhor resposta para converter.
-- Faça perguntas curtas quando necessário.
-- Atualize "updates" com qualquer informação nova inferida do texto.
-- Se a pessoa já estiver quente, avance para agendamento.
+TAREFA:
+- Escolha a etapa correta e responda curto/humano.
+- Faça exatamente 1 pergunta.
+- Não empurre consulta se o lead resistiu; recuar e qualificar.
+- Atualize "updates" com informações novas inferidas.
 `;
 }
 
-// ====== OPENAI CHAT ======
-async function runLia(incomingText, state) {
+// ====== OPENAI CHAT (JSON output) ======
+async function runLia(incomingText, state, meta) {
   const system = buildSystemPrompt();
-  const user = buildUserPrompt(incomingText, state);
+  const user = buildUserPrompt(incomingText, state, meta);
 
   const resp = await openai.chat.completions.create({
     model: "gpt-4o-mini",
-    temperature: 0.6,
+    temperature: 0.55,
     messages: [
       { role: "system", content: system },
       { role: "user", content: user },
@@ -187,7 +262,7 @@ async function runLia(incomingText, state) {
   let parsed;
   try {
     parsed = JSON.parse(content);
-  } catch (e) {
+  } catch {
     parsed = {
       reply: "Entendi 🙏 Me conta com calma… o que está te incomodando mais ultimamente?",
       stage: "qualificacao",
@@ -195,48 +270,67 @@ async function runLia(incomingText, state) {
     };
   }
 
-  if (!parsed.reply) parsed.reply = "Me conta com calma… o que está te incomodando mais ultimamente?";
+  if (!parsed || typeof parsed !== "object") {
+    parsed = {
+      reply: "Entendi 🙏 Me conta com calma… o que está te incomodando mais ultimamente?",
+      stage: "qualificacao",
+      updates: {},
+    };
+  }
+
+  if (!parsed.reply) parsed.reply = "Entendi 🙏 Me conta com calma… o que está te incomodando mais ultimamente?";
   if (!parsed.stage) parsed.stage = "qualificacao";
   if (!parsed.updates) parsed.updates = {};
+
+  // Guardrails finais
+  const isFirstMessage = !!(meta && meta.isFirstMessage);
+  parsed.reply = normalizeReply(parsed.reply, isFirstMessage);
+
+  // Sempre salvar stage também
+  parsed.updates = parsed.updates || {};
   return parsed;
 }
 
 // ====== WEBHOOK ======
 app.post("/whatsapp", async (req, res) => {
   try {
-    const from = req.body.From || ""; // ex: "whatsapp:+55..."
-    const phone = from.replace("whatsapp:", "").trim() || "unknown";
+    const from = req.body.From || ""; // "whatsapp:+55..."
+    const phone = from.replace("whatsapp:", "").trim();
 
     const incomingText = (req.body.Body || "").trim();
     const numMedia = parseInt(req.body.NumMedia || "0", 10);
 
     console.log("📩 Mensagem recebida:", { phone, incomingText, numMedia });
 
-    // busca memória
+    // memória
     const state = await getUserState(phone);
 
-    // Se veio áudio/arquivo
+    // detectar se é primeira mensagem (heurística simples)
+    const isFirstMessage = !state || Object.keys(state).length === 0;
+
+    // áudio/mídia
     let finalText = incomingText;
+    let cameFromAudio = false;
+
     if (numMedia > 0) {
       const mediaUrl = req.body.MediaUrl0;
       const mediaType = req.body.MediaContentType0 || "";
 
       if (mediaUrl && mediaType.startsWith("audio")) {
+        cameFromAudio = true;
         const buf = await downloadTwilioMedia(mediaUrl);
         const transcript = await transcribeAudio(buf);
         console.log("🗣️ Transcrição:", transcript);
-        finalText = transcript
-          ? `[ÁUDIO TRANSCRITO] ${transcript}`
-          : "[ÁUDIO] (não consegui transcrever)";
+        finalText = transcript ? transcript : "(áudio curto — não consegui transcrever)";
       } else {
-        finalText = incomingText || "[MÍDIA RECEBIDA] Pode me explicar em uma frase o que você precisa?";
+        finalText = incomingText || "Recebi uma mídia. Em uma frase: o que você precisa?";
       }
     }
 
     // roda IA
-    const ai = await runLia(finalText, state);
+    const ai = await runLia(finalText, state, { isFirstMessage, cameFromAudio });
 
-    // salva updates
+    // salvar updates
     const newState = mergeState(state, ai.updates);
     newState.stage = ai.stage;
     await saveUserState(phone, newState);
