@@ -615,4 +615,41 @@ app.post("/whatsapp", async (req, res) => {
 app.get("/", (req, res) => res.send("OK"));
 
 const PORT = process.env.PORT || 10000;
+// ==========================
+// MERCADO PAGO - CRIAR LINK
+// ==========================
+
+app.post("/create-payment", async (req, res) => {
+  try {
+    const { amount, description } = req.body;
+
+    const response = await fetch("https://api.mercadopago.com/checkout/preferences", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.MP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        items: [
+          {
+            title: description,
+            quantity: 1,
+            currency_id: "BRL",
+            unit_price: amount
+          }
+        ]
+      })
+    });
+
+    const data = await response.json();
+
+    res.json({
+      payment_link: data.init_point
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).send("Erro ao criar pagamento");
+  }
+});
 app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
