@@ -27,10 +27,10 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 // ====== POSTGRES ======
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  // Em Render, normalmente funciona sem SSL explícito em Internal URL,
-  // mas manter assim costuma ser ok.
   ssl: { rejectUnauthorized: false },
 });
+
+pool.on("error", (err) => console.error("❌ Postgres pool error:", err));
 
 async function initDB() {
   await pool.query(`
@@ -62,7 +62,6 @@ async function saveUserState(phone, newState) {
   );
 }
 
-// Merge “inteligente” (não apaga dados antigos com vazio)
 function mergeState(oldState, updates) {
   const out = { ...(oldState || {}) };
   for (const [k, v] of Object.entries(updates || {})) {
@@ -84,20 +83,16 @@ async function downloadTwilioMedia(url) {
 
 // ====== OPENAI TRANSCRIBE (áudio) ======
 async function transcribeAudio(buffer) {
-  // Node 22+ tem File global no Render (se não tiver, a transcrição falha — mas normalmente tem)
   const file = new File([buffer], "audio.ogg", { type: "audio/ogg" });
-
   const transcription = await openai.audio.transcriptions.create({
     file,
     model: "gpt-4o-mini-transcribe",
   });
-
   return (transcription.text || "").trim();
 }
 
 // ====== GUARDRAILS (anti-robô, 1 pergunta, timing) ======
 function stripOverGreeting(text) {
-  // Remove "Oi!" repetido no meio (mantém se for a 1ª mensagem)
   return text
     .replace(/(^|\n)\s*Oi!\s*/g, "$1")
     .replace(/(^|\n)\s*Olá!\s*/g, "$1")
@@ -105,12 +100,9 @@ function stripOverGreeting(text) {
 }
 
 function ensureOneQuestion(text) {
-  // Mantém só a 1ª pergunta com "?" e tenta cortar o resto.
   const idx = text.indexOf("?");
-  if (idx === -1) return text;
-  const first = text.slice(0, idx + 1);
-  // remove qualquer coisa depois que pareça uma 2ª pergunta
-  return first.trim();
+  if (idx === -1) return text.trim();
+  return text.slice(0, idx + 1).trim();
 }
 
 function capLength(text, maxChars = 420) {
@@ -121,104 +113,168 @@ function capLength(text, maxChars = 420) {
 
 function normalizeReply(text, isFirstMessage = false) {
   let out = (text || "").trim();
-
-  // Evita repetição de "Oi!" no meio
   if (!isFirstMessage) out = stripOverGreeting(out);
-
-  // Força 1 pergunta por vez
   out = ensureOneQuestion(out);
-
-  // Tamanho humano (curto)
   out = capLength(out, 420);
-
-  // Se ficou vazio por algum motivo, fallback
   if (!out) out = "Entendi 🙏 Me conta com calma… o que está te incomodando mais ultimamente?";
   return out;
 }
 
-// ====== PROMPT V5 (closer humana + etapas + exemplos) ======
+// ====== DETECTORES (resistência, urgência, intenções) ======
+function hasAny(text, patterns) {
+  const t = (text || "").toLowerCase();
+  return patterns.some((p) => t.includes(p));
+}
+
+function detectResistance(text) {
+  const patterns = [
+    "não quero", "nao quero", "não vou", "nao vou",
+    "não gostei", "nao gostei", "rude", "grosso",
+    "pare", "para", "chega", "me deixe", "me deixa",
+    "eu nem falei", "não falei", "nao falei",
+    "não decidi", "nao decidi", "não entendi", "nao entendi",
+  ];
+  return hasAny(text, patterns);
+}
+
+function detectPriceAsk(text) {
+  const patterns = ["valor", "preço", "preco", "quanto custa", "quanto é", "quanto eh", "investimento"];
+  return hasAny(text, patterns);
+}
+
+function detectUrgency(text) {
+  const patterns = [
+    "dor no peito", "falta de ar", "desmaio", "desmaiei",
+    "paralisia", "formigamento súbito", "formigamento subito",
+    "fraqueza súbita", "fraqueza subita", "confusão", "confusao",
+    "avc", "convuls", "sangramento intenso",
+  ];
+  return hasAny(text, patterns);
+}
+
+function detectIntroAsk(text) {
+  const patterns = ["quem é", "quem eh", "quem é esse", "quem eh esse", "quem é o dr", "quem eh o dr", "quem é o doutor", "quem eh o doutor"];
+  return hasAny(text, patterns);
+}
+
+// ====== LEAD SCORING / STATE MACHINE ======
+function ensureDefaults(state) {
+  const s = { ...(state || {}) };
+  if (typeof s.trust_score !== "number") s.trust_score = 0;
+  if (!s.stage) s.stage = "empatia";
+  if (!s.mode) s.mode = "normal"; // normal | educar
+  if (typeof s.last_question !== "string") s.last_question = "";
+  if (typeof s.no_pitch_until !== "number") s.no_pitch_until = 0; // cooldown timestamp
+  return s;
+}
+
+function computeTrustDelta(updates = {}) {
+  let delta = 0;
+  if (updates.nome) delta += 1;
+  if (updates.queixa_principal) delta += 1;
+  if (updates.dor_intensidade !== undefined && updates.dor_intensidade !== null) delta += 2;
+  if (updates.tempo_dor) delta += 1;
+  if (updates.impacto) delta += 1;
+  if (updates.tratamentos_previos) delta += 1;
+  if (updates.objecoes || updates.medo_principal) delta += 1;
+  return delta;
+}
+
+function isHotEnough(state) {
+  // quente = já temos intensidade + impacto/tempo + confiança mínima
+  const hasIntensity = typeof state.dor_intensidade === "number";
+  const hasTimeOrImpact = !!(state.tempo_dor || state.impacto);
+  return hasIntensity && hasTimeOrImpact && state.trust_score >= 4;
+}
+
+function isColdLead(state) {
+  // frio = pouca info e/ou intensidade baixa
+  const intensity = typeof state.dor_intensidade === "number" ? state.dor_intensidade : null;
+  if (intensity !== null && intensity <= 3) return true;
+  const infoCount =
+    (state.nome ? 1 : 0) +
+    (state.queixa_principal ? 1 : 0) +
+    (state.tempo_dor ? 1 : 0) +
+    (state.impacto ? 1 : 0) +
+    (typeof state.dor_intensidade === "number" ? 1 : 0);
+  return infoCount <= 1;
+}
+
+function applyStageGuards(requestedStage, state, intent) {
+  // Não permitir agendamento cedo demais (a menos que esteja quente OU lead pediu explícito)
+  if (requestedStage === "agendamento") {
+    const askedToSchedule = intent === "asked_schedule";
+    if (!askedToSchedule && !isHotEnough(state)) return "aquecimento";
+  }
+  // Em modo educar, evitar preço/agendamento, a menos que lead peça
+  if (state.mode === "educar") {
+    if ((requestedStage === "preco" || requestedStage === "agendamento") && intent !== "asked_price") {
+      return "educacao";
+    }
+  }
+  return requestedStage;
+}
+
+// ====== PROMPT V5.1 (com modos + travas) ======
 function buildSystemPrompt() {
   return `
 Você é "Lia", secretária/closer da equipe do Dr. Alef Kotula (médico formado na Rússia + pós-graduação internacional em Cannabis Medicinal, atendimento 100% online).
 Sua missão: acolher, qualificar em poucas mensagens e conduzir (com elegância) ao AGENDAMENTO da consulta.
 
-REGRAS ABSOLUTAS (nunca quebrar):
+REGRAS ABSOLUTAS:
 - NÃO prescrever dose, NÃO recomendar marca, NÃO orientar compra.
 - NÃO prometer cura nem garantir resultado.
 - Pode dizer "muitos pacientes relatam melhora" e "há evidências" com linguagem responsável.
-- Se houver URGÊNCIA (dor no peito, falta de ar, desmaio, sinais neurológicos súbitos, risco de autoagressão): orientar emergência e ENCERRAR.
-- Não atacar médicos do Brasil nem comparar de forma agressiva. Use autoridade sem desrespeito.
+- URGÊNCIA (dor no peito, falta de ar, desmaio, sintomas neurológicos súbitos): orientar emergência e ENCERRAR.
+- Não atacar médicos do Brasil.
 
-ESTILO (obrigatório):
-- Soar 100% humana: frases curtas, calor, escuta ativa, sem repetição, sem “Oi!” a cada mensagem.
-- 1 PERGUNTA POR VEZ. Sempre.
-- Priorize dor (maioria dos leads). Quando for dor: peça intensidade 0–10 cedo, mas com tato.
-- Não empurrar consulta cedo: primeiro construir confiança.
-- Se o lead resistir ("não falei que quero consultar", "não quero consulta"): recuar, validar e continuar qualificando sem insistência.
+ESTILO:
+- 100% humana: frases curtas, calor, escuta ativa, sem repetição, sem “Oi!” a cada mensagem.
+- 1 PERGUNTA POR VEZ. SEMPRE.
+- Priorize dor (maioria dos leads). Para dor: peça intensidade 0–10 cedo, com tato.
+- Não empurrar consulta cedo: primeiro confiança.
+- Se o lead resistir ("não falei que quero consultar", "não quero consulta", "você está rude"): recuar, validar e continuar ajudando sem insistir.
 
-ESTRUTURA (sempre seguir a etapa adequada):
-1) EMPATIA (validar emoção)
-2) CONEXÃO (aprofundar 1 detalhe)
-3) VALIDAÇÃO (mostrar que entendeu)
-4) AUTORIDADE (apresentar Dr. Alef de forma breve e relevante)
-5) CURIOSIDADE (pergunta que gera interesse)
-6) CONVITE NATURAL (só depois de aquecer)
-7) RESISTÊNCIA (recuar, não insistir; oferecer informação e manter diálogo)
-8) PREÇO (só se pedirem; ou após aquecer; nunca “do nada”)
-9) AGENDAMENTO (2 opções de horário; confirmar e instruir próximo passo)
+DOIS MODOS:
+1) MODO NORMAL (converter): qualifica → aquece → convite → (se pedirem) preço → agendamento.
+2) MODO EDUCAR (lead frio): responder breve, educar em 1 insight, fazer 1 pergunta leve, e encerrar com porta aberta.
+   - NÃO oferecer agendamento no modo EDUCAR, a menos que o lead peça.
 
-REGRAS DE PREÇO:
-- Se o lead pedir preço de cara: faça 2–3 perguntas rápidas antes de falar valores.
-- Apresente 3 opções (sem cara de tabela):
+PREÇO:
+- Se pedirem preço de cara: fazer 2–3 perguntas rápidas antes de falar valores.
+- 3 opções:
   • Consulta (45 min): R$347
   • Consulta + retorno (~30 dias): R$447 (recomendada)
   • Retorno avulso: R$200
-- Escassez leve e real: "a agenda costuma fechar rápido" (sem mentir).
+- Escassez leve e real: "a agenda costuma fechar rápido".
 
-CIÊNCIA (usar só quando aumenta confiança):
-- Se citar estudo, traduza em linguagem simples e percentual.
-- Sempre com ressalva: cada organismo reage de um jeito, por isso avaliação individual.
+CIÊNCIA:
+- Quando citar estudo, traduzir em linguagem simples e percentual.
+- Sempre ressalvar que varia por pessoa e avaliação é essencial.
 
-MEMÓRIA (persistente):
-- Sempre que descobrir algo, registre em "updates": nome, queixa_principal, tempo_dor, dor_intensidade(0-10), local_dor, impacto, tratamentos_previos, medo_principal, objecoes, disponibilidade_horario, etapa(stage).
+MEMÓRIA:
+- Registrar em "updates": nome, queixa_principal, tempo_dor, dor_intensidade(0-10), local_dor, impacto, tratamentos_previos, medo_principal, objecoes, disponibilidade_horario.
 
 FORMATO DE SAÍDA:
-Responda SEMPRE em JSON puro, sem texto fora do JSON:
+Responda SEMPRE em JSON puro:
 {
-  "reply": "texto para enviar no WhatsApp",
-  "stage": "empatia|qualificacao|aquecimento|educacao|preco|agendamento|pos_agendamento|urgencia",
+  "reply": "texto WhatsApp",
+  "stage": "empatia|qualificacao|aquecimento|educacao|preco|agendamento|pos_agendamento|urgencia|resistencia",
   "updates": { ... }
 }
 
-EXEMPLOS (siga o estilo):
-
-Ex1 (Lead: "tenho fibromialgia há 4 anos"):
-reply: "Poxa… fibromialgia costuma desgastar muito. Me conta: a dor pega mais em quais partes do corpo?"
-stage: "empatia"
-
-Ex2 (Lead: "dor 7 e já tentei tramadol e não melhora"):
-reply: "Entendi… dor 7 é pesado mesmo. Hoje, o que ela atrapalha mais: sono ou suas atividades do dia a dia?"
-stage: "qualificacao"
-
-Ex3 (Lead: "não sei quem é esse doutor"):
-reply: "Claro 🙂 O Dr. Alef é médico formado na Rússia e fez pós internacional em Cannabis Medicinal. Quer que eu te explique rapidinho como funciona a consulta online?"
-stage: "autoridade"
-
-Ex4 (Lead: "qual o valor?"):
-reply: "Te falo sim 🙂 Só pra eu te orientar certo: sua dor é mais constante ou tem crises?"
-stage: "qualificacao"
-
-Ex5 (Lead: "eu não quero consulta"):
-reply: "Tranquilo, sem problema nenhum 🙂 Pra eu te ajudar melhor por aqui: hoje o que te incomoda mais — a dor, o sono ou a ansiedade?"
+EXEMPLOS:
+- Resistência:
+reply: "Tranquilo, sem problema 🙂 Só pra eu entender melhor: o que hoje mais te incomoda — a dor ou o sono?"
 stage: "resistencia"
 
-Ex6 (Lead aqueceu e confia):
-reply: "Pelo que você descreveu, faz sentido uma avaliação médica pra montar um plano bem direcionado. Quer que eu te passe dois horários pra escolher?"
-stage: "agendamento"
-
-Ex7 (Pedido de prova/ciência):
-reply: "Tem evidência sim. Em fibromialgia, alguns estudos mostram melhora importante de dor em parte dos pacientes — mas varia de pessoa pra pessoa. Sua dor hoje fica mais em que nota de 0 a 10?"
+- Lead frio (dor 2/10):
+reply: "Entendi 🙂 Dor leve às vezes piora com postura e estresse. Ela aparece mais ao ficar sentado ou em pé?"
 stage: "educacao"
+
+- Lead quente:
+reply: "Pelo que você me contou, faz sentido uma avaliação médica bem direcionada. Quer que eu te passe dois horários pra escolher?"
+stage: "agendamento"
 `;
 }
 
@@ -226,21 +282,24 @@ function buildUserPrompt(incomingText, state, meta) {
   const memory = JSON.stringify(state || {});
   const m = meta || {};
   return `
-MEMÓRIA ATUAL (estado do lead):
+MEMÓRIA ATUAL:
 ${memory}
 
 META:
-- É primeira mensagem? ${m.isFirstMessage ? "SIM" : "NÃO"}
-- Veio de áudio transcrito? ${m.cameFromAudio ? "SIM" : "NÃO"}
+- primeira mensagem? ${m.isFirstMessage ? "SIM" : "NÃO"}
+- modo atual: ${m.mode}
+- trust_score atual: ${m.trust_score}
+- intenção detectada: ${m.intent}
 
 MENSAGEM DO LEAD:
 ${incomingText}
 
 TAREFA:
-- Escolha a etapa correta e responda curto/humano.
-- Faça exatamente 1 pergunta.
-- Não empurre consulta se o lead resistiu; recuar e qualificar.
-- Atualize "updates" com informações novas inferidas.
+- Responder curto e humano.
+- Fazer exatamente 1 pergunta.
+- Respeitar o modo (NORMAL vs EDUCAR).
+- Se houver resistência: validar e recuar.
+- Atualizar "updates" com dados novos.
 `;
 }
 
@@ -270,32 +329,50 @@ async function runLia(incomingText, state, meta) {
     };
   }
 
-  if (!parsed || typeof parsed !== "object") {
-    parsed = {
-      reply: "Entendi 🙏 Me conta com calma… o que está te incomodando mais ultimamente?",
-      stage: "qualificacao",
-      updates: {},
-    };
-  }
-
   if (!parsed.reply) parsed.reply = "Entendi 🙏 Me conta com calma… o que está te incomodando mais ultimamente?";
   if (!parsed.stage) parsed.stage = "qualificacao";
   if (!parsed.updates) parsed.updates = {};
 
   // Guardrails finais
-  const isFirstMessage = !!(meta && meta.isFirstMessage);
-  parsed.reply = normalizeReply(parsed.reply, isFirstMessage);
-
-  // Sempre salvar stage também
-  parsed.updates = parsed.updates || {};
+  parsed.reply = normalizeReply(parsed.reply, !!(meta && meta.isFirstMessage));
   return parsed;
+}
+
+// ====== HANDLERS FIXOS (resistência/urgência) ======
+function fixedUrgencyReply() {
+  return {
+    reply: "Entendi. Pela sua mensagem, pode ser algo que precisa de avaliação URGENTE. Procure um pronto atendimento agora (ou SAMU 192) e, se puder, peça ajuda de alguém para te acompanhar. Assim que estiver seguro(a), me chama aqui.",
+    stage: "urgencia",
+    updates: {},
+  };
+}
+
+function fixedResistanceReply(state) {
+  // Se ficou irritado, NÃO insistir; manter humano e 1 pergunta leve
+  // (porta aberta + qualificação suave)
+  const name = state?.nome ? `, ${state.nome}` : "";
+  return {
+    reply: `Tranquilo${name} 🙂 Sem pressão nenhuma. Só pra eu te orientar melhor: hoje o que mais te incomoda — a dor, o sono ou a ansiedade?`,
+    stage: "resistencia",
+    updates: {},
+  };
+}
+
+// ====== INTENT DETECTOR ======
+function detectIntent(text, state) {
+  const t = (text || "").toLowerCase();
+
+  if (detectPriceAsk(t)) return "asked_price";
+  if (t.includes("quero marcar") || t.includes("quero agendar") || t.includes("vamos marcar") || t.includes("agenda")) return "asked_schedule";
+  if (detectIntroAsk(t)) return "asked_who";
+  return "normal";
 }
 
 // ====== WEBHOOK ======
 app.post("/whatsapp", async (req, res) => {
   try {
-    const from = req.body.From || ""; // "whatsapp:+55..."
-    const phone = from.replace("whatsapp:", "").trim();
+    const from = req.body.From || "";
+    const phone = from.replace("whatsapp:", "").trim() || "unknown";
 
     const incomingText = (req.body.Body || "").trim();
     const numMedia = parseInt(req.body.NumMedia || "0", 10);
@@ -303,9 +380,7 @@ app.post("/whatsapp", async (req, res) => {
     console.log("📩 Mensagem recebida:", { phone, incomingText, numMedia });
 
     // memória
-    const state = await getUserState(phone);
-
-    // detectar se é primeira mensagem (heurística simples)
+    let state = ensureDefaults(await getUserState(phone));
     const isFirstMessage = !state || Object.keys(state).length === 0;
 
     // áudio/mídia
@@ -327,17 +402,85 @@ app.post("/whatsapp", async (req, res) => {
       }
     }
 
-    // roda IA
-    const ai = await runLia(finalText, state, { isFirstMessage, cameFromAudio });
+    // urgência antes de tudo
+    if (detectUrgency(finalText)) {
+      const urgent = fixedUrgencyReply();
+      const twiml = new twilio.twiml.MessagingResponse();
+      twiml.message(urgent.reply);
+      res.type("text/xml").send(twiml.toString());
+      return;
+    }
 
-    // salvar updates
-    const newState = mergeState(state, ai.updates);
-    newState.stage = ai.stage;
-    await saveUserState(phone, newState);
+    // resistência antes da IA (cooldown)
+    if (detectResistance(finalText)) {
+      // trava “não vender” por 15 minutos
+      state.no_pitch_until = Date.now() + 15 * 60 * 1000;
+      state.stage = "resistencia";
+      await saveUserState(phone, state);
+
+      const fixed = fixedResistanceReply(state);
+      const twiml = new twilio.twiml.MessagingResponse();
+      twiml.message(fixed.reply);
+      res.type("text/xml").send(twiml.toString());
+      return;
+    }
+
+    // intent + modo
+    const intent = detectIntent(finalText, state);
+
+    // Se está em cooldown, não pode vender/empurrar agendamento/preço
+    const inCooldown = Date.now() < (state.no_pitch_until || 0);
+
+    // Decide se lead é frio → modo educar (sem insistir)
+    // (se pedir preço/agendar, mantém normal)
+    if (!inCooldown && intent !== "asked_price" && intent !== "asked_schedule") {
+      if (isColdLead(state)) state.mode = "educar";
+      else state.mode = "normal";
+    }
+
+    // roda IA
+    const ai = await runLia(finalText, state, {
+      isFirstMessage,
+      cameFromAudio,
+      mode: state.mode,
+      trust_score: state.trust_score,
+      intent,
+    });
+
+    // aplica updates + trust score
+    const merged = mergeState(state, ai.updates);
+
+    // incrementa trust_score conforme informações captadas
+    const delta = computeTrustDelta(ai.updates);
+    merged.trust_score = Math.min(10, (merged.trust_score || 0) + delta);
+
+    // trava de fase
+    const guardedStage = applyStageGuards(ai.stage, merged, intent);
+    merged.stage = guardedStage;
+
+    // Se está em cooldown, força educacao/qualificacao e bloqueia preco/agendamento
+    if (inCooldown) {
+      merged.mode = "educar";
+      if (merged.stage === "preco" || merged.stage === "agendamento") merged.stage = "educacao";
+    }
+
+    // Ajuste extra: se está no modo educar, a resposta já vem curta,
+    // mas garantimos que não empurre consulta
+    let reply = ai.reply;
+    if (merged.mode === "educar" && intent !== "asked_price" && intent !== "asked_schedule") {
+      // se por acaso ela mencionar agendar, suaviza
+      reply = reply
+        .replace(/agendar|agenda|horário|horario/gi, "entender")
+        .replace(/consulta/gi, "avaliação");
+      reply = normalizeReply(reply, isFirstMessage);
+    }
+
+    // salva estado final
+    await saveUserState(phone, merged);
 
     // responde via Twilio
     const twiml = new twilio.twiml.MessagingResponse();
-    twiml.message(ai.reply);
+    twiml.message(reply);
 
     res.type("text/xml").send(twiml.toString());
   } catch (err) {
