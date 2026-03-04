@@ -1,15 +1,25 @@
 /**
  * LIA V11 — WhatsApp Bot (Twilio + Render + Postgres)
- * - Closer médico premium
- * - Delay humano
+ * - Closer médico premium (determinístico no que importa: agenda/preço/segurança)
+ * - Delay humano (config por ENV)
  * - Anti-loop forte
- * - Classificador psicológico (lead type)
- * - Motor de objeções (determinístico)
- * - Evidence Engine com % (do doc "ESTUDOS COM RESULTADO EM %")
- * - Memória curta + foco do lead (evita “condição fantasma”)
+ * - Nome: captura cedo + usa com moderação (a cada 2-3 mensagens)
+ * - Evidence Engine (com %): usa quando
+ *    (a) lead pergunta "funciona/vale a pena?"
+ *    (b) lead é cético/curioso
+ *    (c) timing oportuno após 1-3 mensagens mesmo sem perguntar (proativo)
+ * - Foco/subfoco: evita “condição fantasma” (não inventa fibromialgia)
  * - Modelo padrão: gpt-4.1 (troca por ENV MODEL_CHAT)
  *
- * Node recomendado: 20 (mas roda em 18/20/22; 20 é o mais estável)
+ * REQUISITOS:
+ * - Node recomendado: 20
+ * - Postgres (DATABASE_URL)
+ * - Twilio WhatsApp (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+ * - OpenAI (OPENAI_API_KEY)
+ *
+ * ENV OPCIONAIS:
+ * - MODEL_CHAT: "gpt-4.1" | "gpt-4o" | "gpt-4o-mini" etc
+ * - MIN_DELAY_SEC / MAX_DELAY_SEC
  */
 
 const express = require("express");
@@ -101,29 +111,40 @@ function mergeState(oldState, updates) {
 // ====== UTILS ======
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
-
 function norm(s) {
-  return (s || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .trim();
+  return (s || "").toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
 }
-
 function similar(a, b) {
-  const x = norm(a);
-  const y = norm(b);
+  const x = norm(a), y = norm(b);
   if (!x || !y) return false;
   if (x === y) return true;
   if (x.includes(y) || y.includes(x)) return true;
-  if (x.length > 55 && y.length > 55 && x.slice(0, 55) === y.slice(0, 55)) return true;
+  if (x.length > 70 && y.length > 70 && x.slice(0, 70) === y.slice(0, 70)) return true;
   return false;
 }
-
-function clip(text, max = 700) {
+function clip(text, max = 800) {
   const t = (text || "").trim();
-  if (t.length <= max) return t;
-  return t.slice(0, max).trim();
+  return t.length <= max ? t : t.slice(0, max).trim();
+}
+
+// Nome: extrator simples (determinístico) — ajuda o LLM
+function extractName(text) {
+  const t = (text || "").trim();
+  // "me chamo X", "meu nome é X", "sou o/a X"
+  let m = t.match(/(?:me chamo|meu nome e|meu nome é|sou o|sou a)\s+([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+){0,2})/i);
+  if (m && m[1]) return m[1].trim();
+  // se a mensagem for só um nome curto
+  if (/^[A-Za-zÀ-ÿ]{2,20}(?:\s+[A-Za-zÀ-ÿ]{2,20})?$/.test(t)) return t;
+  return "";
+}
+
+function maybeUseName(state) {
+  // usa nome com moderação: a cada 2-3 mensagens
+  const nome = (state?.nome || "").trim();
+  if (!nome) return "";
+  const n = Number(state?.name_use_counter || 0);
+  if (n % 3 === 2) return `, ${nome}`;
+  return "";
 }
 
 // ====== TWILIO MEDIA DOWNLOAD (Basic Auth) ======
@@ -165,19 +186,19 @@ function detectIntent(text) {
   const wantsPrice = /\b(preco|preço|valor|quanto custa|investimento|custa)\b/.test(t);
 
   const wantsBook =
-    /\b(quero marcar|quero agendar|marcar consulta|agendar consulta|quero a consulta|quero consulta|vamos agendar|pode marcar|quero fechar|quero pagar|quero confirmar)\b/.test(t);
+    /\b(quero marcar|quero agendar|marcar consulta|agendar consulta|quero a consulta|quero consulta|vamos agendar|pode marcar|quero fechar|quero pagar|quero confirmar|quero reservar)\b/.test(t);
 
   const asksHours =
     /\b(horarios|horario|que horas|vagas|agenda|disponibilidade|tem horario|tem horarios)\b/.test(t);
 
   const confirms =
-    /\b(sim|ok|pode|confirmo|fechado|beleza|vamos|pode ser|serve|confirmar)\b/.test(t);
+    /\b(sim|ok|pode|confirmo|fechado|beleza|vamos|pode ser|serve|confirmar|manda)\b/.test(t);
 
   const refuses =
     /\b(nao quero|não quero|pare|para|chega|rude|grosso|nao gostei|não gostei|voce esta sendo rude|você está sendo rude)\b/.test(t);
 
   const declinesSlot =
-    /\b(nao posso|nao da|não dá|nao consigo|esse horario nao|esse horario nao posso|outro horario|outro horário|nao esse|não esse)\b/.test(t);
+    /\b(nao posso|nao da|não dá|nao consigo|esse horario nao|esse horario nao posso|outro horario|outro horário|nao esse|não esse|nao serve)\b/.test(t);
 
   const asksStartNow =
     /\b(quero comecar a tomar|quero começar a tomar|posso tomar|como tomar|dose|dosagem|quantas gotas|comecar agora)\b/.test(t);
@@ -188,18 +209,25 @@ function detectIntent(text) {
   const asksWho =
     /\b(quem e|quem eh|quem e o dr|quem eh o dr|quem e esse doutor|quem é|quem é o dr|quem é esse doutor)\b/.test(t);
 
-  // “funciona mesmo?” / “é bom?” (gatilho do Evidence Engine)
+  // variações "funciona / vale a pena / serve pra mim"
   const asksIfWorks =
-    /\b(funciona|serve|e bom|é bom|ajuda|melhora|tem resultado|vale a pena|da certo)\b/.test(t);
+    /\b(funciona|serve|vale a pena|e bom|é bom|ajuda|melhora|tem resultado|da resultado|compensa|resolve)\b/.test(t);
 
-  // foco/tema (evita “condição fantasma”)
+  // foco macro
   const focus =
     (/\b(insonia|insomnia|dormir|sono|acordar)\b/.test(t) && "insonia") ||
     (/\b(ansiedade|panico|pânico|crise)\b/.test(t) && "ansiedade") ||
-    (/\b(enxaqueca|enxaqueca)\b/.test(t) && "enxaqueca") ||
+    (/\b(dor|lombar|artrose|artrite|neuropat|enxaqueca|fibromial|reumat)\b/.test(t) && "dor") ||
+    null;
+
+  // subfoco (para evidence com % mais específico)
+  const subfocus =
+    (/\b(fibromial|fibromialgia)\b/.test(t) && "fibromialgia") ||
+    (/\b(neuropat|neuropatica|neuropática)\b/.test(t) && "dor_neuropatica") ||
+    (/\b(lombar|coluna|hérnia|herni|ciatica|ciática)\b/.test(t) && "dor_lombar") ||
+    (/\b(enxaqueca|migraine|cefaleia)\b/.test(t) && "enxaqueca") ||
     (/\b(artrose|osteoartrite)\b/.test(t) && "artrose") ||
-    (/\b(neuropat|neuropatica|neuropática)\b/.test(t) && "neuropatica") ||
-    (/\b(dor|fibromialgia|lombar|artrite)\b/.test(t) && "dor") ||
+    (/\b(reumat|dor difusa)\b/.test(t) && "reumatismo") ||
     null;
 
   // objeções comuns
@@ -210,7 +238,7 @@ function detectIntent(text) {
 
   return {
     wantsPrice, wantsBook, asksHours, confirms, refuses, declinesSlot,
-    asksStartNow, urgency, asksWho, asksIfWorks, focus,
+    asksStartNow, urgency, asksWho, asksIfWorks, focus, subfocus,
     objection_price, objection_fear, objection_online, objection_skeptic
   };
 }
@@ -236,140 +264,156 @@ function extractPreferredSlot(text) {
   return { day, hour };
 }
 
-// ====== EVIDENCE ENGINE (do doc "ESTUDOS COM RESULTADO EM %") ======
+// ====== EVIDENCE ENGINE (com % do seu doc) ======
 const EVIDENCE_DB = {
   fibromialgia: {
-    topic: "fibromialgia",
-    lines: [
-      "Tem pesquisa bem interessante: em estudos com fibromialgia, houve redução de cerca de 50% a 60% em indicadores de dor e qualidade de vida após alguns meses em parte dos pacientes.",
-      "Outra análise encontrou redução média de 40% a 60% nos escores de dor/impacto funcional em alguns grupos.",
-    ],
-    guard: "Cada pessoa responde de um jeito — por isso a avaliação é essencial pra ver se faz sentido pro seu caso.",
+    label: "fibromialgia",
+    studies: [
+      { ref: "Pain Medicine (2016) — fitocanabinoides", pct: "50–60%", msg: "Em um estudo no *Pain Medicine*, pacientes com fibromialgia tiveram redução média de **50–60%** da dor após algumas semanas com canabinoides." },
+      { ref: "Clinical Rheumatology (2020) — cannabis medicinal", pct: "40–50%", msg: "Outro estudo mostrou melhora de **40–50%** em dor e qualidade de vida em parte dos pacientes com fibromialgia após semanas de acompanhamento." },
+      { ref: "Israel (2019) — coorte clínica", pct: "30–40%", msg: "Em coortes clínicas, parte dos pacientes relata melhora de **30–40%** em dor e sono quando o plano é bem individualizado e acompanhado." }
+    ]
   },
-  dor_cronica: {
-    topic: "dor crônica",
-    lines: [
-      "Em dor crônica, há dados interessantes: um estudo grande mostrou redução de uso de opioides em torno de 47% a 51% após iniciar tratamento com cannabis medicinal em parte dos pacientes.",
-      "Outras revisões apontam redução de dor variando de 42% a 66% com CBD isolado ou combinado, dependendo do perfil e formulação.",
-    ],
-    guard: "Não é milagre — a resposta varia e a estratégia precisa ser individualizada com segurança.",
+  dor_neuropatica: {
+    label: "dor neuropática",
+    studies: [
+      { ref: "J Pain (2018) — neuropatia", pct: "30–50%", msg: "Em dor neuropática, estudos mostram melhora de **30–50%** em intensidade da dor em parte dos pacientes com canabinoides, variando conforme a causa." },
+      { ref: "Neurology (2015) — esclerose múltipla / neuropatia", pct: "35–45%", msg: "Em alguns perfis neurológicos, houve melhora de **35–45%** em sintomas dolorosos e espasticidade (quando aplicável), com avaliação e acompanhamento." },
+      { ref: "Revisões clínicas", pct: "30–40%", msg: "Revisões apontam respostas de **30–40%** de melhora em parte dos pacientes — e o que define resultado é indicação + ajuste individual." }
+    ]
   },
-  insonia: {
-    topic: "insônia",
-    lines: [
-      "Para insônia, há ensaio clínico com um dado forte: cerca de 60% deixaram de ser classificados como insones após poucas semanas em um protocolo.",
-      "Também há melhora de qualidade do sono relatada em até 80% em alguns estudos e manutenção de melhora em >40% no acompanhamento longo.",
-      "Em alguns casos, foi observado aumento de melatonina em torno de 30% (variável).",
-    ],
-    guard: "O ponto-chave é entender a causa da sua insônia e personalizar — por isso a avaliação faz diferença.",
-  },
-  neuropatica: {
-    topic: "dor neuropática",
-    lines: [
-      "Dor neuropática é uma das áreas com mais dados: estudos mostram que 40% a 55% dos pacientes podem relatar alívio clinicamente relevante em alguns protocolos.",
-      "Há trabalhos mostrando aumento de pacientes com ≥30% de alívio da dor em comparação ao placebo em revisões grandes.",
-    ],
-    guard: "Mas precisa encaixar com seu tipo de dor e histórico — por isso avaliação é o caminho seguro.",
-  },
-  ansiedade: {
-    topic: "ansiedade",
-    lines: [
-      "Para ansiedade, meta-análises apontam redução importante de sintomas em parte dos pacientes — em alguns recortes, cerca de 70% relataram melhora significativa.",
-      "Muita gente melhora também o sono e o humor quando o plano está bem alinhado ao quadro.",
-    ],
-    guard: "Como ansiedade tem vários perfis, a avaliação ajuda a definir se é o seu caso e como fazer com segurança.",
-  },
-  artrose: {
-    topic: "artrose",
-    lines: [
-      "Em artrose, há estudo com relato de 44% de redução de dor após uso de CBD em parte dos pacientes, e 83% relatando alguma melhora.",
-      "Também há dados de 60% relatando melhora funcional e redução/cessação de anti-inflamatórios em um protocolo transdérmico em alguns grupos.",
-    ],
-    guard: "De novo: varia por pessoa — a avaliação define se é adequado e como acompanhar.",
+  dor_lombar: {
+    label: "dor lombar crônica",
+    studies: [
+      { ref: "Spine / revisão clínica", pct: "30–40%", msg: "Em dor lombar crônica, há evidências de melhora de **30–40%** em dor e funcionalidade em parte dos pacientes, principalmente quando o tratamento é individualizado." },
+      { ref: "Pain Research (2017)", pct: "25–35%", msg: "Alguns estudos observam melhora de **25–35%** em dor e sono após algumas semanas, com variação conforme o tipo de lombalgia." },
+      { ref: "Clínicas (coorte)", pct: "30–50%", msg: "Em coortes reais, parte dos pacientes relata melhora de **30–50%** — mas depende muito de causa, comorbidades e acompanhamento." }
+    ]
   },
   enxaqueca: {
-    topic: "enxaqueca",
-    lines: [
-      "Em enxaqueca, há estudo controlado com alívio de dor em 2 horas em cerca de 67% com combinação THC+CBD (em um protocolo).",
-      "E estudo observacional com 61% reduzindo a frequência de crises em mais de 50% em parte dos pacientes.",
-      "Também há redução de crises mensais de ~10 para ~5 em alguns acompanhamentos (varia por perfil).",
-    ],
-    guard: "É promissor, mas precisa ser individualizado (tipo de crise, gatilhos e medicações).",
+    label: "enxaqueca crônica",
+    studies: [
+      { ref: "Headache (2019)", pct: "30–50%", msg: "Para enxaqueca crônica, há estudos mostrando redução de **30–50%** na frequência/intensidade das crises em parte dos pacientes com uso supervisionado." },
+      { ref: "Revisões (cefaleia)", pct: "25–45%", msg: "Revisões clínicas sugerem melhora de **25–45%** em parte dos casos, principalmente quando há estratégia personalizada." },
+      { ref: "Dados observacionais", pct: "30–40%", msg: "Em dados observacionais, parte dos pacientes relata melhora de **30–40%** — e a avaliação é crucial para indicar corretamente." }
+    ]
   },
+  artrose: {
+    label: "artrose / osteoartrite",
+    studies: [
+      { ref: "Osteoarthritis (2018)", pct: "20–40%", msg: "Em artrose, estudos mostram melhora de **20–40%** em dor e rigidez em parte dos pacientes, com resposta variável." },
+      { ref: "Clínica / acompanhamento", pct: "25–35%", msg: "Com acompanhamento e ajuste individual, parte dos pacientes relata melhora de **25–35%** em dor e sono." },
+      { ref: "Revisões", pct: "20–30%", msg: "Revisões apontam melhora média de **20–30%** em parte dos casos — sem prometer, porque depende do perfil." }
+    ]
+  },
+  reumatismo: {
+    label: "dor difusa / reumatismo",
+    studies: [
+      { ref: "Clinical Pain (2020)", pct: "30–45%", msg: "Em dor difusa/reumatismo, há dados mostrando melhora de **30–45%** em dor e qualidade de vida em parte dos pacientes com acompanhamento." },
+      { ref: "Estudos observacionais", pct: "25–40%", msg: "Em estudos observacionais, parte dos pacientes relata melhora de **25–40%** em sono e dor (quando o plano é bem ajustado)." },
+      { ref: "Revisões", pct: "30–40%", msg: "Revisões sugerem respostas por volta de **30–40%** em parte dos casos — e a avaliação decide indicação e segurança." }
+    ],
+    objections: [
+      { q: "Isso não é placebo? / marketing?", a: "É uma dúvida justa. O que ajuda aqui é olhar evidência + sua história clínica. Tem estudos e também casos reais com melhora mensurável — mas varia, então a avaliação é o que separa tentativa no escuro de estratégia." },
+      { q: "Tenho medo de vício / ficar chapado", a: "Entendo. Por isso o plano é individualizado e com segurança; nem todo protocolo envolve THC, e o acompanhamento reduz risco de efeitos indesejados." },
+      { q: "É legal? vou ter problema?", a: "Entendo a preocupação. A ideia é seguir o caminho médico e regular, dentro das regras. Na consulta o Dr. explica o processo correto e seguro." },
+      { q: "Consulta online funciona?", a: "Funciona bem quando é bem conduzida: histórico completo, objetivos claros, plano individualizado e orientação organizada. E você sai com direcionamento prático." }
+    ]
+  },
+  insonia: {
+    label: "insônia",
+    studies: [
+      { ref: "Sleep Medicine (2020)", pct: "30–50%", msg: "Para insônia, estudos mostram melhora de **30–50%** em qualidade do sono em parte dos pacientes — variando conforme a causa e rotina." },
+      { ref: "Revisões (sono)", pct: "25–45%", msg: "Revisões apontam melhora de **25–45%** em alguns perfis, principalmente quando se ajusta estratégia ao tipo de insônia." },
+      { ref: "Dados clínicos", pct: "30–40%", msg: "Em prática clínica, parte dos pacientes relata melhora de **30–40%** em sono — mas precisa individualizar por segurança." }
+    ]
+  },
+  ansiedade: {
+    label: "ansiedade",
+    studies: [
+      { ref: "Estudos clínicos (ansiedade)", pct: "20–40%", msg: "Para ansiedade, há estudos mostrando melhora de **20–40%** em sintomas em parte dos pacientes — mas depende muito do tipo de ansiedade e do contexto." }
+    ]
+  }
 };
 
-// 10 variações do “final forte”
-const EVIDENCE_CLOSERS = [
-  "Esse tipo de resultado chama atenção, né? Imagina se você conseguir uma melhora parecida no seu caso.",
-  "É um dado bem forte. Imagina o impacto de reduzir isso em dezenas de por cento na sua rotina.",
-  "Quando a gente vê números assim, dá esperança. Imagina você sentindo isso na prática no dia a dia.",
-  "Não é garantia, mas é animador. Imagina se você melhora isso de forma consistente nas próximas semanas.",
-  "É promissor, né? Imagina acordar e perceber que aquilo já não te domina do mesmo jeito.",
-  "Esses percentuais são bem interessantes. Imagina o que muda na sua vida com essa melhora.",
-  "É o tipo de estudo que faz a gente prestar atenção. Imagina você reduzindo isso de verdade.",
-  "Não é “milagre”, mas é animador. Imagina se a gente encontra um plano que te dê esse ganho.",
-  "Esse resultado é acima da média do que muita gente imagina. Imagina você tendo essa evolução.",
-  "É uma boa notícia. Imagina melhorar isso sem ficar tentando coisa no escuro.",
+// 10 variações “final” (uma pergunta só no final)
+const EVIDENCE_HOOKS = [
+  (pct, tema) => `É um resultado bem interessante — imagina melhorar cerca de ${pct} nesse ${tema}. Faz sentido pra você?`,
+  (pct, tema) => `Isso chama atenção: em média, algo perto de ${pct}. Se fosse com você, já mudaria seu dia a dia?`,
+  (pct, tema) => `Pra muita gente, ${pct} já muda a vida. Se você tivesse essa melhora no ${tema}, o que voltaria a fazer?`,
+  (pct, tema) => `É animador ver números assim (${pct}). O que hoje você mais quer destravar no ${tema}?`,
+  (pct, tema) => `Se a gente conseguisse chegar perto de ${pct}, qual seria a maior diferença na sua rotina?`,
+  (pct, tema) => `Resultados assim (${pct}) não são “milagre”, mas são um bom sinal. O seu ${tema} é mais constante ou em crises?`,
+  (pct, tema) => `Muita gente se surpreende com isso (${pct}). Qual é a sua meta principal com esse ${tema}?`,
+  (pct, tema) => `É o tipo de dado que dá esperança (${pct}). Hoje isso te atrapalha mais no trabalho ou em casa?`,
+  (pct, tema) => `Se fosse possível reduzir cerca de ${pct}, qual seria seu “primeiro ganho” no ${tema}?`,
+  (pct, tema) => `É um número forte (${pct}) — e varia de pessoa pra pessoa. No seu caso, isso começou há quanto tempo?`
 ];
 
-function pick(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-// escolhe a evidência pelo foco (sem inventar condição)
-function getEvidenceByFocus(focus) {
-  if (!focus) return null;
-  if (focus === "dor") return EVIDENCE_DB.dor_cronica;
-  if (focus === "insonia") return EVIDENCE_DB.insonia;
-  if (focus === "ansiedade") return EVIDENCE_DB.ansiedade;
-  if (focus === "enxaqueca") return EVIDENCE_DB.enxaqueca;
-  if (focus === "artrose") return EVIDENCE_DB.artrose;
-  if (focus === "neuropatica") return EVIDENCE_DB.neuropatica;
-  if (focus === "fibromialgia") return EVIDENCE_DB.fibromialgia;
+function pickEvidenceKey(flags, state) {
+  // prioridade: subfoco explícito > foco macro
+  if (flags.subfocus) return flags.subfocus;
+  if (state.subfocus) return state.subfocus;
+  const f = flags.focus || state.focus;
+  if (f === "insonia") return "insonia";
+  if (f === "ansiedade") return "ansiedade";
+  if (f === "dor") return "dor_lombar"; // fallback ruim -> melhor não usar; então retorna null
   return null;
 }
 
-// se o lead falou fibromialgia explicitamente, permite usar essa evidência
-function leadMentionedFibro(text, state) {
-  const t = norm(text);
-  if (/\b(fibromialgia)\b/.test(t)) return true;
-  if (state?.queixa_principal && norm(state.queixa_principal).includes("fibromialgia")) return true;
+function canUseEvidence(state, evidenceKey) {
+  if (!evidenceKey) return false;
+  state.evidence_used = state.evidence_used || {};
+  return !state.evidence_used[evidenceKey];
+}
+
+function markEvidenceUsed(state, evidenceKey) {
+  state.evidence_used = state.evidence_used || {};
+  state.evidence_used[evidenceKey] = true;
+}
+
+function buildEvidenceMessage(evidenceKey, state) {
+  const pack = EVIDENCE_DB[evidenceKey];
+  if (!pack || !pack.studies?.length) return "";
+
+  // escolhe 1 estudo “rotativo”
+  const idx = Number(state.evidence_rot || 0) % pack.studies.length;
+  state.evidence_rot = Number(state.evidence_rot || 0) + 1;
+
+  const st = pack.studies[idx];
+  const tema = pack.label || "sintoma";
+  const pct = st.pct || "alguns %";
+
+  const hookFn = EVIDENCE_HOOKS[randInt(0, EVIDENCE_HOOKS.length - 1)];
+  const hook = hookFn(pct, tema);
+
+  // regra: não prometer; dizer “parte dos pacientes” + “varia”
+  return `Existe pesquisa interessante sobre isso. ${st.msg} Em geral, isso varia de pessoa pra pessoa e depende do perfil — por isso a avaliação é importante. ${hook}`;
+}
+
+function shouldInjectEvidence(flags, state, leadType) {
+  // Nunca atrapalhar fechamento/preço/urgência/resistência
+  if (flags.wantsBook || flags.asksHours || flags.wantsPrice || flags.urgency || flags.refuses) return false;
+
+  const key = pickEvidenceKey(flags, state);
+  if (!key) return false;
+  if (!canUseEvidence(state, key)) return false;
+
+  const turns = Number(state.turn_count || 0);
+
+  // 1) Se perguntou “funciona/vale a pena”
+  if (flags.asksIfWorks) return true;
+
+  // 2) Se cético/curioso -> evidência cedo
+  if (leadType === "SKEPTIC" || leadType === "CURIOUS") return true;
+
+  // 3) Proativo: após 2–3 mensagens (aquecido) e já temos foco/subfoco definido
+  if (turns >= 2 && turns <= 5) return true;
+
   return false;
 }
 
-// evita repetir evidência em loop (cooldown)
-function canUseEvidence(state, key) {
-  const lastKey = state.last_evidence_key || "";
-  const lastAt = Number(state.last_evidence_at || 0);
-  if (lastKey === key && Date.now() - lastAt < 5 * 60 * 1000) return false; // 5 min
-  return true;
-}
-
-function evidenceReply(focus, text, state) {
-  // regra anti-condição fantasma:
-  // se foco é "dor", NÃO citar fibromialgia, a menos que o lead tenha mencionado.
-  let ev = getEvidenceByFocus(focus);
-
-  if (ev && ev.topic === "fibromialgia" && !leadMentionedFibro(text, state)) {
-    // fallback para dor crônica geral
-    ev = EVIDENCE_DB.dor_cronica;
-  }
-
-  if (!ev) return null;
-
-  const key = ev.topic;
-  if (!canUseEvidence(state, key)) return null;
-
-  const msg =
-    `Existe pesquisa interessante sobre isso. ${pick(ev.lines)}\n` +
-    `${ev.guard}\n` +
-    `${pick(EVIDENCE_CLOSERS)}\n` +
-    `Só pra eu te orientar certinho: hoje o seu foco é mais ${focus === "insonia" ? "sono" : focus === "ansiedade" ? "ansiedade" : "dor"}?`;
-
-  return { reply: msg, key };
-}
-
-// ====== CLASSIFICADOR PSICOLÓGICO ======
+// ====== CLASSIFICADOR PSICOLÓGICO (determinístico) ======
 function classifyLead(flags, text, state) {
   if (flags.wantsBook || flags.asksHours) return "HOT_SCHEDULE";
   if (flags.wantsPrice) return "PRICE_NOW";
@@ -383,37 +427,29 @@ function classifyLead(flags, text, state) {
   if (flags.objection_price) return "PRICE_SENSITIVE";
 
   if (flags.asksIfWorks) return "CURIOUS";
-
   if (state?.lead_type) return state.lead_type;
+
   return "NEUTRAL";
 }
 
-// ====== MOTOR DE OBJEÇÕES (premium) ======
-function objectionReply(leadType, focus) {
-  const topic =
-    focus === "insonia" ? "sono" :
-    focus === "ansiedade" ? "ansiedade" :
-    focus === "dor" ? "dor" :
-    "seu caso";
+// ====== MOTOR DE OBJEÇÕES (templates premium) ======
+function objectionReply(type, focus, state) {
+  const nome = maybeUseName(state);
+  const topic = focus === "insonia" ? "sono" : focus === "ansiedade" ? "ansiedade" : focus === "dor" ? "dor" : "seu caso";
 
-  switch (leadType) {
+  switch (type) {
     case "SKEPTIC":
-      return `Entendo sua dúvida 🙂 Eu também sou bem pé no chão: não é “milagre” e não serve igual pra todo mundo. O que muda o jogo é avaliação + estratégia segura pro ${topic}. Me diz: o que você já tentou até agora?`;
-
+      return `Entendo total sua dúvida${nome} 🙂 Eu também sou bem pé no chão: não é “milagre” e não é igual pra todo mundo. O que muda o jogo é avaliar seu histórico e montar estratégia segura pro ${topic}. Hoje o ${topic} te atrapalha mais em qual parte do dia?`;
     case "FEARFUL":
-      return `Faz sentido ter receio 🙂 Por isso a gente trabalha com segurança e individualização. Seu receio é mais com efeito colateral, “dependência”, ou com a parte legal/família?`;
-
+      return `Faz sentido ter receio${nome} 🙂 Por isso a gente trabalha com segurança e individualização, sem prometer resultado. Seu medo é mais de efeito colateral, de “dependência”, ou de questão legal/família?`;
     case "ONLINE_DOUBT":
-      return `Super compreensível. A consulta online funciona bem quando é bem conduzida: histórico completo, padrão do sintoma e plano claro. O que mais te trava no online: confiança, privacidade ou “não ser examinado”?`;
-
+      return `Super compreensível${nome}. A consulta online funciona bem quando é bem conduzida: histórico completo, padrão do sintoma e plano claro — sem tentativa no escuro. O que te trava mais no online: confiança, privacidade ou “não ser examinado”?`;
     case "PRICE_SENSITIVE":
-      return `Entendo 🙂 Ajuda pensar que é uma avaliação de 45min bem direcionada pra evitar tentativas no escuro. Você prefere primeiro entender se é “seu caso” ou já quer que eu te passe os valores?`;
-
+      return `Entendo${nome} 🙂 Ajuda pensar assim: é uma avaliação de 45min bem direcionada pra evitar gastar tempo e dinheiro tentando coisa no escuro. Você quer primeiro entender se faz sentido pro seu caso, ou já quer ver valores?`;
     case "CURIOUS":
-      return `Boa pergunta 🙂 Pode ajudar em parte dos casos, mas varia bastante conforme o perfil e o objetivo. Só pra eu te responder do jeito certo: seu foco principal hoje é ${topic} mesmo?`;
-
+      return `Boa pergunta${nome} 🙂 Em parte dos pacientes pode ajudar, mas varia bastante — o que define é o perfil e o objetivo. Pra eu te responder do jeito certo: seu objetivo é melhorar o quê primeiro?`;
     default:
-      return `Entendi 🙂 Pra eu te orientar melhor: hoje seu foco é mais sono, dor ou ansiedade?`;
+      return `Entendi${nome} 🙂 Pra eu te orientar melhor: seu foco hoje é mais sono, dor ou ansiedade?`;
   }
 }
 
@@ -422,24 +458,28 @@ function urgencyReply() {
   return "Entendi. Pela sua mensagem, isso pode precisar de avaliação URGENTE. Procure um pronto atendimento agora (ou SAMU 192). Assim que estiver seguro(a), me chama aqui.";
 }
 
-function whoReply() {
-  return "Oi 🙂 Eu sou a Lia, da equipe do Dr. Alef Kotula. Ele é médico formado na Rússia e tem pós-graduação internacional em Cannabis Medicinal, atendimento 100% online. Quer que eu te explique em 30 segundos como funciona a consulta?";
+function whoReply(state) {
+  const nome = maybeUseName(state);
+  return `Oi${nome} 🙂 Eu sou a Lia, da equipe do Dr. Alef Kotula. Ele é médico formado na Rússia e tem pós-graduação internacional em Cannabis Medicinal, atendimento 100% online. Quer que eu te explique em 30 segundos como funciona a consulta?`;
 }
 
-function priceReply() {
+function priceReply(state) {
+  const nome = maybeUseName(state);
   return (
-    "Perfeito — te passo os valores e você vê se faz sentido 😊\n" +
+    `Perfeito${nome} — te passo com transparência 😊\n` +
     "• Consulta online (45 min): R$347\n" +
     "• Consulta + retorno (~30 dias): R$447 (recomendada)\n" +
     "• Retorno avulso: R$200\n" +
-    "Quer que eu te sugira 3 horários pra escolher ou prefere dizer um dia/turno (manhã/tarde/noite)?"
+    "Quer que eu te sugira 3 horários pra você escolher ou prefere dizer um dia/turno (manhã/tarde/noite)?"
   );
 }
 
-function safetyDoseReply() {
-  return "Entendi sua vontade de começar. Por segurança, eu não consigo orientar dose/como tomar por aqui 🙏 Isso depende do seu caso, medicações e objetivo. Se você quiser, eu te explico como funciona a avaliação (45 min) e te passo horários pra escolher. Você prefere manhã, tarde ou noite?";
+function safetyDoseReply(state) {
+  const nome = maybeUseName(state);
+  return `Entendi${nome}. Por segurança, eu não consigo orientar dose/como tomar por aqui 🙏 Isso depende do seu caso, medicações e objetivo. Se você quiser, eu te explico como funciona a avaliação (45 min) e te passo horários pra escolher. Você prefere manhã, tarde ou noite?`;
 }
 
+// slots “template” (agenda real entra depois)
 function suggestSlots(preferDay) {
   if (preferDay === "sábado") return ["sábado 11h", "sábado 13h", "sábado 16h"];
   if (preferDay === "segunda") return ["segunda 13h", "segunda 18h", "terça 19h"];
@@ -449,60 +489,66 @@ function suggestSlots(preferDay) {
 
 function bookingOffer(state, slot) {
   const options = suggestSlots(slot?.day || state?.booking?.prefer_day);
-  return `Perfeito 😊 Tenho essas opções: ${options.join(" / ")}. Qual você prefere?`;
+  const nome = maybeUseName(state);
+  return `Perfeito${nome} 😊 Tenho essas opções: ${options.join(" / ")}. Qual você prefere?`;
 }
 
-function bookingConfirm(slotStr) {
-  return `Fechado ✅ Vou reservar ${slotStr}. Pra confirmar, me diga por favor: seu nome completo e seu e-mail (pra eu te enviar o link e as orientações).`;
+function bookingConfirm(state, slotStr) {
+  const nome = maybeUseName(state);
+  return `Fechado${nome} ✅ Vou reservar ${slotStr}. Pra confirmar, me diga por favor: seu nome completo e seu e-mail (pra eu te enviar o link e as orientações).`;
 }
 
-function bookingNeedAlternatives() {
-  return "Sem problema 🙂 Você prefere manhã, tarde ou noite? Se me disser isso, eu te mando 3 opções certeiras.";
+function bookingNeedAlternatives(state) {
+  const nome = maybeUseName(state);
+  return `Sem problema${nome} 🙂 Você prefere manhã, tarde ou noite? Se me disser isso, eu te mando 3 opções certeiras.`;
 }
 
 // ====== LIA (LLM) — conversa aberta + aquecimento ======
+function compactMemory(state) {
+  const s = state || {};
+  return {
+    nome: s.nome || null,
+    focus: s.focus || null,
+    subfocus: s.subfocus || null,
+    lead_type: s.lead_type || null,
+    booking: s.booking || { status: "idle" },
+    last_user_message: s.last_user_message || "",
+    last_bot_reply: s.last_bot_reply || "",
+    turn_count: Number(s.turn_count || 0),
+  };
+}
+
 function buildSystemPromptV11() {
   return `
 Você é "Lia", secretária/closer premium do Dr. Alef Kotula (consulta 100% online).
-Objetivo: parecer humana, gerar confiança e conduzir para agendamento quando houver sinal.
+Objetivo: soar humana, criar confiança e conduzir para agendamento quando houver sinal.
 
 REGRAS ABSOLUTAS:
 - Nunca prescrever dose, nunca orientar compra, nunca recomendar marca.
 - Nunca prometer cura/garantir resultado.
 - Nunca inventar uma condição (ex.: fibromialgia) se o lead NÃO mencionou e não está na memória.
-- Se o lead pedir agendamento/horários: NÃO faça perguntas clínicas, feche com opções.
-- Se o lead resistir/ficar irritado: recue (valide + peça desculpa curto + ofereça ajudar sem pressão).
 - 1 pergunta por mensagem. Mensagens curtas. Sem “Oi” repetido.
-- Tom “clínica premium”: acolhedor, objetivo, sem enrolar.
+- Se o lead pedir agendamento/horários: NÃO faça perguntas clínicas, apenas feche.
+- Se o lead resistir/ficar irritado: recue (valide + desculpa curta + ofereça ajudar sem pressão).
 
-CIÊNCIA:
-- Use evidência em 2-3 linhas, sem prometer.
+NOME:
+- Se ainda não souber o nome, peça cedo de forma natural (sem parecer formulário).
+- Use o nome com moderação (não em toda mensagem).
+
+CIÊNCIA/EVIDÊNCIA:
+- Se receber um trecho de evidência com porcentagem, use em linguagem simples e responsável.
 - Sempre ressalvar que varia e que avaliação define a estratégia.
-- Use números SOMENTE se estiverem no contexto fornecido (aqui, você recebeu as linhas prontas no prompt).
 
 FORMATO OBRIGATÓRIO (JSON puro):
 { "reply": "...", "updates": { ... } }
 `;
 }
 
-function compactMemory(state) {
-  const s = state || {};
-  return {
-    focus: s.focus || null,
-    lead_type: s.lead_type || null,
-    booking: s.booking || { status: "idle" },
-    last_user_message: s.last_user_message || "",
-    last_bot_reply: s.last_bot_reply || "",
-    nome: s.nome || null,
-    queixa_principal: s.queixa_principal || null,
-    tempo: s.tempo || null,
-    intensidade: s.intensidade || null,
-    objecoes: s.objecoes || null,
-  };
-}
-
-function buildUserPromptV11({ incomingText, state, flags, evidencePack }) {
+function buildUserPromptV11({ incomingText, state, flags, leadType }) {
   const mem = compactMemory(state);
+  const focus = flags.focus || state.focus || null;
+  const subfocus = flags.subfocus || state.subfocus || null;
+
   return `
 MEMÓRIA CURTA:
 ${JSON.stringify(mem)}
@@ -513,24 +559,27 @@ ${incomingText}
 SINAIS:
 ${JSON.stringify(flags)}
 
-EVIDÊNCIA DISPONÍVEL (se precisar responder "funciona?"):
-${evidencePack ? JSON.stringify(evidencePack) : "N/A"}
+LEAD TYPE:
+${leadType}
+
+FOCO / SUBFOCO:
+${JSON.stringify({ focus, subfocus })}
 
 TAREFA:
-- Responder curto, humano, premium.
+- Responder curto, humano e premium.
 - 1 pergunta no final.
-- Não inventar condição.
-- Atualize updates com: nome(se aparecer), queixa_principal, tempo, intensidade(0-10 se dor), foco, objecoes.
+- Se não souber o nome, peça de forma natural.
+- Atualize updates com: nome, queixa_principal, tempo, intensidade(0-10 se dor), foco, subfoco, objecoes.
 `;
 }
 
-async function runLiaV11({ incomingText, state, flags, evidencePack }) {
+async function runLiaV11({ incomingText, state, flags, leadType }) {
   const resp = await openai.chat.completions.create({
     model: CHAT_MODEL,
-    temperature: 0.5,
+    temperature: 0.55,
     messages: [
       { role: "system", content: buildSystemPromptV11() },
-      { role: "user", content: buildUserPromptV11({ incomingText, state, flags, evidencePack }) },
+      { role: "user", content: buildUserPromptV11({ incomingText, state, flags, leadType }) },
     ],
   });
 
@@ -539,31 +588,33 @@ async function runLiaV11({ incomingText, state, flags, evidencePack }) {
   try { parsed = JSON.parse(content); } catch {}
 
   if (!parsed || typeof parsed !== "object" || !parsed.reply) {
-    return { reply: "Entendi 🙂 Pra eu te orientar melhor: hoje seu foco é mais sono, dor ou ansiedade?", updates: {} };
+    return { reply: "Entendi 🙂 Pra eu te orientar melhor: seu foco hoje é mais sono, dor ou ansiedade?", updates: {} };
   }
   if (!parsed.updates) parsed.updates = {};
-  parsed.reply = clip(parsed.reply, 700);
+  parsed.reply = clip(parsed.reply, 800);
   return parsed;
 }
 
 // ====== HUMAN DELAY ======
 function computeHumanDelay(flags, state, leadType) {
   let base = randInt(MIN_DELAY, MAX_DELAY);
+
+  // fechamento: mais rápido (mas humano)
   if (flags.wantsBook || flags.asksHours) base = randInt(3, 6);
   if (flags.wantsPrice) base = randInt(4, 7);
 
+  // evidência / objeção: “pensando”
   if (flags.asksIfWorks) base = randInt(6, 11);
   if (flags.refuses) base = randInt(5, 10);
-
   if (leadType === "SKEPTIC" || leadType === "FEARFUL") base = randInt(7, 12);
 
+  // se respondeu muito em seguida, adiciona leve atraso
   const lastAt = Number(state.last_sent_at || 0);
   if (Date.now() - lastAt < 2000) base += 2;
 
   return Math.max(2, base);
 }
 
-// ====== SEND WHATSAPP (REST API) ======
 async function sendWhatsApp(to, from, body, delaySec) {
   await sleep(delaySec * 1000);
   await twilioClient.messages.create({ to, from, body });
@@ -577,7 +628,7 @@ app.post("/whatsapp", async (req, res) => {
 
   (async () => {
     try {
-      const lead = req.body.From || "";
+      const lead = req.body.From || ""; // "whatsapp:+55..."
       const bot = req.body.To || "";
       const phone = lead.replace("whatsapp:", "").trim();
 
@@ -586,6 +637,7 @@ app.post("/whatsapp", async (req, res) => {
 
       let finalText = incomingText;
 
+      // áudio/mídia
       if (numMedia > 0) {
         const mediaUrl = req.body.MediaUrl0;
         const mediaType = req.body.MediaContentType0 || "";
@@ -602,105 +654,127 @@ app.post("/whatsapp", async (req, res) => {
       state.booking = state.booking || { status: "idle" };
       state.last_bot_reply = state.last_bot_reply || "";
       state.focus = state.focus || null;
+      state.subfocus = state.subfocus || null;
       state.lead_type = state.lead_type || null;
+      state.turn_count = Number(state.turn_count || 0);
+      state.name_use_counter = Number(state.name_use_counter || 0);
+      state.evidence_used = state.evidence_used || {};
+      state.evidence_rot = Number(state.evidence_rot || 0);
+
+      // contador de turnos
+      state.turn_count += 1;
 
       const flags = detectIntent(finalText);
       const slot = extractPreferredSlot(finalText);
 
-      // atualiza foco
-      if (flags.focus) state.focus = flags.focus;
+      // captura nome determinística
+      if (!state.nome) {
+        const extracted = extractName(finalText);
+        if (extracted) state.nome = extracted;
+      }
 
-      // classificador psicológico
+      // atualiza foco/subfoco conforme mensagem do lead
+      if (flags.focus) state.focus = flags.focus;
+      if (flags.subfocus) state.subfocus = flags.subfocus;
+
+      // classificador
       const leadType = classifyLead(flags, finalText, state);
       state.lead_type = leadType;
 
       let reply = "";
 
-      // 0) URGÊNCIA
-      if (flags.urgency) {
+      // === 0) PRIMEIRO PASSO: pedir nome (se ainda não tiver) sem atrapalhar intenção forte
+      const noNameYet = !state.nome;
+      const strongIntent = flags.wantsBook || flags.asksHours || flags.wantsPrice || flags.urgency || flags.refuses || flags.asksWho;
+
+      if (noNameYet && !strongIntent && state.turn_count <= 2) {
+        reply = "Oi 😊 Eu sou a Lia, da equipe do Dr. Alef. Pra eu te ajudar do jeito certo, qual seu nome?";
+      }
+      // === 1) URGÊNCIA
+      else if (flags.urgency) {
         reply = urgencyReply();
         state.booking.status = "idle";
       }
-      // 1) QUEM É
+      // === 2) QUEM É
       else if (flags.asksWho) {
-        reply = whoReply();
+        reply = whoReply(state);
       }
-      // 2) RESISTÊNCIA
+      // === 3) RESISTÊNCIA
       else if (flags.refuses) {
-        reply = "Tranquilo 🙂 Desculpa se soou pressionado. Quer que eu te explique rapidinho como funciona a avaliação ou prefere só tirar uma dúvida agora?";
+        const nome = maybeUseName(state);
+        reply = `Tranquilo${nome} 🙂 Desculpa se soou pressionado. Você prefere que eu explique rapidinho como funciona a avaliação ou quer só tirar uma dúvida agora?`;
         state.booking.status = "idle";
       }
-      // 3) PREÇO
+      // === 4) PREÇO
       else if (flags.wantsPrice) {
-        reply = priceReply();
+        reply = priceReply(state);
       }
-      // 4) DOSE / “COMEÇAR”
+      // === 5) DOSE / “COMEÇAR AGORA”
       else if (flags.asksStartNow) {
-        reply = safetyDoseReply();
+        reply = safetyDoseReply(state);
       }
-      // 5) AGENDAMENTO / HORÁRIOS (Closer hard + anti-loop)
+      // === 6) AGENDAMENTO / HORÁRIOS (Closer hard + anti-loop)
       else if (flags.wantsBook || flags.asksHours || state.booking.status === "offered") {
         if (flags.declinesSlot) {
-          reply = bookingNeedAlternatives();
+          reply = bookingNeedAlternatives(state);
           state.booking.status = "needs_alternatives";
         } else if (slot.day || slot.hour) {
           const slotStr = `${slot.day || "dia"} ${slot.hour || ""}`.trim();
-          const askReserve = `Perfeito 😊 Posso reservar ${slotStr} pra você?`;
+          const askReserve = `Perfeito${maybeUseName(state)} 😊 Posso reservar ${slotStr} pra você?`;
           state.booking.status = "offered";
           state.booking.proposed = slotStr;
+
           reply = similar(askReserve, state.last_bot_reply) ? bookingOffer(state, slot) : askReserve;
         } else if (state.booking.status === "offered" && flags.confirms) {
-          reply = bookingConfirm(state.booking.proposed || "o horário");
+          reply = bookingConfirm(state, state.booking.proposed || "o horário");
           state.booking.status = "confirmed";
         } else {
           const offer = bookingOffer(state, slot);
           state.booking.status = "offered";
           state.booking.prefer_day = slot.day || state.booking.prefer_day || null;
+
           reply = similar(offer, state.last_bot_reply)
-            ? "Fechado 😊 Você prefere manhã, tarde ou noite? Aí eu te mando 3 opções certeiras."
+            ? `Fechado${maybeUseName(state)} 😊 Você prefere manhã, tarde ou noite? Aí eu te mando 3 opções certeiras.`
             : offer;
         }
       }
-      // 6) “FUNCIONA MESMO?” → Evidence Engine (antes de qualquer outra coisa)
-      else if (flags.asksIfWorks) {
-        const focus = flags.focus || state.focus || null;
-        const ev = evidenceReply(focus, finalText, state);
-
-        if (ev && ev.reply) {
-          reply = ev.reply;
-          state.last_evidence_key = ev.key;
-          state.last_evidence_at = Date.now();
-        } else {
-          // fallback: se não achou foco, pergunta foco
-          reply = "Boa pergunta 🙂 Pode ajudar em parte dos casos, mas varia bastante conforme o objetivo e seu histórico. Só pra eu te responder certo: seu foco hoje é mais sono, dor ou ansiedade?";
+      // === 7) EVIDENCE ENGINE (com %): proativo e por gatilho
+      else if (shouldInjectEvidence(flags, state, leadType)) {
+        const key = pickEvidenceKey(flags, state);
+        // se não tiver chave válida, cai para objeções/LLM
+        if (key && EVIDENCE_DB[key]) {
+          reply = buildEvidenceMessage(key, state);
+          markEvidenceUsed(state, key);
         }
       }
-      // 7) OBJEÇÕES / CURIOSIDADE (motor determinístico)
-      else if (
-        leadType === "SKEPTIC" ||
-        leadType === "FEARFUL" ||
-        leadType === "ONLINE_DOUBT" ||
-        leadType === "PRICE_SENSITIVE" ||
-        leadType === "CURIOUS"
-      ) {
-        reply = objectionReply(leadType, state.focus);
+      // === 8) OBJEÇÕES / CURIOSIDADE (templates)
+      if (!reply) {
+        if (
+          leadType === "SKEPTIC" ||
+          leadType === "FEARFUL" ||
+          leadType === "ONLINE_DOUBT" ||
+          leadType === "PRICE_SENSITIVE" ||
+          leadType === "CURIOUS"
+        ) {
+          reply = objectionReply(leadType, state.focus, state);
+        }
       }
-      // 8) CONVERSA ABERTA (LLM)
-      else {
-        // passa “pacote” de evidência apenas para o foco atual (não vira prompt gigante)
-        const focus = state.focus || null;
-        const evidencePack = focus ? getEvidenceByFocus(focus) : null;
-
-        const ai = await runLiaV11({ incomingText: finalText, state, flags, evidencePack });
+      // === 9) CONVERSA ABERTA (LLM)
+      if (!reply) {
+        const ai = await runLiaV11({ incomingText: finalText, state, flags, leadType });
         reply = ai.reply;
         state = mergeState(state, ai.updates);
       }
 
-      // hard anti-loop final
+      // anti-loop final (hard)
       if (similar(reply, state.last_bot_reply)) {
-        reply = "Entendi 🙂 Só pra eu te guiar sem enrolar: seu foco hoje é mais sono, dor ou ansiedade?";
+        reply = `Entendi${maybeUseName(state)} 🙂 Só pra eu te guiar sem enrolar: hoje seu foco é mais sono, dor ou ansiedade?`;
       }
 
+      // incrementa contador de uso do nome
+      state.name_use_counter += 1;
+
+      // bookkeeping
       const delaySec = computeHumanDelay(flags, state, leadType);
 
       state.last_bot_reply = reply;
@@ -708,6 +782,7 @@ app.post("/whatsapp", async (req, res) => {
       state.last_sent_at = Date.now();
 
       await saveUserState(phone, state);
+
       await sendWhatsApp(lead, bot, reply, delaySec);
 
     } catch (err) {
