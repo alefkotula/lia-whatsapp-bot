@@ -12,6 +12,7 @@
  * PUBLIC_BASE_URL (opcional) ex: https://lia-whatsapp-bot.onrender.com
  * MODEL_CHAT (opcional) ex: gpt-4.1
  * MIN_DELAY_SEC / MAX_DELAY_SEC (opcional)
+ * MP_WEBHOOK_SECRET (opcional)
  */
 
 const express = require("express");
@@ -24,6 +25,10 @@ const app = express();
 
 // Twilio webhook usa x-www-form-urlencoded
 app.use(bodyParser.urlencoded({ extended: false }));
+
+// ✅ Para rotas JSON (ex: /create-payment). Isso NÃO atrapalha o Twilio.
+app.use(express.json());
+
 // Mercado Pago webhook geralmente vem JSON
 app.use("/mp", express.json({ type: ["application/json", "text/json", "*/*"] }));
 
@@ -57,11 +62,23 @@ const MAX_DELAY = Number(MAX_DELAY_SEC || 10);
 
 const BASE_URL = (PUBLIC_BASE_URL || "").trim() || "http://localhost:10000";
 
-// ====== PLANOS (ajuste se quiser) ======
+// ====== PLANOS (RENOMEADOS - EXPERIÊNCIA) ======
 const PLANS = {
-  basic: { key: "basic", label: "Consulta online (45 min)", price: 347 },
-  full: { key: "full", label: "Consulta + retorno (~30 dias)", price: 447 },
-  retorno: { key: "retorno", label: "Retorno avulso", price: 200 },
+  basic: {
+    key: "basic",
+    label: "Avaliação Médica Especializada (45 min)",
+    price: 347,
+  },
+  full: {
+    key: "full",
+    label: "Acompanhamento Médico Especializado (Consulta + Retorno ~30 dias)",
+    price: 447,
+  },
+  retorno: {
+    key: "retorno",
+    label: "Consulta de Ajuste (Retorno avulso)",
+    price: 200,
+  },
 };
 
 // ====== POSTGRES ======
@@ -142,12 +159,22 @@ function clip(text, max = 700) {
   return t.slice(0, max).trim();
 }
 
+// ====== TEXTO PREMIUM (ANTES DO PREÇO) ======
+function premiumIntroReply() {
+  return (
+    "A consulta é *100% online, segura e individualizada*, com duração média de *45 minutos*.\n\n" +
+    "Funciona assim: durante a consulta o Dr. Alef analisa seu caso com bastante profundidade.\n" +
+    "Ele revisa seu histórico, entende como os sintomas impactam sua rotina, analisa o que você já tentou, checa medicações em uso e define objetivos claros de melhora — tudo alinhado ao seu caso.\n\n" +
+    "A maioria das pessoas prefere já iniciar com acompanhamento, porque assim conseguimos ajustar o plano com mais segurança."
+  );
+}
+
 // ====== INTENTS ======
 function detectIntent(text) {
   const t = norm(text);
 
   const wantsPrice = /\b(preco|preço|valor|quanto custa|investimento|custa)\b/.test(t);
-  const wantsBook = /\b(quero marcar|quero agendar|agendar consulta|marcar consulta|quero fechar|quero pagar|confirmar)\b/.test(t);
+  const wantsBook = /\b(quero marcar|quero agendar|agendar consulta|marcar consulta|quero fechar|quero pagar|confirmar|pagar agora)\b/.test(t);
   const asksHours = /\b(horarios|horario|que horas|vagas|agenda|disponibilidade)\b/.test(t);
   const confirms = /\b(sim|ok|pode|confirmo|fechado|beleza|vamos|pode ser|serve)\b/.test(t);
 
@@ -160,10 +187,10 @@ function detectIntent(text) {
 
   const asksIfWorks = /\b(funciona|serve|vale a pena|ajuda|melhora|tem resultado)\b/.test(t);
 
-  // escolha de plano (gatilhos simples)
-  const choosesFull = /\b(447|retorno|consulta com retorno|com retorno|pacote|com acompanhamento)\b/.test(t);
-  const choosesBasic = /\b(347|consulta basica|consulta básica|so a consulta|só a consulta|consulta simples)\b/.test(t);
-  const choosesRetorno = /\b(200|retorno avulso|apenas retorno)\b/.test(t);
+  // escolha de plano (gatilhos mais robustos)
+  const choosesFull = /\b(447|consulta com retorno|com retorno|acompanhamento|pacote|retorno em 30|retorno ~30|acompanhamento medico)\b/.test(t);
+  const choosesBasic = /\b(347|avaliacao|avaliação|so a consulta|só a consulta|consulta simples|avaliacao especializada|avaliação especializada)\b/.test(t);
+  const choosesRetorno = /\b(200|retorno avulso|apenas retorno|consulta de ajuste)\b/.test(t);
 
   const focus =
     (/\b(insonia|insomnia|dormir|sono|acordar)\b/.test(t) && "insonia") ||
@@ -190,13 +217,15 @@ function whoReply() {
   return "Oi 🙂 Eu sou a Lia, da equipe do Dr. Alef Kotula. Atendimento 100% online. Quer que eu te explique em 30 segundos como funciona a consulta?";
 }
 
+// ✅ Preço agora com TEXTO PREMIUM + 87%
 function priceReply() {
   return (
-    "Perfeito 😊\n" +
-    "• Consulta online (45 min): R$347\n" +
-    "• Consulta + retorno (~30 dias): R$447 (recomendada)\n" +
-    "• Retorno avulso: R$200\n\n" +
-    "Qual opção faz mais sentido pra você: 347 (consulta) ou 447 (consulta + retorno)?"
+    premiumIntroReply() + "\n\n" +
+    "O investimento é:\n" +
+    `• *${PLANS.full.label}* — R$${PLANS.full.price} *(87% das pessoas escolhem essa opção)* ⭐\n` +
+    `• *${PLANS.basic.label}* — R$${PLANS.basic.price}\n` +
+    `• *${PLANS.retorno.label}* — R$${PLANS.retorno.price}\n\n` +
+    "Qual você prefere? Me responda com *1* (R$447), *2* (R$347) ou *3* (R$200)."
   );
 }
 
@@ -204,14 +233,16 @@ function safetyDoseReply() {
   return "Entendi sua vontade de começar. Por segurança, eu não consigo orientar dose/como tomar por aqui 🙏 Isso depende do seu caso e das medicações. Se quiser, eu te explico como funciona a avaliação e já te mando a forma de confirmar. Seu foco hoje é mais dor, sono ou ansiedade?";
 }
 
+// ✅ Menu com 87% e nomes premium
 function askPlanReply(nome) {
   const n = nome ? ` ${nome}` : "";
   return (
-    `Perfeito${n} 😊\n` +
+    `Perfeito${n} 😊\n\n` +
+    premiumIntroReply() + "\n\n" +
     "Pra eu te mandar o link certinho, qual você prefere?\n" +
-    "1) Consulta (45 min) — R$347\n" +
-    "2) Consulta + retorno — R$447 (recomendada)\n" +
-    "3) Retorno avulso — R$200\n\n" +
+    `1) *${PLANS.full.label}* — R$${PLANS.full.price} *(87% escolhem)* ⭐\n` +
+    `2) *${PLANS.basic.label}* — R$${PLANS.basic.price}\n` +
+    `3) *${PLANS.retorno.label}* — R$${PLANS.retorno.price}\n\n` +
     "Me responde com 1, 2 ou 3."
   );
 }
@@ -221,7 +252,7 @@ function paymentSentReply(plan, link) {
   const price = plan?.price || "";
   return (
     `Fechado ✅\n` +
-    `${label} — R$${price}\n\n` +
+    `*${label}* — R$${price}\n\n` +
     `Para confirmar, é só pagar por aqui:\n${link}\n\n` +
     "Assim que o pagamento for confirmado, eu te respondo aqui e seguimos pro próximo passo. 🙂"
   );
@@ -345,8 +376,6 @@ async function mpCreatePreference({ phone, planKey }) {
     ],
     external_reference,
     notification_url: `${BASE_URL}/mp/webhook`,
-    // As URLs abaixo são opcionais e não travam nada.
-    // Você pode mudar depois para páginas suas (ex: /obrigado).
     back_urls: {
       success: `${BASE_URL}/mp/thanks?status=success`,
       failure: `${BASE_URL}/mp/thanks?status=failure`,
@@ -376,8 +405,8 @@ async function mpCreatePreference({ phone, planKey }) {
   }
 
   const data = await r.json();
-  // init_point (produção) / sandbox_init_point (teste)
   const link = data.init_point || data.sandbox_init_point;
+
   return {
     preference_id: data.id,
     link,
@@ -397,7 +426,6 @@ async function mpGetPayment(paymentId) {
   return await r.json();
 }
 
-// Associa phone pelo external_reference/metadata (vem no pagamento)
 function mpExtractPhoneFromPayment(payment) {
   const md = payment?.metadata || {};
   const phone = md.phone || null;
@@ -411,20 +439,14 @@ app.get("/mp/thanks", (req, res) => {
 
 // ====== MP WEBHOOK ======
 app.post("/mp/webhook", async (req, res) => {
-  // Responde rápido para o MP
   res.status(200).send("OK");
 
   try {
-    // Mercado Pago geralmente manda:
-    // { action, api_version, data: { id }, date_created, id, live_mode, type, user_id }
     const body = req.body || {};
-    const type = body.type || body.topic; // algumas variações
+    const type = body.type || body.topic;
     const paymentId = body?.data?.id || body?.id;
 
     if (!paymentId) return;
-
-    // Aqui dá pra validar assinatura depois com MP_WEBHOOK_SECRET (se quiser endurecer)
-    // Por enquanto: confirma buscando o pagamento na API (bem confiável)
 
     if (type && String(type).includes("payment")) {
       const payment = await mpGetPayment(paymentId);
@@ -446,18 +468,8 @@ app.post("/mp/webhook", async (req, res) => {
 
       await saveUserState(phone, state);
 
-      // Se aprovado: avisa o lead no WhatsApp
       if (status === "approved") {
-        // Para enviar, precisamos do formato do Twilio:
-        // to = "whatsapp:+55..."
-        // from = número do Twilio (não temos aqui).
-        // Então: enviamos via Twilio REST usando "to" e "from" exige o bot number.
-        // Como o bot number (req.body.To) não vem aqui no webhook do MP,
-        // a forma segura é: esperar a próxima mensagem do lead e a Lia reconhece "pago".
-        //
-        // Mesmo assim, dá pra tentar armazenar um "pending_bot_from" no state quando mandar o link.
-        // Aí aqui a gente consegue enviar proactive.
-        const botFrom = state?.last_bot_from || null; // salvo no fluxo do WhatsApp
+        const botFrom = state?.last_bot_from || null;
         if (botFrom) {
           try {
             await twilioClient.messages.create({
@@ -465,9 +477,7 @@ app.post("/mp/webhook", async (req, res) => {
               from: botFrom,
               body: afterPaidReply(nome),
             });
-          } catch (e) {
-            // se falhar, ok — na próxima msg a Lia continua
-          }
+          } catch (e) {}
         }
       }
     }
@@ -478,18 +488,17 @@ app.post("/mp/webhook", async (req, res) => {
 
 // ====== WHATSAPP WEBHOOK (Twilio) ======
 app.post("/whatsapp", async (req, res) => {
-  // responde rápido pro Twilio (não bloqueia)
   const twiml = new twilio.twiml.MessagingResponse();
   res.type("text/xml").send(twiml.toString());
 
   (async () => {
     try {
       const lead = req.body.From || ""; // "whatsapp:+55..."
-      const bot = req.body.To || "";    // número do Twilio sandbox/WA
+      const bot = req.body.To || "";
       const phone = lead.replace("whatsapp:", "").trim();
 
       const incomingText = (req.body.Body || "").trim();
-      let finalText = incomingText;
+      const finalText = incomingText;
 
       let state = await getUserState(phone);
       state.last_bot_reply = state.last_bot_reply || "";
@@ -499,57 +508,49 @@ app.post("/whatsapp", async (req, res) => {
       state.focus = state.focus || null;
       state.payment = state.payment || null;
 
-      // guarda "from" do bot para envio proativo após webhook
       state.last_bot_from = bot;
 
       const flags = detectIntent(finalText);
-
       if (flags.focus) state.focus = flags.focus;
 
       let reply = "";
 
-      // Se pagamento já aprovado, prioriza fluxo pós-pagamento
       if (state.payment?.status === "approved") {
         reply = afterPaidReply(state.nome);
       }
-      // URGÊNCIA
       else if (flags.urgency) {
         reply = urgencyReply();
       }
-      // QUEM É
       else if (flags.asksWho) {
         reply = whoReply();
       }
-      // RESISTÊNCIA
       else if (flags.refuses) {
         reply = "Tranquilo 🙂 Desculpa se soou pressionado. Quer que eu te explique rapidinho como funciona a avaliação ou prefere só tirar uma dúvida agora?";
       }
-      // PREÇO
       else if (flags.wantsPrice) {
         reply = priceReply();
       }
-      // DOSE
       else if (flags.asksStartNow) {
         reply = safetyDoseReply();
       }
-      // FLUXO PAGAMENTO: se ele quer agendar/pagar ou escolheu plano
       else if (flags.wantsBook || flags.asksHours || flags.choosesFull || flags.choosesBasic || flags.choosesRetorno) {
-        // 1) Detecta plano
         let planKey = null;
 
         if (flags.choosesFull) planKey = "full";
         else if (flags.choosesBasic) planKey = "basic";
         else if (flags.choosesRetorno) planKey = "retorno";
         else {
-          // se não escolheu explicitamente: pergunta
           reply = askPlanReply(state.nome);
           planKey = null;
         }
 
-        // 2) Se já tem plano, gera link
         if (planKey) {
-          // evita gerar link repetido em loop
-          const already = state.payment && state.payment.preference_id && state.payment.plan_key === planKey && state.payment.status === "pending";
+          const already =
+            state.payment &&
+            state.payment.preference_id &&
+            state.payment.plan_key === planKey &&
+            state.payment.status === "pending";
+
           if (already && state.payment.link) {
             reply = paymentSentReply(PLANS[planKey], state.payment.link);
           } else {
@@ -568,21 +569,18 @@ app.post("/whatsapp", async (req, res) => {
           }
         }
       }
-      // Se está aguardando pagamento e o lead fala algo
       else if (state.payment?.status === "pending" && state.payment?.link) {
         reply =
           "Perfeito 🙂 Pra confirmar o horário, só falta o pagamento pelo link:\n" +
           `${state.payment.link}\n\n` +
           "Quer que eu te ajude a escolher: Pix ou cartão?";
       }
-      // CONVERSA ABERTA (LLM)
       else {
         const ai = await runLiaV12({ incomingText: finalText, state, flags });
         reply = ai.reply;
         state = mergeState(state, ai.updates);
       }
 
-      // anti-loop final
       if (similar(reply, state.last_bot_reply)) {
         reply = "Entendi 🙂 Só pra eu te guiar sem enrolar: seu foco hoje é mais dor, sono ou ansiedade?";
       }
@@ -615,19 +613,26 @@ app.post("/whatsapp", async (req, res) => {
 app.get("/", (req, res) => res.send("OK"));
 
 const PORT = process.env.PORT || 10000;
-// ==========================
-// MERCADO PAGO - CRIAR LINK
-// ==========================
 
+// ==========================
+// MERCADO PAGO - CRIAR LINK (OPCIONAL / DEBUG)
+// ==========================
+// (Você NÃO precisa disso pro fluxo principal, porque a Lia já usa mpCreatePreference)
+// Mas deixei funcionando e agora aceita JSON corretamente.
 app.post("/create-payment", async (req, res) => {
   try {
-    const { amount, description } = req.body;
+    const amount = Number(req.body?.amount);
+    const description = String(req.body?.description || "Pagamento");
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: "amount inválido" });
+    }
 
     const response = await fetch("https://api.mercadopago.com/checkout/preferences", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${process.env.MP_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
+        Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         items: [
@@ -635,21 +640,20 @@ app.post("/create-payment", async (req, res) => {
             title: description,
             quantity: 1,
             currency_id: "BRL",
-            unit_price: amount
-          }
-        ]
-      })
+            unit_price: amount,
+          },
+        ],
+        notification_url: `${BASE_URL}/mp/webhook`,
+      }),
     });
 
     const data = await response.json();
-
-    res.json({
-      payment_link: data.init_point
-    });
+    res.json({ payment_link: data.init_point || data.sandbox_init_point });
 
   } catch (error) {
     console.error(error);
     res.status(500).send("Erro ao criar pagamento");
   }
 });
+
 app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
