@@ -86,8 +86,8 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
 const CHAT_MODEL = MODEL_CHAT || "gpt-4.1";
-const MIN_DELAY = Number(MIN_DELAY_SEC || 6);
-const MAX_DELAY = Number(MAX_DELAY_SEC || 10);
+const MIN_DELAY = Number(MIN_DELAY_SEC || 0);
+const MAX_DELAY = Number(MAX_DELAY_SEC || 0);
 
 const BASE_URL = (PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") || "http://localhost:10000";
 
@@ -786,11 +786,29 @@ app.post("/whatsapp", async (req, res) => {
 
     const incomingTextRaw = (req.body.Body || "").trim();
     const incomingText = incomingTextRaw || "";
-if (incomingText.trim().toLowerCase() === "reset" && phone.replace(/\D/g, "") === "5565981422637") {
-  await pool.query("DELETE FROM wa_users WHERE phone = $1", [phone]);
+// ====== COMANDO SECRETO: RESET (somente você) ======
+const phoneRaw = String(lead).replace("whatsapp:", "").trim(); // pode vir "+5565..."
+const phoneDigits = phoneRaw.replace(/\D/g, "");              // "5565..."
 
-  // Confirma pelo WhatsApp (não por res.send, porque já respondemos o webhook acima)
-  await sendWhatsApp(`whatsapp:${phone}`, bot, "🔄 Memória da conversa resetada. Pode testar novamente.", 0);
+if (incomingText.trim().toLowerCase() === "reset" && phoneDigits === "5565981422637") {
+  // Apaga QUALQUER variação que possa ter sido salva como chave
+  await pool.query(
+    `DELETE FROM wa_users WHERE phone = $1 OR phone = $2 OR phone = $3 OR phone = $4`,
+    [
+      phoneRaw,                // "+5565..."
+      phoneDigits,             // "5565..."
+      phoneDigits.replace(/^55/, ""), // "65..."
+      "+" + phoneDigits,       // "+5565..."
+    ]
+  );
+
+  // Confirma pelo WhatsApp (não use res.send aqui; já respondemos TwiML lá em cima)
+  await sendWhatsApp(
+    `whatsapp:+${phoneDigits}`,
+    bot,
+    "🔄 Memória resetada. Pode testar do zero agora.",
+    0
+  );
 
   return;
 }
