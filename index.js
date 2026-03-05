@@ -1,18 +1,19 @@
 /**
- * LIA V12 — WhatsApp Bot (Twilio + Render + Postgres + OpenAI + Mercado Pago)
- * - Conversa humana + closer premium
- * - Delay humano + anti-loop
- * - Pagamento Mercado Pago (Checkout Pro): gera link e manda no WhatsApp
- * - Webhook Mercado Pago: confirma pagamento e libera próximo passo
- * - Agenda ainda NÃO integrada (entra na V13)
+ * LIA V12.1 — WhatsApp Bot (Twilio + Render + Postgres + OpenAI + Mercado Pago)
+ * Corrige:
+ * - Nome obrigatório (gate)
+ * - Premium antes do agendamento/preço
+ * - 87% prova social
+ * - Anti-alucinação: IA não pode soltar preço/link
+ * - Link real Mercado Pago (Checkout Pro) + webhook de confirmação
  *
  * ENV:
  * OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, DATABASE_URL
  * MP_ACCESS_TOKEN
- * PUBLIC_BASE_URL (opcional) ex: https://lia-whatsapp-bot.onrender.com
+ * PUBLIC_BASE_URL (ex: https://lia-whatsapp-bot.onrender.com)
  * MODEL_CHAT (opcional) ex: gpt-4.1
  * MIN_DELAY_SEC / MAX_DELAY_SEC (opcional)
- * MP_WEBHOOK_SECRET (opcional)
+ * MP_WEBHOOK_SECRET (opcional) — não implementado aqui (opcional endurecer)
  */
 
 const express = require("express");
@@ -26,7 +27,7 @@ const app = express();
 // Twilio webhook usa x-www-form-urlencoded
 app.use(bodyParser.urlencoded({ extended: false }));
 
-// ✅ Para rotas JSON (ex: /create-payment). Isso NÃO atrapalha o Twilio.
+// Rotas JSON normais (debug)
 app.use(express.json());
 
 // Mercado Pago webhook geralmente vem JSON
@@ -45,13 +46,14 @@ const {
   MAX_DELAY_SEC,
   MP_ACCESS_TOKEN,
   PUBLIC_BASE_URL,
-  MP_WEBHOOK_SECRET, // opcional
+  MP_WEBHOOK_SECRET, // opcional (não usado)
 } = process.env;
 
 if (!OPENAI_API_KEY) console.error("❌ Falta OPENAI_API_KEY");
 if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) console.error("❌ Falta TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN");
 if (!DATABASE_URL) console.error("❌ Falta DATABASE_URL");
 if (!MP_ACCESS_TOKEN) console.error("❌ Falta MP_ACCESS_TOKEN (Mercado Pago)");
+if (!PUBLIC_BASE_URL) console.warn("⚠️ PUBLIC_BASE_URL não definido. Use em produção para URLs corretas (webhook/back_urls).");
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
@@ -60,24 +62,27 @@ const CHAT_MODEL = MODEL_CHAT || "gpt-4.1";
 const MIN_DELAY = Number(MIN_DELAY_SEC || 6);
 const MAX_DELAY = Number(MAX_DELAY_SEC || 10);
 
-const BASE_URL = (PUBLIC_BASE_URL || "").trim() || "http://localhost:10000";
+const BASE_URL = (PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") || "http://localhost:10000";
 
-// ====== PLANOS (RENOMEADOS - EXPERIÊNCIA) ======
+// ====== PLANOS (Experiência) ======
 const PLANS = {
-  basic: {
-    key: "basic",
-    label: "Avaliação Médica Especializada (45 min)",
-    price: 347,
-  },
   full: {
     key: "full",
     label: "Acompanhamento Médico Especializado (Consulta + Retorno ~30 dias)",
     price: 447,
+    short: "1",
+  },
+  basic: {
+    key: "basic",
+    label: "Avaliação Médica Especializada (45 min)",
+    price: 347,
+    short: "2",
   },
   retorno: {
     key: "retorno",
     label: "Consulta de Ajuste (Retorno avulso)",
     price: 200,
+    short: "3",
   },
 };
 
@@ -159,13 +164,50 @@ function clip(text, max = 700) {
   return t.slice(0, max).trim();
 }
 
-// ====== TEXTO PREMIUM (ANTES DO PREÇO) ======
+// ====== Nome (gate) ======
+function extractNameFromText(text) {
+  // captura nome simples (1 a 3 palavras) e ignora respostas óbvias
+  const t = (text || "").trim();
+  if (!t) return null;
+
+  const low = norm(t);
+  if (/(sim|ok|beleza|pode|claro|s|ss|show|tanto faz|nao|não)/.test(low)) return null;
+
+  // remove emojis e pontuação excessiva
+  const cleaned = t.replace(/[^\p{L}\p{N}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
+  if (!cleaned) return null;
+
+  // se a pessoa escreveu "me chamo X" ou "sou X"
+  const m = cleaned.match(/(?:me chamo|sou|nome é|nome e)\s+(.+)$/i);
+  const candidate = (m?.[1] || cleaned).trim();
+
+  const parts = candidate.split(" ").filter(Boolean);
+  if (parts.length < 1 || parts.length > 4) return null;
+
+  // descarta números puros
+  if (/^\d+$/.test(candidate)) return null;
+
+  // capitaliza
+  return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
+}
+
+// evita “Robert, Robert, Robert…”
+function maybeUseName(state) {
+  const nome = state?.nome;
+  if (!nome) return "";
+  const used = Number(state?.name_used_count || 0);
+  // só usa nome nas 2 primeiras vezes e depois a cada 6 mensagens
+  if (used < 2 || used % 6 === 0) return nome;
+  return "";
+}
+
+// ====== TEXTO PREMIUM (ANTES DO PREÇO / ANTES DO AGENDAR) ======
 function premiumIntroReply() {
   return (
     "A consulta é *100% online, segura e individualizada*, com duração média de *45 minutos*.\n\n" +
-    "Funciona assim: durante a consulta o Dr. Alef analisa seu caso com bastante profundidade.\n" +
-    "Ele revisa seu histórico, entende como os sintomas impactam sua rotina, analisa o que você já tentou, checa medicações em uso e define objetivos claros de melhora — tudo alinhado ao seu caso.\n\n" +
-    "A maioria das pessoas prefere já iniciar com acompanhamento, porque assim conseguimos ajustar o plano com mais segurança."
+    "O Dr. Alef analisa seu caso com bastante profundidade — com base na experiência clínica e na formação médica na Rússia.\n" +
+    "Ele revisa todo seu histórico, entende como os sintomas impactam sua rotina, analisa o que você já tentou, confere medicações em uso e define objetivos claros de melhora — tudo alinhado ao seu caso.\n\n" +
+    "A maioria dos pacientes prefere já iniciar com acompanhamento, porque assim conseguimos ajustar o plano com mais segurança."
   );
 }
 
@@ -173,24 +215,25 @@ function premiumIntroReply() {
 function detectIntent(text) {
   const t = norm(text);
 
-  const wantsPrice = /\b(preco|preço|valor|quanto custa|investimento|custa)\b/.test(t);
-  const wantsBook = /\b(quero marcar|quero agendar|agendar consulta|marcar consulta|quero fechar|quero pagar|confirmar|pagar agora)\b/.test(t);
-  const asksHours = /\b(horarios|horario|que horas|vagas|agenda|disponibilidade)\b/.test(t);
-  const confirms = /\b(sim|ok|pode|confirmo|fechado|beleza|vamos|pode ser|serve)\b/.test(t);
+  const wantsPrice = /\b(preco|preço|valor|quanto custa|investimento|custa|valores)\b/.test(t);
+  const wantsBook = /\b(quero marcar|quero agendar|agendar|marcar|quero fechar|quero pagar|confirmar|pagar agora|quero consulta|gostaria de agendar)\b/.test(t);
+  const asksHours = /\b(horarios|horario|que horas|vagas|agenda|disponibilidade|amanha|hoje|semana)\b/.test(t);
+  const confirms = /\b(sim|ok|pode|confirmo|fechado|beleza|vamos|pode ser|serve|confirmar)\b/.test(t);
 
   const refuses = /\b(nao quero|não quero|pare|para|chega|rude|grosso|nao gostei|não gostei)\b/.test(t);
-  const declinesSlot = /\b(outro horario|outro horário|nao posso|nao da|não dá|nao consigo|nao esse|não esse)\b/.test(t);
 
   const asksStartNow = /\b(como tomar|dose|dosagem|quantas gotas|comecar agora|começar agora)\b/.test(t);
   const urgency = /\b(dor no peito|falta de ar|desmaio|avc|convuls|paralisia|confusao|confusão)\b/.test(t);
   const asksWho = /\b(quem e|quem eh|quem e o dr|quem é|quem é o dr)\b/.test(t);
-
   const asksIfWorks = /\b(funciona|serve|vale a pena|ajuda|melhora|tem resultado)\b/.test(t);
 
-  // escolha de plano (gatilhos mais robustos)
-  const choosesFull = /\b(447|consulta com retorno|com retorno|acompanhamento|pacote|retorno em 30|retorno ~30|acompanhamento medico)\b/.test(t);
-  const choosesBasic = /\b(347|avaliacao|avaliação|so a consulta|só a consulta|consulta simples|avaliacao especializada|avaliação especializada)\b/.test(t);
-  const choosesRetorno = /\b(200|retorno avulso|apenas retorno|consulta de ajuste)\b/.test(t);
+  // escolha de plano (número ou palavras)
+  const choosesFull = /\b(1|447|consulta com retorno|com retorno|acompanhamento|pacote|retorno em 30|acompanhamento medico)\b/.test(t);
+  const choosesBasic = /\b(2|347|avaliacao|avaliação|avaliacao especializada|avaliação especializada|so a consulta|só a consulta)\b/.test(t);
+  const choosesRetorno = /\b(3|200|retorno avulso|apenas retorno|consulta de ajuste)\b/.test(t);
+
+  // “amanhã às 13”, “terça 14h” etc: capturamos só como sinal de horário
+  const mentionsTime = /\b(\d{1,2}\s?h|\d{1,2}:\d{2}|amanha|amanhã|hoje|segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo)\b/.test(t);
 
   const focus =
     (/\b(insonia|insomnia|dormir|sono|acordar)\b/.test(t) && "insonia") ||
@@ -200,46 +243,47 @@ function detectIntent(text) {
 
   return {
     wantsPrice, wantsBook, asksHours, confirms,
-    refuses, declinesSlot,
+    refuses,
     asksStartNow, urgency, asksWho,
     asksIfWorks,
     choosesFull, choosesBasic, choosesRetorno,
+    mentionsTime,
     focus
   };
 }
 
-// ====== FUNIL (determinístico) ======
+// ====== Respostas determinísticas ======
 function urgencyReply() {
   return "Entendi. Pela sua mensagem, isso pode precisar de avaliação URGENTE. Procure um pronto atendimento agora (ou SAMU 192). Assim que estiver seguro(a), me chama aqui.";
 }
 
 function whoReply() {
-  return "Oi 🙂 Eu sou a Lia, da equipe do Dr. Alef Kotula. Atendimento 100% online. Quer que eu te explique em 30 segundos como funciona a consulta?";
+  return "Oi 🙂 Eu sou a Lia, da equipe do Dr. Alef Kotula. Atendimento 100% online. Quer que eu te explique em 30 segundos como funciona?";
 }
 
-// ✅ Preço agora com TEXTO PREMIUM + 87%
+function safetyDoseReply() {
+  return "Entendi sua vontade de começar. Por segurança, eu não consigo orientar dose/como tomar por aqui 🙏 Isso depende do seu caso e das medicações. Se quiser, eu te explico como funciona a avaliação e já te ajudo a confirmar. Seu foco hoje é mais dor, sono ou ansiedade?";
+}
+
+// Preço com premium + 87%
 function priceReply() {
   return (
     premiumIntroReply() + "\n\n" +
     "O investimento é:\n" +
-    `• *${PLANS.full.label}* — R$${PLANS.full.price} *(87% das pessoas escolhem essa opção)* ⭐\n` +
-    `• *${PLANS.basic.label}* — R$${PLANS.basic.price}\n` +
-    `• *${PLANS.retorno.label}* — R$${PLANS.retorno.price}\n\n` +
-    "Qual você prefere? Me responda com *1* (R$447), *2* (R$347) ou *3* (R$200)."
+    `1) *${PLANS.full.label}* — R$${PLANS.full.price} *(87% das pessoas escolhem essa opção)* ⭐\n` +
+    `2) *${PLANS.basic.label}* — R$${PLANS.basic.price}\n` +
+    `3) *${PLANS.retorno.label}* — R$${PLANS.retorno.price}\n\n` +
+    "Qual você prefere? Me responda com *1*, *2* ou *3*."
   );
 }
 
-function safetyDoseReply() {
-  return "Entendi sua vontade de começar. Por segurança, eu não consigo orientar dose/como tomar por aqui 🙏 Isso depende do seu caso e das medicações. Se quiser, eu te explico como funciona a avaliação e já te mando a forma de confirmar. Seu foco hoje é mais dor, sono ou ansiedade?";
-}
-
-// ✅ Menu com 87% e nomes premium
-function askPlanReply(nome) {
-  const n = nome ? ` ${nome}` : "";
+function askPlanReply(state) {
+  const n = maybeUseName(state);
+  const greet = n ? `Perfeito, ${n} 😊` : "Perfeito 😊";
   return (
-    `Perfeito${n} 😊\n\n` +
+    `${greet}\n\n` +
     premiumIntroReply() + "\n\n" +
-    "Pra eu te mandar o link certinho, qual você prefere?\n" +
+    "Pra eu te mandar o link certinho, qual opção você prefere?\n" +
     `1) *${PLANS.full.label}* — R$${PLANS.full.price} *(87% escolhem)* ⭐\n` +
     `2) *${PLANS.basic.label}* — R$${PLANS.basic.price}\n` +
     `3) *${PLANS.retorno.label}* — R$${PLANS.retorno.price}\n\n` +
@@ -247,21 +291,34 @@ function askPlanReply(nome) {
   );
 }
 
-function paymentSentReply(plan, link) {
-  const label = plan?.label || "Consulta";
-  const price = plan?.price || "";
+function askNameReply() {
+  return "Perfeito 🙂 Antes de eu te ajudar a agendar, qual seu *primeiro nome*?";
+}
+
+function askTurnoReply(state) {
+  const n = maybeUseName(state);
+  const greet = n ? `Perfeito, ${n} 🙂` : "Perfeito 🙂";
   return (
-    `Fechado ✅\n` +
-    `*${label}* — R$${price}\n\n` +
-    `Para confirmar, é só pagar por aqui:\n${link}\n\n` +
-    "Assim que o pagamento for confirmado, eu te respondo aqui e seguimos pro próximo passo. 🙂"
+    `${greet}\n` +
+    "Pra eu te sugerir horários reais, você prefere atendimento em qual turno?\n" +
+    "• manhã\n• tarde\n• noite"
   );
 }
 
-function afterPaidReply(nome) {
-  const n = nome ? `, ${nome}` : "";
+function paymentSentReply(plan, link) {
   return (
-    `Pagamento confirmado ✅ Obrigado${n}!\n` +
+    `Fechado ✅\n` +
+    `*${plan.label}* — R$${plan.price}\n\n` +
+    `Para confirmar, é só pagar por aqui:\n${link}\n\n` +
+    "Assim que o pagamento for confirmado, eu te aviso aqui e seguimos. 🙂"
+  );
+}
+
+function afterPaidReply(state) {
+  const n = maybeUseName(state);
+  const thanks = n ? `Pagamento confirmado ✅ Obrigado, ${n}!` : "Pagamento confirmado ✅ Obrigado!";
+  return (
+    `${thanks}\n` +
     "Agora me diga: você prefere atendimento em qual turno?\n" +
     "• manhã\n• tarde\n• noite"
   );
@@ -270,8 +327,7 @@ function afterPaidReply(nome) {
 // ====== HUMAN DELAY ======
 function computeHumanDelay(flags, state) {
   let base = randInt(MIN_DELAY, MAX_DELAY);
-
-  if (flags.wantsBook || flags.asksHours) base = randInt(3, 6);
+  if (flags.wantsBook || flags.asksHours || flags.mentionsTime) base = randInt(3, 6);
   if (flags.wantsPrice) base = randInt(4, 7);
   if (flags.asksIfWorks) base = randInt(6, 11);
   if (flags.refuses) base = randInt(5, 10);
@@ -287,30 +343,32 @@ async function sendWhatsApp(to, from, body, delaySec) {
   await twilioClient.messages.create({ to, from, body });
 }
 
-// ====== OPENAI — conversa aberta (somente quando precisa) ======
+// ====== OPENAI — somente para conversa aberta (com trava anti-alucinação) ======
 function compactMemory(state) {
   const s = state || {};
   return {
     nome: s.nome || null,
     focus: s.focus || null,
-    lead_type: s.lead_type || null,
-    payment: s.payment || null,
     last_user_message: s.last_user_message || "",
     last_bot_reply: s.last_bot_reply || "",
+    stage: s.stage || null,
   };
 }
 
 function buildSystemPromptV12() {
   return `
 Você é "Lia", secretária/closer premium do Dr. Alef Kotula (consulta 100% online).
-Objetivo: soar humana, acolher, gerar confiança e conduzir para confirmação (pagamento) quando houver sinal.
 
 REGRAS ABSOLUTAS:
+- Nunca inventar preço.
+- Nunca enviar links.
+- Nunca citar valores em R$ (isso é função do sistema).
 - Nunca prescrever dose, nunca orientar compra, nunca recomendar marca.
 - Nunca prometer cura/garantir resultado.
-- 1 pergunta por mensagem. Mensagens curtas. Tom humano (sem robô).
-- Se o lead pedir preço: responda com valores e pergunte qual opção prefere.
-- Se o lead estiver em "aguardando pagamento": lembrar do link e tirar dúvida curta.
+- 1 pergunta por mensagem. Mensagens curtas. Tom humano.
+
+Se pedirem preço/valores/link de pagamento: responda "PRECISA_PRECO" (apenas isso).
+Se pedirem agendar: responda "PRECISA_AGENDAR" (apenas isso).
 
 FORMATO OBRIGATÓRIO (JSON puro):
 { "reply": "...", "updates": { ... } }
@@ -332,14 +390,24 @@ ${JSON.stringify(flags)}
 TAREFA:
 - Responder curto e humano.
 - 1 pergunta no final.
-- Se aparecer nome, guardar em updates.nome.
+- Se detectar nome do usuário, salvar em updates.nome (somente primeiro nome ou nome simples).
 `;
+}
+
+function violatesNoPriceNoLink(text) {
+  if (!text) return false;
+  // se contiver R$, números tipo 300/400 em contexto de preço, ou qualquer http/https
+  if (/\bhttps?:\/\//i.test(text)) return true;
+  if (/R\$\s?\d/i.test(text)) return true;
+  // bloquear "300", "400", "447", "347", "200" se vier fora das funções determinísticas
+  if (/\b(200|300|347|400|447|500|600|700)\b/.test(text)) return true;
+  return false;
 }
 
 async function runLiaV12({ incomingText, state, flags }) {
   const resp = await openai.chat.completions.create({
     model: CHAT_MODEL,
-    temperature: 0.5,
+    temperature: 0.4,
     messages: [
       { role: "system", content: buildSystemPromptV12() },
       { role: "user", content: buildUserPromptV12({ incomingText, state, flags }) },
@@ -353,8 +421,20 @@ async function runLiaV12({ incomingText, state, flags }) {
   if (!parsed || typeof parsed !== "object" || !parsed.reply) {
     return { reply: "Entendi 🙂 Só pra eu te guiar: seu foco hoje é mais dor, sono ou ansiedade?", updates: {} };
   }
+
+  const r = String(parsed.reply || "").trim();
+
+  // comandos especiais (volta pro determinístico)
+  if (r === "PRECISA_PRECO") return { reply: "__NEED_PRICE__", updates: parsed.updates || {} };
+  if (r === "PRECISA_AGENDAR") return { reply: "__NEED_BOOK__", updates: parsed.updates || {} };
+
+  // trava anti-alucinação (preço/link)
+  if (violatesNoPriceNoLink(r)) {
+    return { reply: "Entendi 🙂 Pra eu te passar valores certinhos e a forma de confirmar, me diga: seu foco hoje é mais dor, sono ou ansiedade?", updates: {} };
+  }
+
   if (!parsed.updates) parsed.updates = {};
-  parsed.reply = clip(parsed.reply, 700);
+  parsed.reply = clip(r, 700);
   return parsed;
 }
 
@@ -453,11 +533,9 @@ app.post("/mp/webhook", async (req, res) => {
 
       const status = payment.status; // approved, pending, rejected...
       const phone = mpExtractPhoneFromPayment(payment);
-
       if (!phone) return;
 
       const state = await getUserState(phone);
-      const nome = state?.nome || null;
 
       state.payment = state.payment || {};
       state.payment.payment_id = paymentId;
@@ -475,9 +553,9 @@ app.post("/mp/webhook", async (req, res) => {
             await twilioClient.messages.create({
               to: `whatsapp:${phone}`,
               from: botFrom,
-              body: afterPaidReply(nome),
+              body: afterPaidReply(state),
             });
-          } catch (e) {}
+          } catch {}
         }
       }
     }
@@ -501,13 +579,18 @@ app.post("/whatsapp", async (req, res) => {
       const finalText = incomingText;
 
       let state = await getUserState(phone);
+
+      // defaults
       state.last_bot_reply = state.last_bot_reply || "";
       state.last_user_message = state.last_user_message || "";
       state.last_sent_at = state.last_sent_at || 0;
       state.nome = state.nome || null;
       state.focus = state.focus || null;
       state.payment = state.payment || null;
+      state.stage = state.stage || null; // "ASK_NAME" | "PREMIUM_SENT" | "ASK_TURNO" | "ASK_PLAN" | etc
+      state.name_used_count = Number(state.name_used_count || 0);
 
+      // guarda "from" do bot (para envio proativo no webhook do MP)
       state.last_bot_from = bot;
 
       const flags = detectIntent(finalText);
@@ -515,74 +598,166 @@ app.post("/whatsapp", async (req, res) => {
 
       let reply = "";
 
+      // 0) Se pagamento aprovado: pós-pagamento
       if (state.payment?.status === "approved") {
-        reply = afterPaidReply(state.nome);
+        reply = afterPaidReply(state);
       }
+
+      // 1) Urgência
       else if (flags.urgency) {
         reply = urgencyReply();
       }
+
+      // 2) Quem é
       else if (flags.asksWho) {
         reply = whoReply();
       }
-      else if (flags.refuses) {
-        reply = "Tranquilo 🙂 Desculpa se soou pressionado. Quer que eu te explique rapidinho como funciona a avaliação ou prefere só tirar uma dúvida agora?";
+
+      // 3) Se estamos esperando nome
+      else if (state.stage === "ASK_NAME" && !state.nome) {
+        const nm = extractNameFromText(finalText);
+        if (nm) {
+          state.nome = nm;
+          state.stage = "ASK_TURNO";
+          reply = askTurnoReply(state);
+        } else {
+          reply = "Me diz só seu *primeiro nome* 🙂";
+        }
       }
+
+      // 4) Se usuário pediu preço: preço determinístico (com premium + 87%)
       else if (flags.wantsPrice) {
-        reply = priceReply();
+        // se não tem nome ainda, pergunta nome primeiro (gate)
+        if (!state.nome) {
+          state.stage = "ASK_NAME";
+          reply = askNameReply();
+        } else {
+          reply = priceReply();
+          state.stage = "ASK_PLAN";
+        }
       }
+
+      // 5) Dose
       else if (flags.asksStartNow) {
         reply = safetyDoseReply();
       }
-      else if (flags.wantsBook || flags.asksHours || flags.choosesFull || flags.choosesBasic || flags.choosesRetorno) {
-        let planKey = null;
 
-        if (flags.choosesFull) planKey = "full";
-        else if (flags.choosesBasic) planKey = "basic";
-        else if (flags.choosesRetorno) planKey = "retorno";
-        else {
-          reply = askPlanReply(state.nome);
-          planKey = null;
-        }
-
-        if (planKey) {
-          const already =
-            state.payment &&
-            state.payment.preference_id &&
-            state.payment.plan_key === planKey &&
-            state.payment.status === "pending";
-
-          if (already && state.payment.link) {
-            reply = paymentSentReply(PLANS[planKey], state.payment.link);
+      // 6) Agendar: PREMIUM PRIMEIRO (como você pediu)
+      else if (flags.wantsBook || flags.asksHours || flags.mentionsTime) {
+        // se ainda não mandamos o premium, manda agora (1x) e já “puxa” o nome/turno
+        if (state.stage !== "PREMIUM_SENT" && state.stage !== "ASK_NAME" && state.stage !== "ASK_TURNO" && state.stage !== "ASK_PLAN") {
+          reply = premiumIntroReply() + "\n\n" + "Pra eu te ajudar a agendar direitinho: qual seu *primeiro nome*?";
+          state.stage = "ASK_NAME";
+        } else {
+          // já passou do premium, segue gate do nome
+          if (!state.nome) {
+            state.stage = "ASK_NAME";
+            reply = askNameReply();
           } else {
-            const pref = await mpCreatePreference({ phone, planKey });
-
-            state.payment = {
-              status: "pending",
-              plan_key: planKey,
-              preference_id: pref.preference_id,
-              link: pref.link,
-              external_reference: pref.external_reference,
-              created_at: Date.now(),
-            };
-
-            reply = paymentSentReply(pref.plan, pref.link);
+            state.stage = "ASK_TURNO";
+            reply = askTurnoReply(state);
           }
         }
       }
-      else if (state.payment?.status === "pending" && state.payment?.link) {
-        reply =
-          "Perfeito 🙂 Pra confirmar o horário, só falta o pagamento pelo link:\n" +
-          `${state.payment.link}\n\n` +
-          "Quer que eu te ajude a escolher: Pix ou cartão?";
-      }
-      else {
-        const ai = await runLiaV12({ incomingText: finalText, state, flags });
-        reply = ai.reply;
-        state = mergeState(state, ai.updates);
+
+      // 7) Escolha de plano / confirmação de pagamento
+      else if (flags.choosesFull || flags.choosesBasic || flags.choosesRetorno || (state.stage === "ASK_PLAN" && flags.confirms)) {
+        // gate do nome
+        if (!state.nome) {
+          state.stage = "ASK_NAME";
+          reply = askNameReply();
+        } else {
+          let planKey = null;
+          if (flags.choosesFull) planKey = "full";
+          else if (flags.choosesBasic) planKey = "basic";
+          else if (flags.choosesRetorno) planKey = "retorno";
+
+          if (!planKey) {
+            reply = askPlanReply(state);
+            state.stage = "ASK_PLAN";
+          } else {
+            const already =
+              state.payment &&
+              state.payment.preference_id &&
+              state.payment.plan_key === planKey &&
+              state.payment.status === "pending";
+
+            if (already && state.payment.link) {
+              reply = paymentSentReply(PLANS[planKey], state.payment.link);
+            } else {
+              const pref = await mpCreatePreference({ phone, planKey });
+
+              state.payment = {
+                status: "pending",
+                plan_key: planKey,
+                preference_id: pref.preference_id,
+                link: pref.link,
+                external_reference: pref.external_reference,
+                created_at: Date.now(),
+              };
+
+              reply = paymentSentReply(pref.plan, pref.link);
+            }
+
+            state.stage = "WAIT_PAYMENT";
+          }
+        }
       }
 
+      // 8) Se está aguardando pagamento: reforça link real
+      else if (state.payment?.status === "pending" && state.payment?.link) {
+        reply =
+          "Perfeito 🙂 Pra confirmar, só falta o pagamento pelo link:\n" +
+          `${state.payment.link}\n\n` +
+          "Você prefere pagar no *Pix* ou *cartão*?";
+      }
+
+      // 9) Resistência
+      else if (flags.refuses) {
+        reply = "Tranquilo 🙂 Desculpa se soou pressionado. Quer que eu te explique rapidinho como funciona ou prefere só tirar uma dúvida agora?";
+      }
+
+      // 10) Conversa aberta (IA) — com travas
+      else {
+        const ai = await runLiaV12({ incomingText: finalText, state, flags });
+
+        // se IA pedir preço/agendar, joga pro determinístico
+        if (ai.reply === "__NEED_PRICE__") {
+          if (!state.nome) {
+            state.stage = "ASK_NAME";
+            reply = askNameReply();
+          } else {
+            reply = priceReply();
+            state.stage = "ASK_PLAN";
+          }
+        } else if (ai.reply === "__NEED_BOOK__") {
+          if (state.stage !== "PREMIUM_SENT") {
+            reply = premiumIntroReply() + "\n\n" + "Pra eu te ajudar a agendar direitinho: qual seu *primeiro nome*?";
+            state.stage = "ASK_NAME";
+          } else if (!state.nome) {
+            state.stage = "ASK_NAME";
+            reply = askNameReply();
+          } else {
+            state.stage = "ASK_TURNO";
+            reply = askTurnoReply(state);
+          }
+        } else {
+          reply = ai.reply;
+          state = mergeState(state, ai.updates);
+
+          // se a IA capturou nome via updates
+          if (!state.nome && ai.updates?.nome) state.nome = String(ai.updates.nome).trim();
+        }
+      }
+
+      // anti-loop final
       if (similar(reply, state.last_bot_reply)) {
         reply = "Entendi 🙂 Só pra eu te guiar sem enrolar: seu foco hoje é mais dor, sono ou ansiedade?";
+      }
+
+      // controla repetição do nome
+      if (state.nome && reply.includes(state.nome)) {
+        state.name_used_count = Number(state.name_used_count || 0) + 1;
       }
 
       const delaySec = computeHumanDelay(flags, state);
@@ -614,36 +789,25 @@ app.get("/", (req, res) => res.send("OK"));
 
 const PORT = process.env.PORT || 10000;
 
-// ==========================
-// MERCADO PAGO - CRIAR LINK (OPCIONAL / DEBUG)
-// ==========================
-// (Você NÃO precisa disso pro fluxo principal, porque a Lia já usa mpCreatePreference)
-// Mas deixei funcionando e agora aceita JSON corretamente.
+// (Opcional / Debug) cria link manual
 app.post("/create-payment", async (req, res) => {
   try {
     const amount = Number(req.body?.amount);
     const description = String(req.body?.description || "Pagamento");
+    const phone = String(req.body?.phone || "").trim().replace(/^whatsapp:/, "");
 
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ error: "amount inválido" });
-    }
+    if (!amount || amount <= 0) return res.status(400).json({ error: "amount inválido" });
 
     const response = await fetch("https://api.mercadopago.com/checkout/preferences", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`,
+        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        items: [
-          {
-            title: description,
-            quantity: 1,
-            currency_id: "BRL",
-            unit_price: amount,
-          },
-        ],
+        items: [{ title: description, quantity: 1, currency_id: "BRL", unit_price: amount }],
         notification_url: `${BASE_URL}/mp/webhook`,
+        metadata: { phone: phone || null },
       }),
     });
 
