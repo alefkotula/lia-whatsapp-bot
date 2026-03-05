@@ -1,11 +1,24 @@
 /**
- * LIA V12.1 — WhatsApp Bot (Twilio + Render + Postgres + OpenAI + Mercado Pago)
- * Corrige:
- * - Nome obrigatório (gate)
- * - Premium antes do agendamento/preço
- * - 87% prova social
- * - Anti-alucinação: IA não pode soltar preço/link
- * - Link real Mercado Pago (Checkout Pro) + webhook de confirmação
+ * INDEX 13 — LIA V12.1 (ajustes cirúrgicos)
+ *
+ * Mantém o que já estava certo:
+ * - Tom humano + empatia
+ * - Premium intro (45min, 100% online, etc.)
+ * - Prova social 87% no plano 1
+ * - Anti-alucinação (IA não solta preço/link)
+ * - Link real Mercado Pago + webhook
+ *
+ * Corrige o que estava errado:
+ * 1) Travamento/loop na agenda (turno/dia) ✅
+ *    - adiciona state.turno, state.dia, state.slot
+ *    - adiciona stages: ASK_TURNO → ASK_DIA → OFFER_SLOTS → ASK_PLAN
+ *    - nunca volta a perguntar TURNO se já existe state.turno
+ *
+ * 2) “Como faço para pagar?” não pode desviar pra qualificação ✅
+ *    - adiciona intentPay com prioridade alta
+ *    - qualquer mensagem de pagamento vira atalho: plano → link → reenvio do link
+ *
+ * (não implementa confirmação de nome anti-erro, conforme pedido)
  *
  * ENV:
  * OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, DATABASE_URL
@@ -201,6 +214,49 @@ function maybeUseName(state) {
   return "";
 }
 
+// ====== AGENDA (anti-loop) ======
+function extractTurno(text) {
+  const t = norm(text);
+  if (/\b(manha|manhã)\b/.test(t)) return "manha";
+  if (/\b(tarde)\b/.test(t)) return "tarde";
+  if (/\b(noite)\b/.test(t)) return "noite";
+  return null;
+}
+
+function extractDia(text) {
+  const t = norm(text);
+  if (/\b(hoje)\b/.test(t)) return "hoje";
+  if (/\b(amanha|amanhã)\b/.test(t)) return "amanha";
+  if (/\b(segunda)\b/.test(t)) return "segunda";
+  if (/\b(terca|terça)\b/.test(t)) return "terca";
+  if (/\b(quarta)\b/.test(t)) return "quarta";
+  if (/\b(quinta)\b/.test(t)) return "quinta";
+  if (/\b(sexta)\b/.test(t)) return "sexta";
+  if (/\b(sabado|sábado)\b/.test(t)) return "sabado";
+  if (/\b(domingo)\b/.test(t)) return "domingo";
+  return null;
+}
+
+function pickSlotsForTurno(turno) {
+  // slots "exemplo realista" (sem integração de agenda ainda)
+  if (turno === "manha") return ["09:10", "10:30"];
+  if (turno === "tarde") return ["14:10", "15:40"];
+  return ["19:30", "20:10"]; // noite
+}
+
+function extractSlotChoice(text) {
+  const t = norm(text);
+  if (/\b(1|primeiro)\b/.test(t)) return 1;
+  if (/\b(2|segundo)\b/.test(t)) return 2;
+  // se a pessoa manda um horário, aceita
+  const m = t.match(/\b([01]?\d|2[0-3])[:h]([0-5]\d)\b/);
+  if (m) return `${m[1].padStart(2, "0")}:${m[2]}`;
+  // "20h" / "8h"
+  const m2 = t.match(/\b([01]?\d|2[0-3])\s?h\b/);
+  if (m2) return `${String(m2[1]).padStart(2, "0")}:00`;
+  return null;
+}
+
 // ====== TEXTO PREMIUM (ANTES DO PREÇO / ANTES DO AGENDAR) ======
 function premiumIntroReply() {
   return (
@@ -216,8 +272,12 @@ function detectIntent(text) {
   const t = norm(text);
 
   const wantsPrice = /\b(preco|preço|valor|quanto custa|investimento|custa|valores)\b/.test(t);
-  const wantsBook = /\b(quero marcar|quero agendar|agendar|marcar|quero fechar|quero pagar|confirmar|pagar agora|quero consulta|gostaria de agendar)\b/.test(t);
-  const asksHours = /\b(horarios|horario|que horas|vagas|agenda|disponibilidade|amanha|hoje|semana)\b/.test(t);
+
+  // INTENT PAY (alta prioridade): qualquer “como pagar / link / pix / cartão / parcela”
+  const intentPay = /\b(como (pagar|fa[cç]o para pagar)|pagar|pagamento|pix|cartao|cartão|credito|crédito|debito|débito|boleto|link|parcel|parcela)\b/.test(t);
+
+  const wantsBook = /\b(quero marcar|quero agendar|agendar|marcar|quero fechar|confirmar consulta|quero consulta|gostaria de agendar)\b/.test(t);
+  const asksHours = /\b(horarios|horario|que horas|vagas|agenda|disponibilidade)\b/.test(t);
   const confirms = /\b(sim|ok|pode|confirmo|fechado|beleza|vamos|pode ser|serve|confirmar)\b/.test(t);
 
   const refuses = /\b(nao quero|não quero|pare|para|chega|rude|grosso|nao gostei|não gostei)\b/.test(t);
@@ -232,8 +292,10 @@ function detectIntent(text) {
   const choosesBasic = /\b(2|347|avaliacao|avaliação|avaliacao especializada|avaliação especializada|so a consulta|só a consulta)\b/.test(t);
   const choosesRetorno = /\b(3|200|retorno avulso|apenas retorno|consulta de ajuste)\b/.test(t);
 
-  // “amanhã às 13”, “terça 14h” etc: capturamos só como sinal de horário
-  const mentionsTime = /\b(\d{1,2}\s?h|\d{1,2}:\d{2}|amanha|amanhã|hoje|segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo)\b/.test(t);
+  // sinais de turno/dia/horário (para não travar)
+  const turno = extractTurno(text);
+  const dia = extractDia(text);
+  const mentionsTime = /\b(\d{1,2}\s?h|\d{1,2}:\d{2}|hoje|amanha|amanhã|segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo)\b/.test(t);
 
   const focus =
     (/\b(insonia|insomnia|dormir|sono|acordar)\b/.test(t) && "insonia") ||
@@ -242,13 +304,14 @@ function detectIntent(text) {
     null;
 
   return {
-    wantsPrice, wantsBook, asksHours, confirms,
+    wantsPrice, intentPay, wantsBook, asksHours, confirms,
     refuses,
     asksStartNow, urgency, asksWho,
     asksIfWorks,
     choosesFull, choosesBasic, choosesRetorno,
     mentionsTime,
-    focus
+    focus,
+    turno, dia,
   };
 }
 
@@ -305,6 +368,25 @@ function askTurnoReply(state) {
   );
 }
 
+function askDiaReply(state) {
+  const n = maybeUseName(state);
+  const greet = n ? `Ótimo, ${n}! 🙂` : "Ótimo! 🙂";
+  const turno = state?.turno ? `à *${state.turno}*` : "";
+  return `${greet} Você prefere algum dia específico da semana para a consulta ${turno}?`;
+}
+
+function offerSlotsReply(state) {
+  const turno = state.turno || "noite";
+  const dia = state.dia || "essa semana";
+  const [a, b] = pickSlotsForTurno(turno);
+  return (
+    `Perfeito 🙂 Para *${dia}* à *${turno}*, tenho:\n` +
+    `1) ${a}\n` +
+    `2) ${b}\n\n` +
+    "Qual você prefere? (responda 1 ou 2)"
+  );
+}
+
 function paymentSentReply(plan, link) {
   return (
     `Fechado ✅\n` +
@@ -317,11 +399,17 @@ function paymentSentReply(plan, link) {
 function afterPaidReply(state) {
   const n = maybeUseName(state);
   const thanks = n ? `Pagamento confirmado ✅ Obrigado, ${n}!` : "Pagamento confirmado ✅ Obrigado!";
-  return (
-    `${thanks}\n` +
-    "Agora me diga: você prefere atendimento em qual turno?\n" +
-    "• manhã\n• tarde\n• noite"
-  );
+  // após pagar, seguimos com agenda (sem loop)
+  if (!state.turno) {
+    return (
+      `${thanks}\n` +
+      "Agora me diga: você prefere atendimento em qual turno?\n" +
+      "• manhã\n• tarde\n• noite"
+    );
+  }
+  if (!state.dia) return `${thanks}\n` + askDiaReply(state);
+  if (!state.slot) return `${thanks}\n` + offerSlotsReply(state);
+  return `${thanks}\nPerfeito! Sua preferência ficou: *${state.dia}* às *${state.slot}*. Já sigo com você por aqui 🙂`;
 }
 
 // ====== HUMAN DELAY ======
@@ -329,6 +417,7 @@ function computeHumanDelay(flags, state) {
   let base = randInt(MIN_DELAY, MAX_DELAY);
   if (flags.wantsBook || flags.asksHours || flags.mentionsTime) base = randInt(3, 6);
   if (flags.wantsPrice) base = randInt(4, 7);
+  if (flags.intentPay) base = randInt(2, 5); // pagar = rápido
   if (flags.asksIfWorks) base = randInt(6, 11);
   if (flags.refuses) base = randInt(5, 10);
 
@@ -349,6 +438,9 @@ function compactMemory(state) {
   return {
     nome: s.nome || null,
     focus: s.focus || null,
+    turno: s.turno || null,
+    dia: s.dia || null,
+    slot: s.slot || null,
     last_user_message: s.last_user_message || "",
     last_bot_reply: s.last_bot_reply || "",
     stage: s.stage || null,
@@ -399,7 +491,7 @@ function violatesNoPriceNoLink(text) {
   // se contiver R$, números tipo 300/400 em contexto de preço, ou qualquer http/https
   if (/\bhttps?:\/\//i.test(text)) return true;
   if (/R\$\s?\d/i.test(text)) return true;
-  // bloquear "300", "400", "447", "347", "200" se vier fora das funções determinísticas
+  // bloquear "200/347/447" se vier fora das funções determinísticas
   if (/\b(200|300|347|400|447|500|600|700)\b/.test(text)) return true;
   return false;
 }
@@ -580,7 +672,6 @@ app.post("/whatsapp", async (req, res) => {
 
       // =========================================================
       // ✅ COMANDO SECRETO: RESET (somente seu número)
-      // - Antes do getUserState(phone)
       // =========================================================
       const phoneDigits = String(phone).replace(/\D/g, ""); // ex: 556581422637
 
@@ -614,8 +705,13 @@ app.post("/whatsapp", async (req, res) => {
       state.nome = state.nome || null;
       state.focus = state.focus || null;
       state.payment = state.payment || null;
-      state.stage = state.stage || null; // "ASK_NAME" | "PREMIUM_SENT" | "ASK_TURNO" | "ASK_PLAN" | etc
+      state.stage = state.stage || null; // "ASK_NAME" | "PREMIUM_SENT" | "ASK_TURNO" | "ASK_DIA" | "OFFER_SLOTS" | "ASK_PLAN" | "WAIT_PAYMENT"
       state.name_used_count = Number(state.name_used_count || 0);
+
+      // ✅ novos campos anti-loop de agenda
+      state.turno = state.turno || null;
+      state.dia = state.dia || null;
+      state.slot = state.slot || null;
 
       // guarda "from" do bot (para envio proativo no webhook do MP)
       state.last_bot_from = bot;
@@ -645,16 +741,49 @@ app.post("/whatsapp", async (req, res) => {
         const nm = extractNameFromText(finalText);
         if (nm) {
           state.nome = nm;
-          state.stage = "ASK_TURNO";
-          reply = askTurnoReply(state);
+          // se já tem turno salvo (ex: veio do histórico), segue; senão pergunta turno
+          if (!state.turno) {
+            state.stage = "ASK_TURNO";
+            reply = askTurnoReply(state);
+          } else if (!state.dia) {
+            state.stage = "ASK_DIA";
+            reply = askDiaReply(state);
+          } else if (!state.slot) {
+            state.stage = "OFFER_SLOTS";
+            reply = offerSlotsReply(state);
+          } else {
+            state.stage = "ASK_PLAN";
+            reply = askPlanReply(state);
+          }
         } else {
           reply = "Me diz só seu *primeiro nome* 🙂";
         }
       }
 
+      // ============================
+      // ✅ PRIORIDADE ALTA: INTENT PAY
+      // “como pagar?” nunca pode voltar pra qualificação
+      // ============================
+      else if (flags.intentPay) {
+        // gate do nome
+        if (!state.nome) {
+          state.stage = "ASK_NAME";
+          reply = askNameReply();
+        } else if (state.payment?.status === "pending" && state.payment?.link) {
+          reply =
+            "Perfeito 🙂 Pra confirmar, é só pagar por aqui:\n" +
+            `${state.payment.link}\n\n` +
+            "Você prefere pagar no *Pix* ou *cartão*?";
+          state.stage = "WAIT_PAYMENT";
+        } else {
+          // se ainda não escolheu plano, pede 1/2/3 (fechamento)
+          reply = askPlanReply(state);
+          state.stage = "ASK_PLAN";
+        }
+      }
+
       // 4) Se usuário pediu preço: preço determinístico (com premium + 87%)
       else if (flags.wantsPrice) {
-        // se não tem nome ainda, pergunta nome primeiro (gate)
         if (!state.nome) {
           state.stage = "ASK_NAME";
           reply = askNameReply();
@@ -669,27 +798,91 @@ app.post("/whatsapp", async (req, res) => {
         reply = safetyDoseReply();
       }
 
-      // 6) Agendar: PREMIUM PRIMEIRO (como você pediu)
+      // ============================
+      // ✅ AGENDA ANTI-LOOP
+      // ============================
+      // 6) Se estamos em ASK_TURNO
+      else if (state.stage === "ASK_TURNO") {
+        const turno = flags.turno || extractTurno(finalText);
+        if (turno) {
+          state.turno = turno;
+          state.stage = "ASK_DIA";
+          reply = askDiaReply(state);
+        } else {
+          reply = "Perfeito 🙂 Você prefere *manhã*, *tarde* ou *noite*?";
+        }
+      }
+
+      // 7) Se estamos em ASK_DIA
+      else if (state.stage === "ASK_DIA") {
+        const dia = flags.dia || extractDia(finalText);
+        if (dia) {
+          state.dia = dia;
+          state.stage = "OFFER_SLOTS";
+          reply = offerSlotsReply(state);
+        } else {
+          reply = "Boa 🙂 Qual dia fica melhor pra você? (ex: segunda, terça, sexta, hoje ou amanhã)";
+        }
+      }
+
+      // 8) Se estamos oferecendo horários
+      else if (state.stage === "OFFER_SLOTS") {
+        const choice = extractSlotChoice(finalText);
+        const [a, b] = pickSlotsForTurno(state.turno || "noite");
+
+        if (choice === 1) state.slot = a;
+        else if (choice === 2) state.slot = b;
+        else if (typeof choice === "string") state.slot = choice;
+
+        if (state.slot) {
+          // Depois de horário escolhido, vai pro fechamento (plano → pagamento)
+          state.stage = "ASK_PLAN";
+          reply =
+            `Perfeito ✅ Fica então *${state.dia}* às *${state.slot}*.\n\n` +
+            "Agora, pra eu confirmar direitinho, qual opção você prefere?\n" +
+            `1) *${PLANS.full.label}* — R$${PLANS.full.price} *(87% escolhem)* ⭐\n` +
+            `2) *${PLANS.basic.label}* — R$${PLANS.basic.price}\n` +
+            `3) *${PLANS.retorno.label}* — R$${PLANS.retorno.price}\n\n` +
+            "Me responde com 1, 2 ou 3.";
+        } else {
+          reply = "Qual você prefere: *1* ou *2*? 🙂";
+        }
+      }
+
+      // 9) Agendar (entrada): PREMIUM 1x + gate nome + segue agenda (sem loop)
       else if (flags.wantsBook || flags.asksHours || flags.mentionsTime) {
-        // se ainda não mandamos o premium, manda agora (1x) e já “puxa” o nome/turno
-        if (state.stage !== "PREMIUM_SENT" && state.stage !== "ASK_NAME" && state.stage !== "ASK_TURNO" && state.stage !== "ASK_PLAN") {
+        // premium 1x
+        if (state.stage !== "PREMIUM_SENT") {
+          state.stage = "PREMIUM_SENT";
+          // mantém seu texto bom, mas já puxa pro próximo passo
           reply = premiumIntroReply() + "\n\n" + "Pra eu te ajudar a agendar direitinho: qual seu *primeiro nome*?";
+          // próximo passo: ASK_NAME (gate)
           state.stage = "ASK_NAME";
         } else {
-          // já passou do premium, segue gate do nome
           if (!state.nome) {
             state.stage = "ASK_NAME";
             reply = askNameReply();
           } else {
-            state.stage = "ASK_TURNO";
-            reply = askTurnoReply(state);
+            // segue agenda sem resetar
+            if (!state.turno) {
+              state.stage = "ASK_TURNO";
+              reply = askTurnoReply(state);
+            } else if (!state.dia) {
+              state.stage = "ASK_DIA";
+              reply = askDiaReply(state);
+            } else if (!state.slot) {
+              state.stage = "OFFER_SLOTS";
+              reply = offerSlotsReply(state);
+            } else {
+              state.stage = "ASK_PLAN";
+              reply = askPlanReply(state);
+            }
           }
         }
       }
 
-      // 7) Escolha de plano / confirmação de pagamento
+      // 10) Escolha de plano / criação de link
       else if (flags.choosesFull || flags.choosesBasic || flags.choosesRetorno || (state.stage === "ASK_PLAN" && flags.confirms)) {
-        // gate do nome
         if (!state.nome) {
           state.stage = "ASK_NAME";
           reply = askNameReply();
@@ -731,7 +924,7 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 8) Se está aguardando pagamento: reforça link real
+      // 11) Se está aguardando pagamento: reforça link real
       else if (state.payment?.status === "pending" && state.payment?.link) {
         reply =
           "Perfeito 🙂 Pra confirmar, só falta o pagamento pelo link:\n" +
@@ -739,12 +932,12 @@ app.post("/whatsapp", async (req, res) => {
           "Você prefere pagar no *Pix* ou *cartão*?";
       }
 
-      // 9) Resistência
+      // 12) Resistência (mantém como estava — só entra se a pessoa realmente recusou)
       else if (flags.refuses) {
         reply = "Tranquilo 🙂 Desculpa se soou pressionado. Quer que eu te explique rapidinho como funciona ou prefere só tirar uma dúvida agora?";
       }
 
-      // 10) Conversa aberta (IA) — com travas
+      // 13) Conversa aberta (IA) — com travas e atalhos pro determinístico
       else {
         const ai = await runLiaV12({ incomingText: finalText, state, flags });
 
@@ -758,15 +951,24 @@ app.post("/whatsapp", async (req, res) => {
             state.stage = "ASK_PLAN";
           }
         } else if (ai.reply === "__NEED_BOOK__") {
-          if (state.stage !== "PREMIUM_SENT") {
+          if (!state.nome) {
             reply = premiumIntroReply() + "\n\n" + "Pra eu te ajudar a agendar direitinho: qual seu *primeiro nome*?";
             state.stage = "ASK_NAME";
-          } else if (!state.nome) {
-            state.stage = "ASK_NAME";
-            reply = askNameReply();
           } else {
-            state.stage = "ASK_TURNO";
-            reply = askTurnoReply(state);
+            // segue agenda sem loop
+            if (!state.turno) {
+              state.stage = "ASK_TURNO";
+              reply = askTurnoReply(state);
+            } else if (!state.dia) {
+              state.stage = "ASK_DIA";
+              reply = askDiaReply(state);
+            } else if (!state.slot) {
+              state.stage = "OFFER_SLOTS";
+              reply = offerSlotsReply(state);
+            } else {
+              state.stage = "ASK_PLAN";
+              reply = askPlanReply(state);
+            }
           }
         } else {
           reply = ai.reply;
@@ -774,12 +976,26 @@ app.post("/whatsapp", async (req, res) => {
 
           // se a IA capturou nome via updates
           if (!state.nome && ai.updates?.nome) state.nome = String(ai.updates.nome).trim();
+
+          // se a IA pegou turno/dia por texto (extra), salva sem forçar
+          if (!state.turno) {
+            const t2 = extractTurno(finalText);
+            if (t2) state.turno = t2;
+          }
+          if (!state.dia) {
+            const d2 = extractDia(finalText);
+            if (d2) state.dia = d2;
+          }
         }
       }
 
-      // anti-loop final
+      // anti-loop final (não repetir mesma msg)
       if (similar(reply, state.last_bot_reply)) {
-        reply = "Entendi 🙂 Só pra eu te guiar sem enrolar: seu foco hoje é mais dor, sono ou ansiedade?";
+        // evita cair em “dor/sono/ansiedade” se o contexto é agenda/pagamento
+        if (!state.turno) reply = askTurnoReply(state);
+        else if (!state.dia) reply = askDiaReply(state);
+        else if (!state.slot) reply = offerSlotsReply(state);
+        else reply = "Entendi 🙂 Me diga só: seu foco hoje é mais dor, sono ou ansiedade?";
       }
 
       // controla repetição do nome
@@ -804,7 +1020,7 @@ app.post("/whatsapp", async (req, res) => {
         await twilioClient.messages.create({
           to: lead,
           from: bot,
-          body: "Tive uma instabilidade rápida aqui 🙏 Me manda de novo em 1 frase: seu foco hoje é mais dor, sono ou ansiedade?",
+          body: "Tive uma instabilidade rápida aqui 🙏 Me manda de novo em 1 frase: você prefere atendimento de manhã, tarde ou noite?",
         });
       } catch {}
     }
