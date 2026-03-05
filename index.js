@@ -786,7 +786,14 @@ app.post("/whatsapp", async (req, res) => {
 
     const incomingTextRaw = (req.body.Body || "").trim();
     const incomingText = incomingTextRaw || "";
+if (incomingText.trim().toLowerCase() === "reset" && phone.replace(/\D/g, "") === "+5565981422637") {
+  await pool.query("DELETE FROM wa_users WHERE phone = $1", [phone]);
 
+  // Confirma pelo WhatsApp (não por res.send, porque já respondemos o webhook acima)
+  await sendWhatsApp(`whatsapp:${phone}`, bot, "🔄 Memória da conversa resetada. Pode testar novamente.", 0);
+
+  return;
+}
     // ====== V14: Idempotência Twilio por MessageSid ======
     const messageSid = req.body.MessageSid || req.body.SmsMessageSid || req.body.SmsSid || null;
 
