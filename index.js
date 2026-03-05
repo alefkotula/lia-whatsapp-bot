@@ -787,32 +787,32 @@ app.post("/whatsapp", async (req, res) => {
     const incomingTextRaw = (req.body.Body || "").trim();
     const incomingText = incomingTextRaw || "";
 // ====== COMANDO SECRETO: RESET (somente você) ======
-const phoneRaw = String(lead).replace("whatsapp:", "").trim(); // pode vir "+5565..."
-const phoneDigits = phoneRaw.replace(/\D/g, "");              // "5565..."
+const phoneRaw = String(lead).replace("whatsapp:", "").trim(); // ex: "+5565..."
+const phoneDigits = phoneRaw.replace(/\D/g, "");               // ex: "5565..."
 
-if (incomingText.trim().toLowerCase() === "reset" && phoneDigits === "5565981422637") {
-  // Apaga QUALQUER variação que possa ter sido salva como chave
-  await pool.query(
-    `DELETE FROM wa_users WHERE phone = $1 OR phone = $2 OR phone = $3 OR phone = $4`,
-    [
-      phoneRaw,                // "+5565..."
-      phoneDigits,             // "5565..."
-      phoneDigits.replace(/^55/, ""), // "65..."
-      "+" + phoneDigits,       // "+5565..."
-    ]
+if (incomingText.trim().toLowerCase() === "reset" && phoneDigits === "556581422637") {
+
+  const r = await pool.query(
+    `UPDATE wa_users
+     SET state = '{}'::jsonb,
+         updated_at = NOW()
+     WHERE regexp_replace(phone, '\\D', '', 'g') = $1`,
+    [phoneDigits]
   );
 
-  // Confirma pelo WhatsApp (não use res.send aqui; já respondemos TwiML lá em cima)
+  console.log("✅ RESET rowCount =", r.rowCount, "phoneDigits =", phoneDigits);
+
   await sendWhatsApp(
     `whatsapp:+${phoneDigits}`,
     bot,
-    "🔄 Memória resetada. Pode testar do zero agora.",
+    "🔁 Memória resetada. Pode testar do zero agora.",
     0
   );
 
   return;
 }
-    // ====== V14: Idempotência Twilio por MessageSid ======
+
+// ====== V14: Idempotência Twilio por MessageSid ======
     const messageSid = req.body.MessageSid || req.body.SmsMessageSid || req.body.SmsSid || null;
 
     let state = await getUserState(phone);
