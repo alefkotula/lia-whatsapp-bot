@@ -59,8 +59,8 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
 const CHAT_MODEL = MODEL_CHAT || "gpt-4.1";
-const MIN_DELAY = Number(MIN_DELAY_SEC || 0);
-const MAX_DELAY = Number(MAX_DELAY_SEC || 0);
+const MIN_DELAY = Number(MIN_DELAY_SEC || 6);
+const MAX_DELAY = Number(MAX_DELAY_SEC || 10);
 
 const BASE_URL = (PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") || "http://localhost:10000";
 
