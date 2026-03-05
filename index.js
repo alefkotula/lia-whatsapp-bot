@@ -54,7 +54,7 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(express.json());
 
 // Mercado Pago webhook geralmente vem JSON
-app.use("/mp", express.json({ type: ["application/json", "text/json", "*/*"] }));
+app.use("/mp", express.json({ type: ["application/json", "text/json"], limit: "256kb" }));
 
 console.log("NODE VERSION:", process.version);
 
@@ -130,7 +130,6 @@ async function initDB() {
   `);
   console.log("✅ Tabela wa_users pronta.");
 }
-initDB().catch((e) => console.error("❌ initDB erro:", e));
 
 // ====== MEMORY HELPERS ======
 async function getUserState(phone) {
@@ -427,13 +426,13 @@ function detectIntent(text) {
 
   const asksStartNow = /\b(como tomar|dose|dosagem|quantas gotas|começar agora|comecar agora)\b/.test(t);
 
-  const choosesFull = /\b(1|447|consulta com retorno|com retorno|acompanhamento|pacote|retorno em 30|acompanhamento medico|acompanhamento médico)\b/.test(
+  const choosesFull = /^(1|447)$|\b(consulta com retorno|com retorno|acompanhamento|pacote|retorno em 30|acompanhamento medico|acompanhamento médico)\b/.test(
     t
   );
-  const choosesBasic = /\b(2|347|avaliacao|avaliação|avaliacao especializada|avaliação especializada|so a consulta|só a consulta)\b/.test(
+  const choosesBasic = /^(2|347)$|\b(avaliacao|avaliação|avaliacao especializada|avaliação especializada|so a consulta|só a consulta)\b/.test(
     t
   );
-  const choosesRetorno = /\b(3|200|retorno avulso|apenas retorno|consulta de ajuste)\b/.test(t);
+  const choosesRetorno = /^(3|200)$|\b(retorno avulso|apenas retorno|consulta de ajuste)\b/.test(t);
 
   const mentionsTime = /\b(\d{1,2}\s?h|\d{1,2}:\d{2}|amanha|amanhã|hoje|segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo)\b/.test(
     t
@@ -506,14 +505,28 @@ function afterPaidReply(state) {
 
 // ====== MERCADO PAGO ======
 async function mpFetch(url, options = {}) {
-  const resp = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+
+  let resp;
+  try {
+    resp = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new Error("MP error: timeout after 10000ms");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
@@ -524,11 +537,25 @@ async function mpFetch(url, options = {}) {
 }
 
 function mpExtractPhoneFromPayment(payment) {
-  const phone = payment?.metadata?.phone || payment?.additional_info?.payer?.phone?.number;
-  if (!phone) return null;
-  return String(phone).replace(/\D/g, "").replace(/^55/, "")
-    ? String(phone).replace(/\D/g, "")
-    : String(phone).replace(/\D/g, "");
+  const fromMetadata = payment?.metadata?.phone;
+  if (fromMetadata) return String(fromMetadata).trim();
+
+  const fallback = payment?.additional_info?.payer?.phone?.number;
+  return fallback ? String(fallback).trim() : null;
+}
+
+function ensureWhatsAppTo(phoneRaw) {
+  let p = String(phoneRaw || "").trim();
+  if (!p) return null;
+
+  p = p.replace(/^whatsapp:/i, "").trim();
+  if (!p.startsWith("+")) {
+    const digits = p.replace(/\D/g, "");
+    if (!digits) return null;
+    p = digits.startsWith("55") ? `+${digits}` : `+55${digits}`;
+  }
+
+  return `whatsapp:${p}`;
 }
 
 async function mpGetPayment(paymentId) {
@@ -713,7 +740,7 @@ app.post("/mp/webhook", async (req, res) => {
       if (botFrom) {
         try {
           await twilioClient.messages.create({
-            to: `whatsapp:${phone}`,
+            to: ensureWhatsAppTo(phone),
             from: botFrom,
             body: afterPaidReply(state),
           });
@@ -733,6 +760,10 @@ app.get("/", (req, res) => res.status(200).send("OK"));
 // ====== DEBUG: criar pagamento manual (opcional) ======
 app.post("/create-payment", async (req, res) => {
   try {
+    if (process.env.NODE_ENV === "production") {
+      return res.status(404).send("Not found");
+    }
+
     const phone = String(req.body.phone || "").replace(/\D/g, "");
     const planKey = String(req.body.planKey || "basic");
     const pref = await mpCreatePreference({ phone, planKey });
@@ -970,6 +1001,7 @@ app.post("/whatsapp", async (req, res) => {
       state.payment.plan_key = planKey;
       state.payment.link = pref.init_point;
       state.payment.created_at = Date.now();
+      state.payment.notified_approved = false;
 
       state.stage = "WAIT_PAYMENT";
 
@@ -1063,4 +1095,11 @@ app.post("/whatsapp", async (req, res) => {
 
 // ====== START SERVER ======
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log("✅ LIA rodando na porta", PORT));
+initDB()
+  .then(() => {
+    app.listen(PORT, () => console.log("✅ LIA rodando na porta", PORT));
+  })
+  .catch((e) => {
+    console.error("❌ initDB erro:", e);
+    process.exit(1);
+  });
