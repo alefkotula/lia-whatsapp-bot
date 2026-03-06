@@ -939,6 +939,15 @@ function askEmailReply() {
 
 function paymentSentReply(plan, link, state) {
   return (
+    `Perfeito, finalizei sua pré-reserva ✅\n\n` +
+    `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
+    `Plano escolhido:\n` +
+    `*${plan.label}* — R$${plan.price}\n\n` +
+    `Esse horário fica reservado no sistema por alguns minutos enquanto você finaliza.\n\n` +
+    `Para confirmar sua consulta, é só concluir aqui:\n${link}\n\n` +
+    `Assim que o pagamento entrar, eu confirmo sua consulta aqui imediatamente 🙂`
+  );
+}
     `Fechado ✅\n` +
     `*${plan.label}* — R$${plan.price}\n\n` +
     `Horário pré-reservado: *${prettySlot(state.date_key, state.slot_time)}*\n` +
@@ -981,9 +990,10 @@ function indecisiveReply(state) {
 
 function pendingPaymentReply(state) {
   return (
-    `Perfeito 🙂 Seu horário continua pré-reservado em *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
-    `Para confirmar, só falta o pagamento pelo link:\n${state.payment.link}\n\n` +
-    "Assim que entrar, eu te aviso aqui ✅"
+    `Seu horário ainda está reservado 🙂\n\n` +
+    `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
+    `Para confirmar a consulta, só falta finalizar o pagamento aqui:\n${state.payment.link}\n\n` +
+    `Assim que o pagamento for confirmado, eu libero a confirmação da consulta para você.`
   );
 }
 
