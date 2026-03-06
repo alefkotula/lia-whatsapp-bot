@@ -1,25 +1,29 @@
 /**
- * INDEX V12.2 — LIA (pré-API ProDoctor) — Conversão reforçada
+ * INDEX V12.3 — LIA (pré-API ProDoctor) — Conversão reforçada + UX humana
  *
  * Mantém:
  * - Tom humano + empatia
- * - Premium intro
- * - Prova social 87% no plano 1
  * - Anti-alucinação (IA não solta preço/link)
  * - Link real Mercado Pago + webhook
  * - Agenda temporária real + smart scheduling
  * - Reserva temporária + double booking no Postgres
- *
- * Adiciona:
- * - Evidence Engine (argumentos científicos por condição)
- * - Objection Engine (caro / vou pensar / funciona mesmo / não tenho certeza)
- * - Coleta inicial: primeiro nome + o que quer tratar
- * - Troca inteligente de horário (sem travar em slot antigo)
+ * - Evidence Engine
+ * - Objection Engine
+ * - Troca inteligente de horário
  * - Prioridade real para pagamento
  * - Simulação de pagamento para TESTE no número admin
  * - Bloqueio de conversa paralela enquanto aguarda pagamento
  * - Anti-spam científico
  * - Anti-loop reforçado
+ *
+ * Melhora:
+ * - Primeira resposta mais humana
+ * - Rapport antes da oferta
+ * - Se paciente já chega com doença/condição, valida antes e pede nome
+ * - Coleta em fluxo natural: nome -> problema -> horários
+ * - Pré-preço com maior percepção de valor
+ * - Preço com framing melhor: "Funciona assim:"
+ * - Pergunta final mais forte: "Qual dessas opções faz mais sentido para você agora?"
  *
  * ENV:
  * OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, DATABASE_URL
@@ -77,19 +81,19 @@ const ADMIN_RESET_PHONE_DIGITS = "556581422637";
 const PLANS = {
   full: {
     key: "full",
-    label: "Acompanhamento Médico Especializado (Consulta + Retorno ~30 dias)",
+    label: "Acompanhamento Médico Especializado",
     price: 447,
     short: "1",
   },
   basic: {
     key: "basic",
-    label: "Avaliação Médica Especializada (45 min)",
+    label: "Avaliação Médica Especializada",
     price: 347,
     short: "2",
   },
   retorno: {
     key: "retorno",
-    label: "Consulta de Ajuste (Retorno avulso)",
+    label: "Consulta de Ajuste",
     price: 200,
     short: "3",
   },
@@ -774,13 +778,43 @@ async function getSuggestedDayKeys() {
   return out.slice(0, 3);
 }
 
-// ====== TEXTO PREMIUM ======
-function premiumIntroReply() {
+// ====== TEXTO PREMIUM / VALOR PERCEBIDO ======
+function premiumIntroReply(problemText = "", state = {}) {
+  const cond = detectCondition(problemText || state.problem_text || "") || state.condition || null;
+
+  let opener =
+    "Entendi 🙂\n\n" +
+    "Muitas pessoas que chegam aqui já tentaram vários tratamentos e ainda convivem com sintomas que impactam muito a rotina.\n\n";
+
+  if (cond === "fibromialgia") {
+    opener =
+      "Entendi 🙂\n\n" +
+      "Fibromialgia realmente pode impactar muito a rotina, o sono, o humor e a qualidade de vida.\n\n";
+  } else if (cond === "insonia") {
+    opener =
+      "Entendi 🙂\n\n" +
+      "Dormir mal por muito tempo desgasta energia, humor, foco e qualidade de vida.\n\n";
+  } else if (cond === "ansiedade") {
+    opener =
+      "Entendi 🙂\n\n" +
+      "Ansiedade constante realmente pode desgastar muito a mente e o corpo ao longo do tempo.\n\n";
+  } else if (cond === "dor" || cond === "dor_neuropatica" || cond === "coluna" || cond === "artrose" || cond === "artrite") {
+    opener =
+      "Entendi 🙂\n\n" +
+      "Conviver com dor por muito tempo realmente desgasta a rotina, o sono e a qualidade de vida.\n\n";
+  }
+
   return (
-    "A consulta é *100% online, segura e individualizada*, com duração média de *45 minutos*.\n\n" +
-    "O Dr. Alef analisa seu caso com bastante profundidade — com base na experiência clínica e na formação médica na Rússia.\n" +
-    "Ele revisa todo seu histórico, entende como os sintomas impactam sua rotina, analisa o que você já tentou, confere medicações em uso e define objetivos claros de melhora — tudo alinhado ao seu caso.\n\n" +
-    "A maioria dos pacientes prefere já iniciar com acompanhamento, porque assim conseguimos ajustar o plano com mais segurança."
+    opener +
+    "A consulta com o Dr. Alef é *100% online, segura e individualizada*, com duração média de *45 minutos*.\n\n" +
+    "Com base na experiência da formação médica na Rússia, ele estruturou um método de avaliação clínica que busca entender o quadro com profundidade.\n\n" +
+    "Durante a consulta ele:\n\n" +
+    "1 - Revisa todo o seu histórico de saúde\n" +
+    "2 - Entende como os sintomas impactam sua rotina\n" +
+    "3 - Analisa tratamentos que você já tentou\n" +
+    "4 - Verifica medicações em uso e possíveis interações\n" +
+    "5 - Define objetivos claros de melhora, alinhados ao seu caso\n\n" +
+    "A maioria dos pacientes prefere iniciar já com acompanhamento, porque assim conseguimos ajustar o plano com mais segurança."
   );
 }
 
@@ -843,43 +877,79 @@ function safetyDoseReply() {
   return "Entendi sua vontade de começar. Por segurança, eu não consigo orientar dose/como tomar por aqui 🙏 Isso depende do seu caso e das medicações. Se quiser, eu te explico como funciona a avaliação e já te ajudo a confirmar. Seu foco hoje é mais dor, sono ou ansiedade?";
 }
 
-function priceReply() {
+function priceReply(state = {}) {
   return (
-    premiumIntroReply() + "\n\n" +
-    "O investimento é:\n" +
-    `1) *${PLANS.full.label}* — R$${PLANS.full.price} *(87% das pessoas escolhem essa opção)* ⭐\n` +
-    `2) *${PLANS.basic.label}* — R$${PLANS.basic.price}\n` +
-    `3) *${PLANS.retorno.label}* — R$${PLANS.retorno.price}\n\n` +
-    "Qual você prefere? Me responda com *1*, *2* ou *3*."
+    premiumIntroReply(state.problem_text, state) + "\n\n" +
+    "Funciona assim:\n\n" +
+    `1️⃣ *${PLANS.full.label}*\n` +
+    `Consulta + retorno (~30 dias) — *R$${PLANS.full.price}* ➡️\n` +
+    `⭐ opção escolhida por *87% dos pacientes*\n\n` +
+    `2️⃣ *${PLANS.basic.label}*\n` +
+    `Consulta única (45 min) — *R$${PLANS.basic.price}*\n\n` +
+    `3️⃣ *${PLANS.retorno.label}*\n` +
+    `Retorno avulso — *R$${PLANS.retorno.price}*\n\n` +
+    "Qual dessas opções faz mais sentido para você agora?"
   );
 }
 
-function askPlanReply() {
+function askPlanReply(state = {}) {
   return (
-    premiumIntroReply() + "\n\n" +
-    "O investimento é:\n" +
-    `1) *${PLANS.full.label}* — R$${PLANS.full.price} *(87% das pessoas escolhem essa opção)* ⭐\n` +
-    `2) *${PLANS.basic.label}* — R$${PLANS.basic.price}\n` +
-    `3) *${PLANS.retorno.label}* — R$${PLANS.retorno.price}\n\n` +
-    "Qual você prefere? Me responda com *1*, *2* ou *3*."
+    premiumIntroReply(state.problem_text, state) + "\n\n" +
+    "Funciona assim:\n\n" +
+    `1️⃣ *${PLANS.full.label}*\n` +
+    `Consulta + retorno (~30 dias) — *R$${PLANS.full.price}* ➡️\n` +
+    `⭐ opção escolhida por *87% dos pacientes*\n\n` +
+    `2️⃣ *${PLANS.basic.label}*\n` +
+    `Consulta única (45 min) — *R$${PLANS.basic.price}*\n\n` +
+    `3️⃣ *${PLANS.retorno.label}*\n` +
+    `Retorno avulso — *R$${PLANS.retorno.price}*\n\n` +
+    "Qual dessas opções faz mais sentido para você agora?"
   );
 }
 
 function askNameAndProblemReply() {
   return (
-    premiumIntroReply() +
-    "\n\nPra eu te ajudar melhor, me diz *duas coisas rápidas*:\n" +
-    "1) seu *primeiro nome*\n" +
-    "2) o que você quer tratar hoje? *(dor, sono, ansiedade ou outro)*"
+    "Oi 🙂\n" +
+    "Eu sou a Lia, da equipe do Dr. Alef Kotula.\n\n" +
+    "Posso te ajudar por aqui.\n\n" +
+    "Qual é o seu *primeiro nome*?"
   );
 }
 
 function askOnlyNameReply() {
-  return "Perfeito 🙂 Agora me diz só seu *primeiro nome*.";
+  return (
+    "Oi 🙂\n" +
+    "Eu sou a Lia, da equipe do Dr. Alef Kotula.\n\n" +
+    "Posso te ajudar por aqui.\n\n" +
+    "Qual é o seu *primeiro nome*?"
+  );
 }
 
-function askOnlyProblemReply() {
-  return "Perfeito 🙂 E o que você quer tratar hoje? *(dor, sono, ansiedade ou outro)*";
+function askOnlyProblemReply(state = {}) {
+  const nome = state?.nome || "você";
+  return (
+    `Prazer, ${nome} 🙂\n\n` +
+    "Me conta uma coisa rápida:\n\n" +
+    "O que você gostaria de tratar hoje?\n" +
+    "*Dor, sono, ansiedade ou outro problema?*"
+  );
+}
+
+function askNameAfterDirectConditionReply(problemText = "", state = {}) {
+  const cond = detectCondition(problemText || state.problem_text || "") || state.condition || null;
+
+  let intro = "Entendi.\n\nIsso realmente pode impactar bastante a qualidade de vida.\n\n";
+  if (cond === "fibromialgia") {
+    intro = "Entendi.\n\nFibromialgia realmente pode impactar muito a qualidade de vida.\n\n";
+  } else if (cond === "insonia") {
+    intro = "Entendi.\n\nDormir mal por muito tempo realmente desgasta várias áreas da vida.\n\n";
+  } else if (cond === "ansiedade") {
+    intro = "Entendi.\n\nAnsiedade realmente pode desgastar muito o dia a dia.\n\n";
+  } else if (cond === "dor" || cond === "dor_neuropatica" || cond === "coluna" || cond === "artrose" || cond === "artrite") {
+    intro = "Entendi.\n\nConviver com dor por muito tempo realmente desgasta muito a rotina.\n\n";
+  }
+
+  return intro + "Antes de te explicar como funciona, posso saber seu *primeiro nome*?";
 }
 
 async function askDayReply() {
@@ -1434,7 +1504,7 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 5) coleta inicial nome + problema
+      // 5) coleta inicial nome + problema (agora mais natural)
       else if (state.stage === "ASK_NAME_AND_PROBLEM") {
         const nm = extractFirstName(finalText);
         const pb = extractProblemText(finalText);
@@ -1444,20 +1514,20 @@ app.post("/whatsapp", async (req, res) => {
         if (!state.condition && pb) state.condition = detectCondition(pb);
 
         if (!state.nome && !state.problem_text) {
-          reply = "Perfeito 🙂 Me diz *duas coisas rápidas*: seu *primeiro nome* e o que você quer tratar hoje.";
-        } else if (!state.nome) {
           reply = askOnlyNameReply();
-        } else if (!state.problem_text) {
-          reply = askOnlyProblemReply();
+        } else if (!state.nome && state.problem_text) {
+          reply = askNameAfterDirectConditionReply(state.problem_text, state);
+        } else if (state.nome && !state.problem_text) {
+          reply = askOnlyProblemReply(state);
         } else {
           if (shouldUseEvidence(flags, state, state.problem_text)) {
             const ev = buildEvidenceMessage(state.condition || detectCondition(state.problem_text), state);
             if (ev) {
               state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
               reply =
-                `Muito prazer, ${state.nome} 🙂\n\n` +
+                `Prazer, ${state.nome} 🙂\n\n` +
                 `${ev}\n\n` +
-                "Agora, se quiser, eu já posso te mostrar os próximos horários disponíveis.";
+                "Se fizer sentido para você, eu já posso te mostrar os próximos horários disponíveis.";
               state.stage = "ASK_DAY";
             } else {
               state.stage = "ASK_DAY";
@@ -1474,7 +1544,7 @@ app.post("/whatsapp", async (req, res) => {
       else if (flags.intentPay) {
         if (!state.nome) {
           state.stage = "ASK_NAME_AND_PROBLEM";
-          reply = askNameAndProblemReply();
+          reply = askOnlyNameReply();
         } else if (!state.date_key) {
           state.stage = "ASK_DAY";
           reply = "Perfeito 🙂 Antes do pagamento, vou te mostrar os horários disponíveis para reservar seu atendimento.";
@@ -1521,7 +1591,7 @@ app.post("/whatsapp", async (req, res) => {
           }
         } else {
           state.stage = "ASK_PLAN";
-          reply = askPlanReply();
+          reply = askPlanReply(state);
         }
       }
 
@@ -1529,9 +1599,9 @@ app.post("/whatsapp", async (req, res) => {
       else if (flags.wantsPrice) {
         if (!state.nome) {
           state.stage = "ASK_NAME_AND_PROBLEM";
-          reply = askNameAndProblemReply();
+          reply = askOnlyNameReply();
         } else {
-          reply = priceReply();
+          reply = priceReply(state);
           state.stage = "ASK_PLAN";
         }
       }
@@ -1565,10 +1635,24 @@ app.post("/whatsapp", async (req, res) => {
         reply = buildWorksReply(state, finalText);
       }
 
-      // 10) entrada de agendamento
+      // 10) entrada de agendamento mais humana
       else if (flags.wantsBook || flags.asksHours) {
-        if (!state.nome || !state.problem_text) {
-          reply = askNameAndProblemReply();
+        if (!state.nome && !state.problem_text) {
+          if (detectedProblem || detectedCondition) {
+            if (!state.problem_text && detectedProblem) state.problem_text = detectedProblem;
+            if (!state.condition && detectedCondition) state.condition = detectedCondition;
+
+            reply = askNameAfterDirectConditionReply(state.problem_text, state);
+            state.stage = "ASK_NAME_AND_PROBLEM";
+          } else {
+            reply = askOnlyNameReply();
+            state.stage = "ASK_NAME_AND_PROBLEM";
+          }
+        } else if (!state.nome) {
+          reply = askNameAfterDirectConditionReply(state.problem_text, state);
+          state.stage = "ASK_NAME_AND_PROBLEM";
+        } else if (!state.problem_text) {
+          reply = askOnlyProblemReply(state);
           state.stage = "ASK_NAME_AND_PROBLEM";
         } else if (!state.date_key) {
           state.stage = "ASK_DAY";
@@ -1587,7 +1671,7 @@ app.post("/whatsapp", async (req, res) => {
           reply = askEmailReply();
         } else {
           state.stage = "ASK_PLAN";
-          reply = askPlanReply();
+          reply = askPlanReply(state);
         }
       }
 
@@ -1726,7 +1810,7 @@ app.post("/whatsapp", async (req, res) => {
           reply =
             "Obrigado 🙂\n\n" +
             `Horário provisoriamente reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
-            askPlanReply();
+            askPlanReply(state);
         } else {
           reply = "Perfeito 🙂 Me manda seu *e-mail* certinho, por favor.";
         }
@@ -1748,10 +1832,10 @@ app.post("/whatsapp", async (req, res) => {
         } else if (flags.asksIfWorks) {
           reply = buildWorksReply(state, finalText);
         } else if (!planKey) {
-          reply = askPlanReply();
+          reply = askPlanReply(state);
         } else if (!state.nome) {
           state.stage = "ASK_NAME_AND_PROBLEM";
-          reply = askNameAndProblemReply();
+          reply = askOnlyNameReply();
         } else if (!state.date_key || !state.slot_time || !state.slot_key) {
           state.stage = "ASK_DAY";
           reply = "Antes de finalizar, vou te ajudar a escolher o melhor horário 🙂";
@@ -1833,14 +1917,20 @@ app.post("/whatsapp", async (req, res) => {
         if (ai.reply === "__NEED_PRICE__") {
           if (!state.nome) {
             state.stage = "ASK_NAME_AND_PROBLEM";
-            reply = askNameAndProblemReply();
+            reply = askOnlyNameReply();
           } else {
-            reply = priceReply();
+            reply = priceReply(state);
             state.stage = "ASK_PLAN";
           }
         } else if (ai.reply === "__NEED_BOOK__") {
           if (!state.nome || !state.problem_text) {
-            reply = askNameAndProblemReply();
+            if (detectedProblem || detectedCondition) {
+              if (!state.problem_text && detectedProblem) state.problem_text = detectedProblem;
+              if (!state.condition && detectedCondition) state.condition = detectedCondition;
+              reply = askNameAfterDirectConditionReply(state.problem_text, state);
+            } else {
+              reply = askOnlyNameReply();
+            }
             state.stage = "ASK_NAME_AND_PROBLEM";
           } else {
             state.stage = "ASK_DAY";
@@ -1858,7 +1948,8 @@ app.post("/whatsapp", async (req, res) => {
 
       // ===== anti-loop final =====
       if (similar(reply, state.last_bot_reply)) {
-        if (!state.nome || !state.problem_text) reply = askNameAndProblemReply();
+        if (!state.nome) reply = askOnlyNameReply();
+        else if (!state.problem_text) reply = askOnlyProblemReply(state);
         else if (!state.date_key) reply = await askDayReply();
         else if (!state.slot_time) reply = await offerSlotsReply(state);
         else if (!state.nome_completo) reply = askFullNameReply(state);
