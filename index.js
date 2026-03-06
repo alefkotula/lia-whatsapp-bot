@@ -948,14 +948,6 @@ function paymentSentReply(plan, link, state) {
     `Assim que o pagamento entrar, eu confirmo sua consulta aqui imediatamente 🙂`
   );
 }
-    `Fechado ✅\n` +
-    `*${plan.label}* — R$${plan.price}\n\n` +
-    `Horário pré-reservado: *${prettySlot(state.date_key, state.slot_time)}*\n` +
-    `Essa reserva fica segura por alguns minutos enquanto você finaliza.\n\n` +
-    `Para confirmar, é só pagar por aqui:\n${link}\n\n` +
-    "Assim que o pagamento for confirmado, eu te aviso aqui e deixo sua consulta confirmada 🙂"
-  );
-}
 
 function afterPaidReply(state) {
   return (
