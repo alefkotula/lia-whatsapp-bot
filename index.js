@@ -1073,7 +1073,87 @@ app.post("/whatsapp", async (req, res) => {
       state.email = state.email || null;
 
       state.last_bot_from = bot;
+function detectIntent(text) {
+  const t = norm(text);
 
+  const wantsPrice =
+    /\b(preco|preço|valor|quanto custa|investimento|custa|valores)\b/.test(t);
+
+  const intentPay =
+    /\b(como (pagar|fa[cç]o para pagar)|quero pagar|pagar|pagamento|pix|cartao|cartão|credito|crédito|debito|débito|boleto|link|parcel|parcela)\b/.test(t);
+
+  const wantsBook =
+    /\b(quero marcar|quero agendar|agendar|marcar consulta|marcar|confirmar consulta|quero consulta|gostaria de agendar|tem horario|tem horário|agenda)\b/.test(t);
+
+  const asksHours =
+    /\b(horarios|horário|horario|que horas|vagas|disponibilidade)\b/.test(t);
+
+  const confirms =
+    /\b(sim|ok|beleza|claro|pode|confirmo|fechado|vamos|pode ser|serve|confirmar|quero|quero sim)\b/.test(t);
+
+  const refuses =
+    /\b(nao quero|não quero|pare|para|chega|rude|grosso|nao gostei|não gostei)\b/.test(t);
+
+  const asksStartNow =
+    /\b(como tomar|dose|dosagem|quantas gotas|comecar agora|começar agora)\b/.test(t);
+
+  const urgency =
+    /\b(dor no peito|falta de ar|desmaio|avc|convuls|paralisia|confusao|confusão)\b/.test(t);
+
+  const asksWho =
+    /\b(quem e|quem eh|quem é|quem e o dr|quem é o dr)\b/.test(t);
+
+  const asksIfWorks =
+    /\b(funciona|funciona mesmo|serve|vale a pena|ajuda|melhora|tem resultado)\b/.test(t);
+
+  const saysWillSee =
+    /\b(vou ver|depois te falo|vou confirmar|vou pensar|te aviso)\b/.test(t);
+
+  const saysIndecisive =
+    /\b(tanto faz|qual voce acha melhor|qual você acha melhor)\b/.test(t);
+
+  const saysExpensive =
+    /\b(caro|muito caro|achei caro|valor alto|muito alto|pesado pra mim|não tenho dinheiro|nao tenho dinheiro)\b/.test(t);
+
+  const saysUnsure =
+    /\b(não tenho certeza|nao tenho certeza|não sei|nao sei|to em duvida|tô em dúvida|estou em dúvida|ainda não sei|ainda nao sei)\b/.test(t);
+
+  const choosesFull =
+    /\b(1|447|consulta com retorno|com retorno|acompanhamento|pacote|retorno em 30|acompanhamento medico|acompanhamento médico)\b/.test(t);
+
+  const choosesBasic =
+    /\b(2|347|avaliacao|avaliação|avaliacao especializada|avaliação especializada|so a consulta|só a consulta)\b/.test(t);
+
+  const choosesRetorno =
+    /\b(3|200|retorno avulso|apenas retorno|consulta de ajuste)\b/.test(t);
+
+  const focus =
+    (/\b(insonia|insônia|insomnia|dormir|sono|acordar)\b/.test(t) && "insonia") ||
+    (/\b(ansiedade|panico|pânico|crise)\b/.test(t) && "ansiedade") ||
+    (/\b(dor|fibromialgia|lombar|artrose|artrite|neuropat|enxaqueca)\b/.test(t) && "dor") ||
+    null;
+
+  return {
+    wantsPrice,
+    intentPay,
+    wantsBook,
+    asksHours,
+    confirms,
+    refuses,
+    asksStartNow,
+    urgency,
+    asksWho,
+    asksIfWorks,
+    saysWillSee,
+    saysIndecisive,
+    saysExpensive,
+    saysUnsure,
+    choosesFull,
+    choosesBasic,
+    choosesRetorno,
+    focus,
+  };
+}
       const flags = detectIntent(finalText);
       if (flags.focus) state.focus = flags.focus;
 
