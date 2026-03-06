@@ -945,7 +945,8 @@ function paymentSentReply(plan, link, state) {
     `*${plan.label}* — R$${plan.price}\n\n` +
     `Esse horário fica reservado no sistema por alguns minutos enquanto você finaliza.\n\n` +
     `Para confirmar sua consulta, é só concluir aqui:\n${link}\n\n` +
-    `Assim que o pagamento entrar, eu confirmo sua consulta aqui imediatamente 🙂`
+    `Assim que o pagamento entrar, eu confirmo sua consulta aqui imediatamente 🙂\n\n` +
+    `Se tiver qualquer dificuldade com o pagamento, me avise que eu te ajudo rapidinho.`
   );
 }
 
