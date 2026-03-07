@@ -1,5 +1,5 @@
 /**
- * INDEX V12.2 — LIA (pré-API ProDoctor) — Conversão reforçada
+ * LIA V12.2 — Arquitetura final (pré-API ProDoctor)
  *
  * Mantém:
  * - Tom humano + empatia
@@ -11,12 +11,13 @@
  * - Reserva temporária + double booking no Postgres
  *
  * Adiciona:
+ * - Abertura psicológica mais forte para tráfego pago
  * - Evidence Engine (argumentos científicos por condição)
  * - Objection Engine (caro / vou pensar / funciona mesmo / não tenho certeza)
  * - Coleta inicial: primeiro nome + o que quer tratar
- * - Troca inteligente de horário (sem travar em slot antigo)
- * - Prioridade real para pagamento
- * - Simulação de pagamento para TESTE no número admin
+ * - Troca inteligente de horário
+ * - Prioridade máxima para pagamento
+ * - Simulação de pagamento para testes
  * - Bloqueio de conversa paralela enquanto aguarda pagamento
  * - Anti-spam científico
  * - Anti-loop reforçado
@@ -110,7 +111,6 @@ const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
-
 pool.on("error", (err) => console.error("❌ Postgres pool error:", err));
 
 async function initDB() {
@@ -126,7 +126,7 @@ async function initDB() {
     CREATE TABLE IF NOT EXISTS wa_slot_locks (
       slot_key TEXT PRIMARY KEY,
       phone TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'held',
+      status TEXT NOT NULL DEFAULT 'held', -- held | paid
       expires_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -142,7 +142,6 @@ initDB().catch((e) => console.error("❌ initDB erro:", e));
 async function getUserState(phone) {
   const { rows } = await pool.query("SELECT state FROM wa_users WHERE phone=$1", [phone]);
   if (rows.length) return rows[0].state || {};
-
   await pool.query(
     "INSERT INTO wa_users (phone, state) VALUES ($1, $2::jsonb) ON CONFLICT (phone) DO NOTHING",
     [phone, JSON.stringify({})]
@@ -171,13 +170,8 @@ function mergeState(oldState, updates) {
 }
 
 // ====== UTILS ======
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function randInt(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
 function norm(s) {
   return (s || "")
@@ -203,13 +197,8 @@ function clip(text, max = 900) {
   return t.slice(0, max).trim();
 }
 
-function pad2(n) {
-  return String(n).padStart(2, "0");
-}
-
-function currentYear() {
-  return new Date().getFullYear();
-}
+function pad2(n) { return String(n).padStart(2, "0"); }
+function currentYear() { return new Date().getFullYear(); }
 
 function makeDateKey(day, month = 3) {
   return `${pad2(day)}-${pad2(month)}`;
@@ -238,40 +227,31 @@ function removeDuplicates(arr) {
   return [...new Set(arr)];
 }
 
-function pickRandom(arr) {
-  if (!Array.isArray(arr) || !arr.length) return "";
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
 // ====== EXTRAÇÃO DE NOME / DADOS / PROBLEMA ======
 function extractNameFromText(text) {
   const t = (text || "").trim();
   if (!t) return null;
-
   const low = norm(t);
-
-  if (
-    /(sim|ok|beleza|pode|claro|show|tanto faz|nao|não|dor|sono|ansiedade|fibromialgia|insônia|insonia)/.test(low) &&
-    t.split(" ").length <= 2
-  ) {
-    if (/(dor|sono|ansiedade|fibromialgia|insônia|insonia)/.test(low)) return null;
-  }
 
   const cleaned = t.replace(/[^\p{L}\p{N}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
   if (!cleaned) return null;
 
-  const m = cleaned.match(/(?:me chamo|sou|nome é|nome e)\s+(.+)$/i);
+  const m = cleaned.match(/(?:me chamo|sou|nome é|nome e|meu nome é)\s+(.+)$/i);
   const candidate = (m?.[1] || cleaned).trim();
 
   const parts = candidate.split(" ").filter(Boolean);
   if (parts.length < 1 || parts.length > 5) return null;
   if (/^\d+$/.test(candidate)) return null;
 
-  if (/(dor|sono|ansiedade|fibromialgia|insônia|insonia|artrose|artrite|enxaqueca|coluna)/i.test(candidate) && parts.length <= 2) {
+  if (/(dor|sono|ansiedade|fibromialgia|insonia|insônia|artrose|artrite|enxaqueca|coluna|lombar|neuropat)/i.test(candidate) && parts.length <= 2) {
     return null;
   }
 
-  return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
+  if (/(sim|ok|beleza|claro|pode|show|quero|consulta|agendar)/i.test(low) && parts.length === 1) {
+    return null;
+  }
+
+  return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
 }
 
 function extractFirstName(text) {
@@ -285,21 +265,18 @@ function extractFullName(text) {
   if (!cleaned) return null;
   const parts = cleaned.split(" ").filter(Boolean);
   if (parts.length < 2) return null;
-  return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
+  return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
 }
 
 function extractBirthDate(text) {
   const t = (text || "").trim();
-  const m = t.match(/\b(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})\b/);
+  let m = t.match(/\b(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})\b/);
   if (!m) return null;
-
   let dd = Number(m[1]);
   let mm = Number(m[2]);
   let yy = Number(m[3]);
-
   if (yy < 100) yy += 1900;
   if (dd < 1 || dd > 31 || mm < 1 || mm > 12) return null;
-
   return `${pad2(dd)}/${pad2(mm)}/${yy}`;
 }
 
@@ -342,7 +319,7 @@ function extractProblemText(text) {
     return t;
   }
 
-  const m = t.match(/(?:quero tratar|tratar|meu problema é|meu problema e|tenho|sofro com)\s+(.+)$/i);
+  const m = t.match(/(?:quero tratar|tratar|meu problema é|tenho|sofro com)\s+(.+)$/i);
   if (m?.[1]) return m[1].trim();
 
   return null;
@@ -357,7 +334,8 @@ const EVIDENCE_DB = {
       "Fibromialgia costuma impactar muito a rotina e até o emocional da pessoa.",
       "Quem tem fibromialgia muitas vezes sente que o corpo nunca descansa."
     ],
-    text: "Um estudo publicado no Pain Medicine demonstrou redução média de cerca de 60% na intensidade da dor em pacientes com fibromialgia após algumas semanas de tratamento com canabinoides."
+    text: "Um estudo publicado no Pain Medicine demonstrou redução média de cerca de 60% na intensidade da dor em pacientes com fibromialgia após algumas semanas de tratamento com canabinoides.",
+    end: "Agora me diz… como seria sua vida com cerca de 60% menos dor?"
   },
 
   dor: {
@@ -367,7 +345,8 @@ const EVIDENCE_DB = {
       "Dor crônica realmente pode mexer com sono, humor e energia.",
       "Muita gente com dor passa anos tentando melhorar sem encontrar algo que ajude de verdade."
     ],
-    text: "Estudos clínicos mostram que fitocanabinoides podem reduzir significativamente a intensidade da dor crônica em muitos pacientes."
+    text: "Estudos clínicos mostram que fitocanabinoides podem reduzir significativamente a intensidade da dor crônica em muitos pacientes.",
+    end: "Imagina como seria viver com muito menos dor todos os dias."
   },
 
   dor_neuropatica: {
@@ -377,7 +356,8 @@ const EVIDENCE_DB = {
       "Dor neuropática costuma ser muito desgastante no dia a dia.",
       "Muita gente com dor neuropática passa muito tempo buscando algo que realmente ajude."
     ],
-    text: "Estudos clínicos mostram melhora significativa da dor neuropática em pacientes que utilizaram canabinoides."
+    text: "Estudos clínicos mostram melhora significativa da dor neuropática em pacientes que utilizaram canabinoides.",
+    end: "Imagina como seria viver com muito menos dor nervosa todos os dias."
   },
 
   insonia: {
@@ -387,7 +367,8 @@ const EVIDENCE_DB = {
       "Insônia realmente compromete energia, humor e até concentração.",
       "Quando a pessoa dorme mal por muito tempo, isso vai desgastando várias áreas da vida."
     ],
-    text: "Estudos clínicos mostram melhora significativa da qualidade do sono em pacientes que utilizaram canabinoides."
+    text: "Estudos clínicos mostram melhora significativa da qualidade do sono em pacientes que utilizaram canabinoides.",
+    end: "Como seria sua vida dormindo bem quase todas as noites?"
   },
 
   ansiedade: {
@@ -397,7 +378,8 @@ const EVIDENCE_DB = {
       "Ansiedade constante desgasta muito a mente e o corpo.",
       "Muita gente com ansiedade sente dificuldade até para relaxar de verdade."
     ],
-    text: "Um estudo publicado no Neurotherapeutics mostrou redução significativa dos sintomas de ansiedade com o uso de canabidiol."
+    text: "Um estudo publicado no Neurotherapeutics mostrou redução significativa dos sintomas de ansiedade com o uso de canabidiol.",
+    end: "Imagina como seria viver o dia a dia com muito mais calma."
   },
 
   enxaqueca: {
@@ -407,7 +389,8 @@ const EVIDENCE_DB = {
       "Quem sofre com enxaqueca sabe como isso pode parar o dia inteiro.",
       "Enxaqueca recorrente realmente desgasta muito."
     ],
-    text: "Estudos clínicos indicam redução da frequência e intensidade das crises de enxaqueca com o uso de canabinoides."
+    text: "Estudos clínicos indicam redução da frequência e intensidade das crises de enxaqueca com o uso de canabinoides.",
+    end: "Como seria viver com muito menos crises de enxaqueca?"
   },
 
   artrose: {
@@ -417,7 +400,8 @@ const EVIDENCE_DB = {
       "Artrose costuma gerar dor constante e rigidez nas articulações.",
       "Muita gente com artrose sente dificuldade até nas tarefas simples."
     ],
-    text: "Estudos indicam que os canabinoides podem ajudar na redução da dor e inflamação em pacientes com doenças articulares."
+    text: "Estudos indicam que os canabinoides podem ajudar na redução da dor e inflamação em pacientes com doenças articulares.",
+    end: "Imagina voltar a se movimentar com mais liberdade."
   },
 
   artrite: {
@@ -427,7 +411,8 @@ const EVIDENCE_DB = {
       "A artrite costuma limitar bastante o dia a dia.",
       "Muita gente com artrite sofre com dor articular constante."
     ],
-    text: "Estudos mostram que os fitocanabinoides possuem propriedades anti-inflamatórias que podem ajudar pacientes com artrite."
+    text: "Estudos mostram que os fitocanabinoides possuem propriedades anti-inflamatórias que podem ajudar pacientes com artrite.",
+    end: "Como seria viver com menos inflamação e dor nas articulações?"
   },
 
   coluna: {
@@ -437,30 +422,29 @@ const EVIDENCE_DB = {
       "Dor na coluna realmente atrapalha movimento, sono e produtividade.",
       "Quando a coluna dói todos os dias, isso vai desgastando muito."
     ],
-    text: "Estudos mostram melhora significativa da dor lombar crônica em pacientes tratados com canabinoides."
+    text: "Estudos mostram melhora significativa da dor lombar crônica em pacientes tratados com canabinoides.",
+    end: "Como seria viver com muito menos dor na coluna?"
   }
 };
 
-function buildEvidenceMessage(condition, state = {}) {
+function pickRandom(arr) {
+  if (!Array.isArray(arr) || !arr.length) return "";
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function buildEvidenceMessage(condition) {
   const ev = EVIDENCE_DB[condition];
   if (!ev) return null;
 
-  const empathy = pickRandom(ev.empathy);
-  const endings = [
-    `Agora me diz… como seria sua vida com cerca de ${ev.percent}% menos sintomas?`,
-    `Imagina como seria seu dia a dia com uma melhora assim.`,
-    `Se isso ajudou outras pessoas, também pode fazer sentido avaliar se pode ajudar você.`,
-  ];
-
   return (
-    `${empathy}\n\n` +
+    `${pickRandom(ev.empathy)}\n\n` +
     `${ev.text}\n\n` +
-    `${pickRandom(endings)}`
+    `${ev.end}`
   );
 }
 
 function shouldUseEvidence(flags, state, incomingText) {
-  if (Number(state.evidence_used_count || 0) >= 2) return false;
+  if ((state.evidence_used_count || 0) >= 2) return false;
   const cond = detectCondition(incomingText) || state.condition || null;
   if (!cond) return false;
 
@@ -475,10 +459,15 @@ function shouldUseEvidence(flags, state, incomingText) {
 }
 
 // ====== OBJECTION ENGINE ======
-function buildExpensiveReply() {
+function buildExpensiveReply(state) {
+  const cond = state.condition || null;
+  const ev = cond && (state.evidence_used_count || 0) < 2 ? buildEvidenceMessage(cond) : null;
+  if (ev) state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
+
   return (
     "Entendo você pensar nisso 🙂\n\n" +
     "Mas aqui não é só uma conversa rápida. A consulta é uma avaliação médica completa, individualizada e com cerca de 45 minutos, para entender seu histórico, o que você já tentou, medicações em uso e montar um plano com segurança.\n\n" +
+    (ev ? `${ev}\n\n` : "") +
     "Muita gente prefere já iniciar com acompanhamento justamente para ajustar tudo com mais segurança e evitar tentativa e erro.\n\n" +
     "Se quiser, eu posso deixar seu horário reservado por alguns minutos enquanto você decide."
   );
@@ -502,23 +491,19 @@ function buildThinkingReply(state) {
 
 function buildUnsureReply(state, incomingText) {
   const cond = detectCondition(incomingText) || state.condition || null;
-  const ev = cond ? buildEvidenceMessage(cond, state) : null;
+  const ev = cond && (state.evidence_used_count || 0) < 2 ? buildEvidenceMessage(cond) : null;
+  if (ev) state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
 
   const base =
     "É super normal ter essa dúvida 🙂\n\n" +
     "A avaliação serve justamente para entender seu caso com profundidade e ver se esse tratamento realmente faz sentido para você, com segurança e individualização.";
 
-  if (ev && Number(state.evidence_used_count || 0) < 2) {
-    state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
-    return `${base}\n\n${ev}`;
-  }
-
-  return base;
+  return ev ? `${base}\n\n${ev}` : base;
 }
 
 function buildWorksReply(state, incomingText) {
   const cond = detectCondition(incomingText) || state.condition || state.focus || null;
-  const ev = cond ? buildEvidenceMessage(cond, state) : null;
+  const ev = cond && (state.evidence_used_count || 0) < 2 ? buildEvidenceMessage(cond) : null;
 
   if (ev) {
     state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
@@ -540,10 +525,10 @@ function getGenericSlotsForDate(dateKey) {
   const dt = parseDateKeyToDate(dateKey);
   const day = dt.getDay();
 
-  if (day === 0) return [];
-  if (day === 1) return [];
-  if (day === 2) return ["16h", "17h", "18h", "19h", "20h", "21h"];
-  if (day === 6) return ["9h", "10h", "11h"];
+  if (day === 0) return []; // domingo
+  if (day === 1) return []; // segunda
+  if (day === 2) return ["16h", "17h", "18h", "19h", "20h", "21h"]; // terça >=16h
+  if (day === 6) return ["9h", "10h", "11h"]; // sábado até 12h
 
   return ["9h", "10h", "11h", "13h", "14h", "15h", "16h", "17h", "18h", "19h"];
 }
@@ -556,7 +541,6 @@ function getBaseSlotsForDate(dateKey) {
 function sortSlotsSmart(slots) {
   const unique = removeDuplicates(slots);
   const prioritized = [];
-
   for (const p of PREMIUM_SLOT_PRIORITY) {
     if (unique.includes(p)) prioritized.push(p);
   }
@@ -575,22 +559,21 @@ async function cleanupExpiredLocks() {
 
 async function getBlockedSlotKeysForDate(dateKey) {
   await cleanupExpiredLocks();
-
+  const prefix = `${dateKey}|`;
   const { rows } = await pool.query(
     `SELECT slot_key
      FROM wa_slot_locks
      WHERE slot_key LIKE $1
        AND (status='paid' OR (status='held' AND expires_at > NOW()))`,
-    [`${dateKey}|%`]
+    [`${prefix}%`]
   );
-
-  return new Set(rows.map((r) => r.slot_key));
+  return new Set(rows.map(r => r.slot_key));
 }
 
 async function getAvailableSlotsForDate(dateKey) {
   const base = getBaseSlotsForDate(dateKey);
   const blocked = await getBlockedSlotKeysForDate(dateKey);
-  return base.filter((t) => !blocked.has(slotKey(dateKey, t)));
+  return base.filter(t => !blocked.has(slotKey(dateKey, t)));
 }
 
 async function chooseBestSlotsForDate(dateKey, max = 3) {
@@ -600,7 +583,6 @@ async function chooseBestSlotsForDate(dateKey, max = 3) {
 
 async function acquireSlotHold(dateKey, time, phone, minutes = HOLD_MINUTES) {
   await cleanupExpiredLocks();
-
   const key = slotKey(dateKey, time);
 
   const existing = await pool.query(
@@ -621,7 +603,9 @@ async function acquireSlotHold(dateKey, time, phone, minutes = HOLD_MINUTES) {
 
   const row = existing.rows[0];
 
-  if (row.status === "paid") return { ok: false, reason: "paid" };
+  if (row.status === "paid") {
+    return { ok: false, reason: "paid" };
+  }
 
   if (row.status === "held" && row.phone === phone) {
     await pool.query(
@@ -667,7 +651,6 @@ async function markSlotPaid(key, phone) {
 
 async function releaseOldHeldSlotsForPhone(phone, keepSlotKey = null) {
   if (!phone) return;
-
   if (keepSlotKey) {
     await pool.query(
       `DELETE FROM wa_slot_locks
@@ -685,7 +668,6 @@ async function releaseOldHeldSlotsForPhone(phone, keepSlotKey = null) {
 
 function extractDateKey(text) {
   const t = String(text || "");
-
   let m = t.match(/\b(\d{1,2})[\/.-](\d{1,2})\b/);
   if (m) {
     const dd = Number(m[1]);
@@ -694,7 +676,7 @@ function extractDateKey(text) {
   }
 
   const low = norm(t);
-  if (/\bterca\b|\bterça\b/.test(low)) return "10-03";
+  if (/\bterca|terça\b/.test(low)) return "10-03";
   if (/\bquarta\b/.test(low)) return "11-03";
   if (/\bquinta\b/.test(low)) return "12-03";
 
@@ -703,7 +685,6 @@ function extractDateKey(text) {
 
 function extractHourOnly(text) {
   const low = norm(text);
-
   let m = low.match(/\b([01]?\d|2[0-3])[:h]([0-5]\d)\b/);
   if (m) {
     const hh = Number(m[1]);
@@ -711,10 +692,8 @@ function extractHourOnly(text) {
     if (mm === 0) return `${hh}h`;
     return `${pad2(hh)}:${pad2(mm)}`;
   }
-
   let m2 = low.match(/\b([01]?\d|2[0-3])\s?h\b/);
   if (m2) return `${Number(m2[1])}h`;
-
   return null;
 }
 
@@ -726,26 +705,6 @@ function extractNumericChoice(text) {
   return null;
 }
 
-function extractPlanChoice(text) {
-  const t = norm(text);
-
-  if (/^(1|opcao 1|opção 1)$/.test(t)) return "full";
-  if (/^(2|opcao 2|opção 2)$/.test(t)) return "basic";
-  if (/^(3|opcao 3|opção 3)$/.test(t)) return "retorno";
-
-  if (/\b(acompanhamento|consulta com retorno|com retorno|pacote|retorno em 30|acompanhamento medico|acompanhamento médico)\b/.test(t)) {
-    return "full";
-  }
-  if (/\b(avaliacao especializada|avaliação especializada|avaliacao|avaliação|so a consulta|só a consulta)\b/.test(t)) {
-    return "basic";
-  }
-  if (/\b(retorno avulso|consulta de ajuste|apenas retorno)\b/.test(t)) {
-    return "retorno";
-  }
-
-  return null;
-}
-
 function isWantsDifferentTime(text) {
   const t = norm(text);
   return /\b(outro horario|outro horário|nenhum desses|nenhum|nao consigo nesses|não consigo nesses|tem outro|outro dia)\b/.test(t);
@@ -753,7 +712,10 @@ function isWantsDifferentTime(text) {
 
 function wantsReschedule(text) {
   const t = norm(text);
-  return /(trocar|mudar|alterar|pode ser|prefiro|so posso|só posso|nao posso|não posso|melhor)/.test(t) && !!extractHourOnly(text);
+  return (
+    /(trocar|mudar|alterar|pode ser|prefiro|so posso|só posso|nao posso|não posso|melhor)/.test(t) &&
+    !!extractHourOnly(text)
+  );
 }
 
 function formatDayOptions(dayKeys) {
@@ -784,201 +746,6 @@ function premiumIntroReply() {
   );
 }
 
-// ====== INTENTS ======
-function detectIntent(text) {
-  const t = norm(text);
-
-  const wantsPrice = /\b(preco|preço|valor|quanto custa|investimento|custa|valores)\b/.test(t);
-  const intentPay = /\b(como (pagar|fa[cç]o para pagar)|pagar|pagamento|pix|cartao|cartão|credito|crédito|debito|débito|boleto|link|parcel|parcela|quero pagar)\b/.test(t);
-  const wantsBook = /\b(quero marcar|quero agendar|agendar|marcar|confirmar consulta|quero consulta|gostaria de agendar|tem horario|tem horário|agenda)\b/.test(t);
-  const asksHours = /\b(horarios|horário|horario|que horas|vagas|disponibilidade)\b/.test(t);
-  const confirms = /\b(sim|ok|beleza|pode|confirmo|fechado|vamos|pode ser|serve|confirmar)\b/.test(t);
-  const refuses = /\b(nao quero|não quero|pare|para|chega|rude|grosso|nao gostei|não gostei)\b/.test(t);
-
-  const asksStartNow = /\b(como tomar|dose|dosagem|quantas gotas|comecar agora|começar agora)\b/.test(t);
-  const urgency = /\b(dor no peito|falta de ar|desmaio|avc|convuls|paralisia|confusao|confusão)\b/.test(t);
-  const asksWho = /\b(quem e|quem eh|quem e o dr|quem é|quem é o dr)\b/.test(t);
-  const asksIfWorks = /\b(funciona|serve|vale a pena|ajuda|melhora|tem resultado)\b/.test(t);
-
-  const saysWillSee = /\b(vou ver|depois te falo|vou confirmar|vou pensar|te aviso|depois vejo)\b/.test(t);
-  const saysIndecisive = /\b(tanto faz|qual voce acha melhor|qual você acha melhor)\b/.test(t);
-  const saysExpensive = /\b(caro|caríssima|carissimo|caríssimo|achei caro|muito caro|pesado)\b/.test(t);
-  const saysUnsure = /\b(nao tenho certeza|não tenho certeza|nao sei|não sei|será|sera|to na duvida|tô na dúvida|duvida|dúvida)\b/.test(t);
-
-  const focus =
-    (/\b(insonia|insomnia|dormir|sono|acordar)\b/.test(t) && "insonia") ||
-    (/\b(ansiedade|panico|pânico|crise)\b/.test(t) && "ansiedade") ||
-    (/\b(dor|fibromialgia|lombar|artrose|artrite|neuropat|enxaqueca|coluna)\b/.test(t) && "dor") ||
-    null;
-
-  return {
-    wantsPrice,
-    intentPay,
-    wantsBook,
-    asksHours,
-    confirms,
-    refuses,
-    asksStartNow,
-    urgency,
-    asksWho,
-    asksIfWorks,
-    saysWillSee,
-    saysIndecisive,
-    saysExpensive,
-    saysUnsure,
-    focus,
-  };
-}
-
-// ====== RESPOSTAS DETERMINÍSTICAS ======
-function urgencyReply() {
-  return "Entendi. Pela sua mensagem, isso pode precisar de avaliação URGENTE. Procure um pronto atendimento agora (ou SAMU 192). Assim que estiver seguro(a), me chama aqui.";
-}
-
-function whoReply() {
-  return "Oi 🙂 Eu sou a Lia, da equipe do Dr. Alef Kotula. Atendimento 100% online. Quer que eu te explique rapidinho como funciona?";
-}
-
-function safetyDoseReply() {
-  return "Entendi sua vontade de começar. Por segurança, eu não consigo orientar dose/como tomar por aqui 🙏 Isso depende do seu caso e das medicações. Se quiser, eu te explico como funciona a avaliação e já te ajudo a confirmar. Seu foco hoje é mais dor, sono ou ansiedade?";
-}
-
-function priceReply() {
-  return (
-    premiumIntroReply() + "\n\n" +
-    "O investimento é:\n" +
-    `1) *${PLANS.full.label}* — R$${PLANS.full.price} *(87% das pessoas escolhem essa opção)* ⭐\n` +
-    `2) *${PLANS.basic.label}* — R$${PLANS.basic.price}\n` +
-    `3) *${PLANS.retorno.label}* — R$${PLANS.retorno.price}\n\n` +
-    "Qual você prefere? Me responda com *1*, *2* ou *3*."
-  );
-}
-
-function askPlanReply() {
-  return (
-    premiumIntroReply() + "\n\n" +
-    "O investimento é:\n" +
-    `1) *${PLANS.full.label}* — R$${PLANS.full.price} *(87% das pessoas escolhem essa opção)* ⭐\n` +
-    `2) *${PLANS.basic.label}* — R$${PLANS.basic.price}\n` +
-    `3) *${PLANS.retorno.label}* — R$${PLANS.retorno.price}\n\n` +
-    "Qual você prefere? Me responda com *1*, *2* ou *3*."
-  );
-}
-
-function askNameAndProblemReply() {
-  return (
-    premiumIntroReply() +
-    "\n\nPra eu te ajudar melhor, me diz *duas coisas rápidas*:\n" +
-    "1) seu *primeiro nome*\n" +
-    "2) o que você quer tratar hoje? *(dor, sono, ansiedade ou outro)*"
-  );
-}
-
-function askOnlyNameReply() {
-  return "Perfeito 🙂 Agora me diz só seu *primeiro nome*.";
-}
-
-function askOnlyProblemReply() {
-  return "Perfeito 🙂 E o que você quer tratar hoje? *(dor, sono, ansiedade ou outro)*";
-}
-
-async function askDayReply() {
-  const dayKeys = await getSuggestedDayKeys();
-  if (!dayKeys.length) {
-    return "No momento os horários dessa semana já estão completos. Quer que eu te coloque na lista de prioridade assim que abrir uma vaga? 🙂";
-  }
-
-  return (
-    "Perfeito 🙂\n\n" +
-    urgencyAgendaPrefix() +
-    "Nos próximos dias tenho agenda em:\n" +
-    `${formatDayOptions(dayKeys)}\n\n` +
-    "Qual você prefere?"
-  );
-}
-
-async function offerSlotsReply(state) {
-  const dateKey = state.date_key;
-  const best = await chooseBestSlotsForDate(dateKey, 3);
-
-  if (!best.length) {
-    return "Esse dia acabou de ficar sem vagas 🙏 Quer que eu te mostre outra data próxima?";
-  }
-
-  state.offered_slots = best;
-
-  return (
-    "Claro 🙂\n" +
-    urgencyAgendaPrefix() +
-    `Para *${formatDatePt(dateKey)}* tenho:\n\n` +
-    best.map((s, i) => `${i + 1}) *${s}*`).join("\n") +
-    "\n\nQual fica melhor para você?"
-  );
-}
-
-function askPreferredTimeReply(state) {
-  return `Sem problema 🙂 Que horário em *${formatDatePt(state.date_key)}* funciona melhor para você?`;
-}
-
-function askFullNameReply(state) {
-  return (
-    `Perfeito. Vou reservar provisoriamente *${prettySlot(state.date_key, state.slot_time)}* para você por alguns minutos.\n\n` +
-    "A consulta é *100% online* e dura cerca de *45 minutos*.\n\n" +
-    "Só preciso confirmar alguns dados rápidos.\n\n" +
-    "Qual seu *nome completo*?"
-  );
-}
-
-function askBirthdateReply(state) {
-  return `Obrigado, ${state.nome_completo.split(" ")[0]} 🙂\n\nQual sua *data de nascimento*?`;
-}
-
-function askEmailReply() {
-  return "Perfeito 🙂\n\nE qual *e-mail* você prefere usar para receber as orientações da consulta?";
-}
-
-function paymentSentReply(plan, link, state) {
-  return (
-    `Fechado ✅\n` +
-    `*${plan.label}* — R$${plan.price}\n\n` +
-    `Horário pré-reservado: *${prettySlot(state.date_key, state.slot_time)}*\n` +
-    `Essa reserva fica segura por alguns minutos enquanto você finaliza.\n\n` +
-    `Para confirmar, é só pagar por aqui:\n${link}\n\n` +
-    "Assim que o pagamento for confirmado, eu te aviso aqui e deixo sua consulta confirmada 🙂"
-  );
-}
-
-function afterPaidReply(state) {
-  return (
-    "Pagamento confirmado ✅\n\n" +
-    `Sua consulta online ficou confirmada para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
-    "Mais perto do horário eu envio as orientações da consulta 🙂"
-  );
-}
-
-function willSeeReply(state) {
-  if (state?.date_key && state?.slot_time) {
-    return (
-      "Claro 🙂\n\n" +
-      "Só te aviso que os horários costumam preencher rápido.\n\n" +
-      `Se quiser, posso manter *${prettySlot(state.date_key, state.slot_time)}* pré-reservado por alguns minutos enquanto você decide.`
-    );
-  }
-
-  return (
-    "Claro 🙂\n\n" +
-    "Só te aviso que os horários costumam preencher rápido.\n\n" +
-    "Se quiser, eu posso te mostrar a melhor opção disponível e deixar reservada por alguns minutos enquanto você decide."
-  );
-}
-
-function indecisiveReply(state) {
-  if (state?.date_key) {
-    return `Os horários que os pacientes costumam preferir são no início da noite.\n\nTenho *18h* ou *19h* disponíveis em *${formatDatePt(state.date_key)}*.\n\nQual fica melhor para você?`;
-  }
-  return "Os horários que os pacientes costumam preferir são no início da noite.\n\nTenho *18h* ou *19h* disponíveis.\n\nQual fica melhor para você?";
-}
-
 function pendingPaymentReply(state) {
   return (
     `Perfeito 🙂 Seu horário continua pré-reservado em *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
@@ -987,28 +754,9 @@ function pendingPaymentReply(state) {
   );
 }
 
-function pendingPaymentWithEvidenceReply(state, incomingText) {
-  const cond = detectCondition(incomingText) || state.condition || null;
-  const ev = cond && Number(state.evidence_used_count || 0) < 2
-    ? buildEvidenceMessage(cond, state)
-    : null;
-
-  if (ev) {
-    state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
-    return (
-      `${ev}\n\n` +
-      `Seu horário segue pré-reservado em *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
-      `Se quiser confirmar agora, é só finalizar por aqui:\n${state.payment.link}`
-    );
-  }
-
-  return pendingPaymentReply(state);
-}
-
 // ====== HUMAN DELAY ======
 function computeHumanDelay(flags, state) {
   let base = randInt(MIN_DELAY, MAX_DELAY);
-
   if (flags.wantsBook || flags.asksHours) base = randInt(2, 5);
   if (flags.wantsPrice) base = randInt(3, 6);
   if (flags.intentPay) base = randInt(2, 4);
@@ -1108,18 +856,10 @@ async function runLia({ incomingText, state, flags }) {
 
   const content = resp.choices?.[0]?.message?.content?.trim() || "";
   let parsed = null;
-
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    parsed = null;
-  }
+  try { parsed = JSON.parse(content); } catch {}
 
   if (!parsed || typeof parsed !== "object" || !parsed.reply) {
-    return {
-      reply: "Entendi 🙂 Só pra eu te guiar melhor: seu foco hoje é mais dor, sono ou ansiedade?",
-      updates: {},
-    };
+    return { reply: "Entendi 🙂 Só pra eu te guiar melhor: seu foco hoje é mais dor, sono ou ansiedade?", updates: {} };
   }
 
   const r = String(parsed.reply || "").trim();
@@ -1128,10 +868,7 @@ async function runLia({ incomingText, state, flags }) {
   if (r === "PRECISA_AGENDAR") return { reply: "__NEED_BOOK__", updates: parsed.updates || {} };
 
   if (violatesNoPriceNoLink(r)) {
-    return {
-      reply: "Entendi 🙂 Pra eu te explicar direitinho, seu foco hoje é mais dor, sono ou ansiedade?",
-      updates: {},
-    };
+    return { reply: "Entendi 🙂 Pra eu te explicar direitinho, seu foco hoje é mais dor, sono ou ansiedade?", updates: {} };
   }
 
   if (!parsed.updates) parsed.updates = {};
@@ -1200,12 +937,10 @@ async function mpGetPayment(paymentId) {
   const r = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
     headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
   });
-
   if (!r.ok) {
     const t = await r.text().catch(() => "");
     throw new Error(`MP payment fetch erro: ${r.status} ${t}`);
   }
-
   return await r.json();
 }
 
@@ -1285,7 +1020,7 @@ app.post("/whatsapp", async (req, res) => {
       const finalText = incomingText;
 
       // ===== reset admin =====
-      if (finalText.trim().toLowerCase() === "reset" && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
+      if (norm(finalText) === "reset" && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
         await pool.query(
           `UPDATE wa_users
            SET state = '{}'::jsonb, updated_at = NOW()
@@ -1297,16 +1032,15 @@ app.post("/whatsapp", async (req, res) => {
         return;
       }
 
-      // ===== simulação de pagamento admin =====
+      // ===== simulação de pagamento por WhatsApp (admin) =====
       if (
         ["simular pagamento", "paguei_teste", "simular_pagamento", "aprovar_teste"].includes(norm(finalText)) &&
         phoneDigits === ADMIN_RESET_PHONE_DIGITS
       ) {
-        const st = await getUserState(phone);
+        let st = await getUserState(phone);
         st.payment = st.payment || {};
         st.payment.status = "approved";
         st.payment.simulated = true;
-
         if (st.slot_key) await markSlotPaid(st.slot_key, phone);
         await saveUserState(phone, st);
         await sendWhatsApp(lead, bot, afterPaidReply(st), 0);
@@ -1339,9 +1073,88 @@ app.post("/whatsapp", async (req, res) => {
       state.email = state.email || null;
 
       state.last_bot_from = bot;
+function detectIntent(text) {
+  const t = norm(text);
 
+  const wantsPrice =
+    /\b(preco|preço|valor|quanto custa|investimento|custa|valores)\b/.test(t);
+
+  const intentPay =
+    /\b(como (pagar|fa[cç]o para pagar)|quero pagar|pagar|pagamento|pix|cartao|cartão|credito|crédito|debito|débito|boleto|link|parcel|parcela)\b/.test(t);
+
+  const wantsBook =
+    /\b(quero marcar|quero agendar|agendar|marcar consulta|marcar|confirmar consulta|quero consulta|gostaria de agendar|tem horario|tem horário|agenda)\b/.test(t);
+
+  const asksHours =
+    /\b(horarios|horário|horario|que horas|vagas|disponibilidade)\b/.test(t);
+
+  const confirms =
+    /\b(sim|ok|beleza|claro|pode|confirmo|fechado|vamos|pode ser|serve|confirmar|quero|quero sim)\b/.test(t);
+
+  const refuses =
+    /\b(nao quero|não quero|pare|para|chega|rude|grosso|nao gostei|não gostei)\b/.test(t);
+
+  const asksStartNow =
+    /\b(como tomar|dose|dosagem|quantas gotas|comecar agora|começar agora)\b/.test(t);
+
+  const urgency =
+    /\b(dor no peito|falta de ar|desmaio|avc|convuls|paralisia|confusao|confusão)\b/.test(t);
+
+  const asksWho =
+    /\b(quem e|quem eh|quem é|quem e o dr|quem é o dr)\b/.test(t);
+
+  const asksIfWorks =
+    /\b(funciona|funciona mesmo|serve|vale a pena|ajuda|melhora|tem resultado)\b/.test(t);
+
+  const saysWillSee =
+    /\b(vou ver|depois te falo|vou confirmar|vou pensar|te aviso)\b/.test(t);
+
+  const saysIndecisive =
+    /\b(tanto faz|qual voce acha melhor|qual você acha melhor)\b/.test(t);
+
+  const saysExpensive =
+    /\b(caro|muito caro|achei caro|valor alto|muito alto|pesado pra mim|não tenho dinheiro|nao tenho dinheiro)\b/.test(t);
+
+  const saysUnsure =
+    /\b(não tenho certeza|nao tenho certeza|não sei|nao sei|to em duvida|tô em dúvida|estou em dúvida|ainda não sei|ainda nao sei)\b/.test(t);
+
+  const choosesFull =
+    /\b(1|447|consulta com retorno|com retorno|acompanhamento|pacote|retorno em 30|acompanhamento medico|acompanhamento médico)\b/.test(t);
+
+  const choosesBasic =
+    /\b(2|347|avaliacao|avaliação|avaliacao especializada|avaliação especializada|so a consulta|só a consulta)\b/.test(t);
+
+  const choosesRetorno =
+    /\b(3|200|retorno avulso|apenas retorno|consulta de ajuste)\b/.test(t);
+
+  const focus =
+    (/\b(insonia|insônia|insomnia|dormir|sono|acordar)\b/.test(t) && "insonia") ||
+    (/\b(ansiedade|panico|pânico|crise)\b/.test(t) && "ansiedade") ||
+    (/\b(dor|fibromialgia|lombar|artrose|artrite|neuropat|enxaqueca)\b/.test(t) && "dor") ||
+    null;
+
+  return {
+    wantsPrice,
+    intentPay,
+    wantsBook,
+    asksHours,
+    confirms,
+    refuses,
+    asksStartNow,
+    urgency,
+    asksWho,
+    asksIfWorks,
+    saysWillSee,
+    saysIndecisive,
+    saysExpensive,
+    saysUnsure,
+    choosesFull,
+    choosesBasic,
+    choosesRetorno,
+    focus,
+  };
+}
       const flags = detectIntent(finalText);
-
       if (flags.focus) state.focus = flags.focus;
 
       const detectedCondition = detectCondition(finalText);
@@ -1367,7 +1180,7 @@ app.post("/whatsapp", async (req, res) => {
         reply = whoReply();
       }
 
-      // 3) TROCA INTELIGENTE DE HORÁRIO
+      // 3) troca inteligente de horário
       else if (state.date_key && wantsReschedule(finalText)) {
         const requestedTime = extractHourOnly(finalText);
         const available = await getAvailableSlotsForDate(state.date_key);
@@ -1387,16 +1200,9 @@ app.post("/whatsapp", async (req, res) => {
             state.slot_key = hold.slot_key;
             await releaseOldHeldSlotsForPhone(phone, hold.slot_key);
 
-            if (state.payment?.status === "pending" && state.payment?.link) {
-              reply =
-                `Perfeito 🙂 Ajustei para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
-                `Seu link continua o mesmo:\n${state.payment.link}`;
-              state.stage = "WAIT_PAYMENT";
-            } else {
-              reply =
-                `Perfeito 🙂 Vou alterar para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
-                "Agora seguimos de onde paramos.";
-            }
+            reply =
+              `Perfeito 🙂 Vou alterar para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
+              "Agora seguimos de onde paramos.";
           }
         } else {
           const best2 = await chooseBestSlotsForDate(state.date_key, 3);
@@ -1407,23 +1213,19 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 4) BLOQUEIO DE CONVERSA PARALELA ENQUANTO AGUARDA PAGAMENTO
+      // 4) bloqueio de conversa paralela enquanto aguarda pagamento
       else if (state.payment?.status === "pending" && state.payment?.link) {
         if (flags.intentPay) {
           reply = pendingPaymentReply(state);
           state.stage = "WAIT_PAYMENT";
         } else if (flags.asksIfWorks || detectCondition(finalText)) {
-          reply = pendingPaymentWithEvidenceReply(state, finalText);
+          reply = buildWorksReply(state, finalText) + `\n\nSeu horário continua pré-reservado.\n\n${state.payment.link}`;
           state.stage = "WAIT_PAYMENT";
         } else if (flags.saysExpensive) {
-          reply =
-            buildExpensiveReply() +
-            `\n\nSe quiser confirmar agora, seu link continua ativo:\n${state.payment.link}`;
+          reply = buildExpensiveReply(state) + `\n\nSeu link continua aqui:\n${state.payment.link}`;
           state.stage = "WAIT_PAYMENT";
         } else if (flags.saysWillSee || flags.saysUnsure) {
-          reply =
-            buildThinkingReply(state) +
-            `\n\nSe quiser finalizar agora, seu link continua aqui:\n${state.payment.link}`;
+          reply = buildThinkingReply(state) + `\n\nSeu link continua aqui:\n${state.payment.link}`;
           state.stage = "WAIT_PAYMENT";
         } else {
           reply = pendingPaymentReply(state);
@@ -1431,7 +1233,7 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 5) coleta inicial nome + problema
+      // 5) estágio inicial: nome + problema
       else if (state.stage === "ASK_NAME_AND_PROBLEM") {
         const nm = extractFirstName(finalText);
         const pb = extractProblemText(finalText);
@@ -1447,29 +1249,27 @@ app.post("/whatsapp", async (req, res) => {
         } else if (!state.problem_text) {
           reply = askOnlyProblemReply();
         } else {
-          if (shouldUseEvidence(flags, state, state.problem_text)) {
-            const ev = buildEvidenceMessage(state.condition || detectCondition(state.problem_text), state);
-            if (ev) {
-              state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
-              reply =
-                `Muito prazer, ${state.nome} 🙂\n\n` +
-                `${ev}\n\n` +
-                "Agora, se quiser, eu já posso te mostrar os próximos horários disponíveis.";
-              state.stage = "ASK_DAY";
-            } else {
-              state.stage = "ASK_DAY";
-              reply = await askDayReply();
-            }
+          const ev = shouldUseEvidence(flags, state, state.problem_text)
+            ? buildEvidenceMessage(state.condition || detectCondition(state.problem_text))
+            : null;
+
+          if (ev) {
+            state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
+            reply =
+              `Muito prazer, ${state.nome} 🙂\n\n` +
+              `${ev}\n\n` +
+              "Se quiser, eu já posso te mostrar os próximos horários disponíveis.";
           } else {
-            state.stage = "ASK_DAY";
-            reply = await askDayReply();
+            reply = `Muito prazer, ${state.nome} 🙂\n\nSe quiser, eu já posso te mostrar os próximos horários disponíveis.`;
           }
+
+          state.stage = "ASK_DAY";
         }
       }
 
-      // 6) intent pagar com prioridade máxima
+      // 6) intenção de pagar / avançar
       else if (flags.intentPay) {
-        if (!state.nome) {
+        if (!state.nome || !state.problem_text) {
           state.stage = "ASK_NAME_AND_PROBLEM";
           reply = askNameAndProblemReply();
         } else if (!state.date_key) {
@@ -1487,13 +1287,9 @@ app.post("/whatsapp", async (req, res) => {
         } else if (!state.email) {
           state.stage = "ASK_EMAIL";
           reply = askEmailReply();
-        } else if (state.payment?.status === "pending" && state.payment?.link) {
-          reply = pendingPaymentReply(state);
-          state.stage = "WAIT_PAYMENT";
         } else if (state.selected_plan_key) {
           const planKey = state.selected_plan_key;
           const holdCheck = await acquireSlotHold(state.date_key, state.slot_time, phone);
-
           if (!holdCheck.ok) {
             state.slot_time = null;
             state.slot_key = null;
@@ -1502,7 +1298,6 @@ app.post("/whatsapp", async (req, res) => {
             reply += "\n\n" + (await offerSlotsReply(state));
           } else {
             state.slot_key = holdCheck.slot_key;
-
             const pref = await mpCreatePreference({ phone, planKey });
             state.payment = {
               status: "pending",
@@ -1512,7 +1307,6 @@ app.post("/whatsapp", async (req, res) => {
               external_reference: pref.external_reference,
               created_at: Date.now(),
             };
-
             reply = paymentSentReply(pref.plan, pref.link, state);
             state.stage = "WAIT_PAYMENT";
           }
@@ -1524,7 +1318,7 @@ app.post("/whatsapp", async (req, res) => {
 
       // 7) preço
       else if (flags.wantsPrice) {
-        if (!state.nome) {
+        if (!state.nome || !state.problem_text) {
           state.stage = "ASK_NAME_AND_PROBLEM";
           reply = askNameAndProblemReply();
         } else {
@@ -1538,10 +1332,10 @@ app.post("/whatsapp", async (req, res) => {
         reply = safetyDoseReply();
       }
 
-      // 9) objeções principais
+      // 9) objeções
       else if (flags.saysExpensive) {
         state.objection_used_count = Number(state.objection_used_count || 0) + 1;
-        reply = buildExpensiveReply();
+        reply = buildExpensiveReply(state);
       }
 
       else if (flags.saysWillSee) {
@@ -1588,7 +1382,18 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 11) escolher dia
+      // 11) reconhecer decisão de avançar sem repetir tudo
+      else if (state.stage === "ASK_PLAN" && /(ok|fechado|quero fazer|quero consulta|vamos fazer|bora|vamos|quero sim)/i.test(finalText)) {
+        reply =
+          `Perfeito 🙂 Seu horário continua reservado em *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
+          "Agora só falta escolher a opção que você prefere:\n\n" +
+          `1) *${PLANS.full.label}* — R$${PLANS.full.price} *(87% escolhem)* ⭐\n` +
+          `2) *${PLANS.basic.label}* — R$${PLANS.basic.price}\n` +
+          `3) *${PLANS.retorno.label}* — R$${PLANS.retorno.price}\n\n` +
+          "Me responde com *1*, *2* ou *3*.";
+      }
+
+      // 12) escolher dia
       else if (state.stage === "ASK_DAY") {
         const dayChoice = extractNumericChoice(finalText);
         const explicitDate = extractDateKey(finalText);
@@ -1612,7 +1417,7 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 12) escolher horário
+      // 13) escolher horário
       else if (state.stage === "OFFER_SLOTS") {
         const best = state.offered_slots?.length ? state.offered_slots : await chooseBestSlotsForDate(state.date_key, 3);
         const choiceNum = extractNumericChoice(finalText);
@@ -1621,7 +1426,6 @@ app.post("/whatsapp", async (req, res) => {
         if (choiceNum && best[choiceNum - 1]) {
           const chosen = best[choiceNum - 1];
           const hold = await acquireSlotHold(state.date_key, chosen, phone);
-
           if (!hold.ok) {
             reply = "Esse horário acabou de ser preenchido 🙏 Vou te mostrar as próximas melhores opções.";
             reply += "\n\n" + (await offerSlotsReply(state));
@@ -1634,7 +1438,6 @@ app.post("/whatsapp", async (req, res) => {
           }
         } else if (requestedTime) {
           const available = await getAvailableSlotsForDate(state.date_key);
-
           if (available.includes(requestedTime)) {
             const hold = await acquireSlotHold(state.date_key, requestedTime, phone);
             if (!hold.ok) {
@@ -1661,15 +1464,13 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 13) pedir horário específico
+      // 14) pedir horário específico
       else if (state.stage === "ASK_SPECIFIC_TIME") {
         const requestedTime = extractHourOnly(finalText);
-
         if (!requestedTime) {
           reply = `Me diz o horário exato em *${formatDatePt(state.date_key)}*, por exemplo *16h* 🙂`;
         } else {
           const available = await getAvailableSlotsForDate(state.date_key);
-
           if (available.includes(requestedTime)) {
             const hold = await acquireSlotHold(state.date_key, requestedTime, phone);
             if (!hold.ok) {
@@ -1690,7 +1491,7 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 14) nome completo
+      // 15) nome completo
       else if (state.stage === "ASK_FULLNAME") {
         const full = extractFullName(finalText);
         if (full) {
@@ -1702,7 +1503,7 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 15) nascimento
+      // 16) nascimento
       else if (state.stage === "ASK_BIRTHDATE") {
         const bd = extractBirthDate(finalText);
         if (bd) {
@@ -1714,7 +1515,7 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 16) email
+      // 17) email
       else if (state.stage === "ASK_EMAIL") {
         const em = extractEmail(finalText);
         if (em) {
@@ -1729,24 +1530,9 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 17) escolha de plano / link
-      else if (state.stage === "ASK_PLAN") {
-        const planKey = extractPlanChoice(finalText);
-
-        if (flags.saysExpensive) {
-          state.objection_used_count = Number(state.objection_used_count || 0) + 1;
-          reply = buildExpensiveReply();
-        } else if (flags.saysWillSee) {
-          state.objection_used_count = Number(state.objection_used_count || 0) + 1;
-          reply = buildThinkingReply(state);
-        } else if (flags.saysUnsure) {
-          state.objection_used_count = Number(state.objection_used_count || 0) + 1;
-          reply = buildUnsureReply(state, finalText);
-        } else if (flags.asksIfWorks) {
-          reply = buildWorksReply(state, finalText);
-        } else if (!planKey) {
-          reply = askPlanReply();
-        } else if (!state.nome) {
+      // 18) escolha de plano / link
+      else if (flags.choosesFull || flags.choosesBasic || flags.choosesRetorno || (state.stage === "ASK_PLAN" && flags.confirms)) {
+        if (!state.nome || !state.problem_text) {
           state.stage = "ASK_NAME_AND_PROBLEM";
           reply = askNameAndProblemReply();
         } else if (!state.date_key || !state.slot_time || !state.slot_key) {
@@ -1764,55 +1550,65 @@ app.post("/whatsapp", async (req, res) => {
             reply = askEmailReply();
           }
         } else {
-          state.selected_plan_key = planKey;
+          let planKey = null;
+          if (flags.choosesFull) planKey = "full";
+          else if (flags.choosesBasic) planKey = "basic";
+          else if (flags.choosesRetorno) planKey = "retorno";
 
-          const holdCheck = await acquireSlotHold(state.date_key, state.slot_time, phone);
-          if (!holdCheck.ok) {
-            state.slot_time = null;
-            state.slot_key = null;
-            state.stage = "OFFER_SLOTS";
-            reply = "Esse horário acabou de ser preenchido antes da confirmação 🙏 Vou te mostrar as próximas melhores opções.";
-            reply += "\n\n" + (await offerSlotsReply(state));
+          if (!planKey) {
+            reply = askPlanReply();
+            state.stage = "ASK_PLAN";
           } else {
-            state.slot_key = holdCheck.slot_key;
+            state.selected_plan_key = planKey;
 
-            const already =
-              state.payment &&
-              state.payment.preference_id &&
-              state.payment.plan_key === planKey &&
-              state.payment.status === "pending";
-
-            if (already && state.payment.link) {
-              reply = paymentSentReply(PLANS[planKey], state.payment.link, state);
+            const holdCheck = await acquireSlotHold(state.date_key, state.slot_time, phone);
+            if (!holdCheck.ok) {
+              state.slot_time = null;
+              state.slot_key = null;
+              state.stage = "OFFER_SLOTS";
+              reply = "Esse horário acabou de ser preenchido antes da confirmação 🙏 Vou te mostrar as próximas melhores opções.";
+              reply += "\n\n" + (await offerSlotsReply(state));
             } else {
-              const pref = await mpCreatePreference({ phone, planKey });
+              state.slot_key = holdCheck.slot_key;
 
-              state.payment = {
-                status: "pending",
-                plan_key: planKey,
-                preference_id: pref.preference_id,
-                link: pref.link,
-                external_reference: pref.external_reference,
-                created_at: Date.now(),
-              };
+              const already =
+                state.payment &&
+                state.payment.preference_id &&
+                state.payment.plan_key === planKey &&
+                state.payment.status === "pending";
 
-              reply = paymentSentReply(pref.plan, pref.link, state);
+              if (already && state.payment.link) {
+                reply = paymentSentReply(PLANS[planKey], state.payment.link, state);
+              } else {
+                const pref = await mpCreatePreference({ phone, planKey });
+
+                state.payment = {
+                  status: "pending",
+                  plan_key: planKey,
+                  preference_id: pref.preference_id,
+                  link: pref.link,
+                  external_reference: pref.external_reference,
+                  created_at: Date.now(),
+                };
+
+                reply = paymentSentReply(pref.plan, pref.link, state);
+              }
+
+              state.stage = "WAIT_PAYMENT";
             }
-
-            state.stage = "WAIT_PAYMENT";
           }
         }
       }
 
-      // 18) resistência
+      // 19) resistência
       else if (flags.refuses) {
         reply = "Tranquilo 🙂 Desculpa se soou pressionado. Quer que eu te explique rapidinho como funciona ou prefere só tirar uma dúvida agora?";
       }
 
-      // 19) evidence engine em momento útil
+      // 20) evidence engine em momento útil
       else if (shouldUseEvidence(flags, state, finalText)) {
         const cond = detectCondition(finalText) || state.condition;
-        const ev = buildEvidenceMessage(cond, state);
+        const ev = buildEvidenceMessage(cond);
         if (ev) {
           state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
           reply = ev;
@@ -1823,12 +1619,12 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 20) conversa aberta (IA)
+      // 21) conversa aberta (IA)
       else {
         const ai = await runLia({ incomingText: finalText, state, flags });
 
         if (ai.reply === "__NEED_PRICE__") {
-          if (!state.nome) {
+          if (!state.nome || !state.problem_text) {
             state.stage = "ASK_NAME_AND_PROBLEM";
             reply = askNameAndProblemReply();
           } else {
@@ -1877,6 +1673,7 @@ app.post("/whatsapp", async (req, res) => {
 
       await saveUserState(phone, state);
       await sendWhatsApp(lead, bot, reply, delaySec);
+
     } catch (err) {
       console.error("❌ Erro no processamento async:", err);
       try {
@@ -1921,13 +1718,14 @@ app.post("/create-payment", async (req, res) => {
 
     const data = await response.json();
     res.json({ payment_link: data.init_point || data.sandbox_init_point });
+
   } catch (error) {
     console.error(error);
     res.status(500).send("Erro ao criar pagamento");
   }
 });
 
-// ====== SIMULATE PAYMENT ======
+// ====== SIMULATE PAYMENT (debug API) ======
 app.post("/simulate-payment", async (req, res) => {
   try {
     const phone = String(req.body?.phone || "").trim().replace(/^whatsapp:/, "");
