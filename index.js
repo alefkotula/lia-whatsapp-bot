@@ -837,13 +837,13 @@ function askNameAndProblemReply() {
   return (
     premiumIntroReply() +
     "\n\nPra eu te ajudar melhor, me diz *seu nome por favor 🙂*:\n" +
-    "1) seu *primeiro nome*\n" +
+    "1) seu *primeiro nome*\n"
   );
 }
 
 function askOnlyNameReply() {
-  return "Perfeito! Agora me diz o que você quer tratar hoje? 
-    *(Fibromialgia, dor crônica, ansiedade, insônia, dor neuropática ou outro?)*";
+  return `Perfeito! Agora me diz o que você quer tratar hoje?
+*(Fibromialgia, dor crônica, ansiedade, insônia, dor neuropática ou outro?)*`;
 }
 
 async function askDayReply() {
