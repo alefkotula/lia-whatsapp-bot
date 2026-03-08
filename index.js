@@ -448,8 +448,8 @@ function buildEvidenceMessage(condition, state = {}) {
   const empathy = pickRandom(ev.empathy);
   const endings = [
     `Agora me diz… como seria sua vida com cerca de ${ev.percent}% menos sintomas?`,
-    "Imagina como seria seu dia a dia com uma melhora assim.",
-    "Se isso ajudou outras pessoas, também pode fazer sentido avaliar se pode ajudar você.",
+    `Imagina como seria seu dia a dia com uma melhora assim.`,
+    `Se isso ajudou outras pessoas, também pode fazer sentido avaliar se pode ajudar você.`,
   ];
 
   return (
@@ -523,7 +523,7 @@ function buildWorksReply(state, incomingText) {
   if (ev) {
     state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
     return (
-      "Sim, existem evidências interessantes 🙂\n\n" +
+      `Sim, existem evidências interessantes 🙂\n\n` +
       `${ev}\n\n` +
       "A avaliação médica serve justamente para entender se isso pode fazer sentido para o seu caso."
     );
@@ -567,10 +567,10 @@ function sortSlotsSmart(slots) {
 }
 
 async function cleanupExpiredLocks() {
-  await pool.query(`
-    DELETE FROM wa_slot_locks
-     WHERE status='held' AND expires_at IS NOT NULL AND expires_at < NOW()
-  `);
+  await pool.query(
+    `DELETE FROM wa_slot_locks
+     WHERE status='held' AND expires_at IS NOT NULL AND expires_at < NOW()`
+  );
 }
 
 async function getBlockedSlotKeysForDate(dateKey) {
@@ -939,14 +939,14 @@ function askEmailReply() {
 
 function paymentSentReply(plan, link, state) {
   return (
-    "Perfeito, finalizei sua pré-reserva ✅\n\n" +
+    `Perfeito, finalizei sua pré-reserva ✅\n\n` +
     `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
-    "Plano escolhido:\n" +
+    `Plano escolhido:\n` +
     `*${plan.label}* — R$${plan.price}\n\n` +
-    "Esse horário fica reservado no sistema por alguns minutos enquanto você finaliza.\n\n" +
+    `Esse horário fica reservado no sistema por alguns minutos enquanto você finaliza.\n\n` +
     `Para confirmar sua consulta, é só concluir aqui:\n${link}\n\n` +
-    "Assim que o pagamento entrar, eu confirmo sua consulta aqui imediatamente 🙂\n\n" +
-    "Se tiver qualquer dificuldade com o pagamento, me avise que eu te ajudo rapidinho."
+    `Assim que o pagamento entrar, eu confirmo sua consulta aqui imediatamente 🙂\n\n` +
+    `Se tiver qualquer dificuldade com o pagamento, me avise que eu te ajudo rapidinho.`
   );
 }
 
@@ -983,10 +983,10 @@ function indecisiveReply(state) {
 
 function pendingPaymentReply(state) {
   return (
-    "Seu horário ainda está reservado 🙂\n\n" +
+    `Seu horário ainda está reservado 🙂\n\n` +
     `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
-    `Para confirmar a consulta, só falta finalizar o pagamento aqui:\n${state.payment.link}\n\n` +
-    "Assim que o pagamento for confirmado, eu libero a confirmação da consulta para você."
+    `Para confirmar a consulta, só falta finalizar aqui:\n${state.payment.link}\n\n` +
+    `Assim que o pagamento for confirmado, eu libero a confirmação da consulta para você.`
   );
 }
 
@@ -1069,7 +1069,7 @@ Se pedirem agendar: responda "PRECISA_AGENDAR".
 
 FORMATO:
 { "reply": "...", "updates": { ... } }
-`.trim();
+`;
 }
 
 function buildUserPrompt({ incomingText, state, flags }) {
@@ -1088,7 +1088,7 @@ TAREFA:
 - 1 pergunta no final, quando fizer sentido.
 - Se detectar nome do usuário, salvar em updates.nome.
 - Se detectar problema/condição, salvar em updates.problem_text.
-`.trim();
+`;
 }
 
 function violatesNoPriceNoLink(text) {
