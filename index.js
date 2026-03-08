@@ -1,27 +1,27 @@
 /**
- * INDEX V12.3 — LIA HÍBRIDA (autonomia guiada ~50%)
+ * INDEX V13 — LIA CONVERSACIONAL OTIMIZADA
  *
- * Baseado no INDEX V12.2 enviado pelo usuário.
+ * Base: INDEX 4 híbrida + Conversational Funnel + Diagnostic Script + Question Priority Engine.
  *
  * OBJETIVO:
- * - aumentar autonomia conversacional sem perder controle do funil
- * - IA mais humana no rapport, qualificação, dúvidas abertas e objeções
- * - ZERO autonomia para:
- *   1) inventar preço
- *   2) enviar link que não seja Mercado Pago do sistema
- *   3) prometer cura
- *   4) prescrever dose / compra / marca
+ * - mais humana no início (50% IA / 50% regras)
+ * - responder perguntas ANTES do funil
+ * - usar evidência com números/percentuais no momento certo
+ * - manter agenda, lock de horários e Mercado Pago determinísticos
+ * - aumentar conversão sem perder compliance
  *
- * Mantém:
- * - agenda temporária
- * - smart scheduling
- * - reserva provisória
- * - webhook Mercado Pago
- * - evidence engine
- * - objection engine
- * - simulação de pagamento admin
- * - anti-loop
- * - compliance forte
+ * PRINCÍPIOS:
+ * 1) Pergunta do paciente vem primeiro.
+ * 2) Rapport no início, sem parecer formulário.
+ * 3) Diagnostic Script com no máximo 3 perguntas.
+ * 4) Evidence com percentual no máximo 2x por conversa.
+ * 5) Agenda, preço, plano e pagamento continuam no código.
+ *
+ * ENV:
+ * OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, DATABASE_URL
+ * MP_ACCESS_TOKEN, PUBLIC_BASE_URL
+ * MODEL_CHAT (opcional, padrão gpt-4.1)
+ * MIN_DELAY_SEC / MAX_DELAY_SEC (opcional)
  */
 
 const express = require("express");
@@ -31,14 +31,10 @@ const { Pool } = require("pg");
 const OpenAI = require("openai");
 
 const app = express();
-
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(express.json());
 app.use("/mp", express.json({ type: ["application/json", "text/json", "*/*"] }));
 
-console.log("NODE VERSION:", process.version);
-
-// ====== ENV ======
 const {
   OPENAI_API_KEY,
   TWILIO_ACCOUNT_SID,
@@ -61,25 +57,24 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
 const CHAT_MODEL = MODEL_CHAT || "gpt-4.1";
-const MIN_DELAY = Number(MIN_DELAY_SEC || 0);
-const MAX_DELAY = Number(MAX_DELAY_SEC || 0);
+const MIN_DELAY = Number(MIN_DELAY_SEC || 1);
+const MAX_DELAY = Number(MAX_DELAY_SEC || 4);
 const BASE_URL = (PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") || "http://localhost:10000";
 const HOLD_MINUTES = 15;
 const ADMIN_RESET_PHONE_DIGITS = "556581422637";
 
-// ====== PLANOS ======
 const PLANS = {
   full: {
     key: "full",
     label: "Acompanhamento Médico Especializado",
-    subtitle: "Consulta + retorno (~30 dias)",
+    subtitle: "Consulta + Retorno ~30 dias",
     price: 447,
     short: "1",
   },
   basic: {
     key: "basic",
     label: "Avaliação Médica Especializada",
-    subtitle: "Consulta única (45 min)",
+    subtitle: "45 min",
     price: 347,
     short: "2",
   },
@@ -92,17 +87,16 @@ const PLANS = {
   },
 };
 
-// ====== AGENDA TEMPORÁRIA ======
+// Agenda inicial: quarta, quinta e sexta, 9h–21h, horário de Brasília.
 const FIXED_SCHEDULE = {
-  "10-03": { dayName: "terça-feira", slots: ["15h", "16h", "17h", "18h", "19h", "20h", "21h"] },
-  "11-03": { dayName: "quarta-feira", slots: ["9h", "10h", "11h", "13h", "14h", "15h", "16h", "17h", "18h", "19h"] },
-  "12-03": { dayName: "quinta-feira", slots: ["9h", "10h", "11h", "13h", "14h", "15h", "16h", "17h", "18h", "19h"] },
+  "11-03": { dayName: "quarta-feira", slots: ["9h", "10h", "11h", "12h", "13h", "14h", "15h", "16h", "17h", "18h", "19h", "20h", "21h"] },
+  "12-03": { dayName: "quinta-feira", slots: ["9h", "10h", "11h", "12h", "13h", "14h", "15h", "16h", "17h", "18h", "19h", "20h", "21h"] },
+  "13-03": { dayName: "sexta-feira", slots: ["9h", "10h", "11h", "12h", "13h", "14h", "15h", "16h", "17h", "18h", "19h", "20h", "21h"] },
 };
 
-const PREMIUM_SLOT_PRIORITY = ["19h", "18h", "20h", "17h", "21h", "16h", "15h", "14h", "13h", "11h", "10h", "9h"];
+const PREMIUM_SLOT_PRIORITY = ["19h", "18h", "20h", "17h", "21h", "16h", "15h", "14h", "13h", "12h", "11h", "10h", "9h"];
 const WEEKDAY_PT = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
 
-// ====== POSTGRES ======
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -134,7 +128,6 @@ async function initDB() {
 }
 initDB().catch((e) => console.error("❌ initDB erro:", e));
 
-// ====== MEMORY HELPERS ======
 async function getUserState(phone) {
   const { rows } = await pool.query("SELECT state FROM wa_users WHERE phone=$1", [phone]);
   if (rows.length) return rows[0].state || {};
@@ -166,7 +159,6 @@ function mergeState(oldState, updates) {
   return out;
 }
 
-// ====== UTILS ======
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 function pad2(n) { return String(n).padStart(2, "0"); }
@@ -218,26 +210,22 @@ function slotKey(dateKey, time) {
 }
 
 function prettySlot(dateKey, time) {
-  return `${formatDatePt(dateKey)} às ${time}`;
+  return `${formatDatePt(dateKey)} às ${time} (horário de Brasília)`;
 }
 
-// ====== EXTRAÇÃO ======
 function extractNameFromText(text) {
   const t = (text || "").trim();
   if (!t) return null;
   const low = norm(t);
 
-  if (
-    /(sim|ok|beleza|pode|claro|show|tanto faz|nao|não|dor|sono|ansiedade|fibromialgia|insônia|insonia)/.test(low) &&
-    t.split(" ").length <= 2
-  ) {
+  if (/(sim|ok|beleza|pode|claro|show|tanto faz|nao|não|dor|sono|ansiedade|fibromialgia|insônia|insonia)/.test(low) && t.split(" ").length <= 2) {
     if (/(dor|sono|ansiedade|fibromialgia|insônia|insonia)/.test(low)) return null;
   }
 
   const cleaned = t.replace(/[^\p{L}\p{N}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
   if (!cleaned) return null;
 
-  const m = cleaned.match(/(?:me chamo|sou|nome é|nome e)\s+(.+)$/i);
+  const m = cleaned.match(/(?:me chamo|sou|nome e|nome é)\s+(.+)$/i);
   const candidate = (m?.[1] || cleaned).trim();
   const parts = candidate.split(" ").filter(Boolean);
 
@@ -271,7 +259,6 @@ function extractBirthDate(text) {
   let yy = Number(m[3]);
   if (yy < 100) yy += 1900;
   if (dd < 1 || dd > 31 || mm < 1 || mm > 12) return null;
-
   return `${pad2(dd)}/${pad2(mm)}/${yy}`;
 }
 
@@ -283,14 +270,14 @@ function extractEmail(text) {
 function detectCondition(text) {
   const t = norm(text);
   if (t.includes("fibromialgia")) return "fibromialgia";
-  if (t.includes("enxaqueca")) return "enxaqueca";
   if (t.includes("dor neuropatica") || t.includes("dor neuropática") || t.includes("neuropat")) return "dor_neuropatica";
   if (t.includes("artrose")) return "artrose";
   if (t.includes("artrite")) return "artrite";
-  if (t.includes("coluna") || t.includes("lombar")) return "coluna";
+  if (t.includes("lombar") || t.includes("coluna")) return "dor_lombar";
   if (t.includes("insônia") || t.includes("insonia") || t.includes("sono") || t.includes("dormir")) return "insonia";
   if (t.includes("ansiedade") || t.includes("panico") || t.includes("pânico")) return "ansiedade";
-  if (t.includes("dor")) return "dor";
+  if (t.includes("enxaqueca")) return "enxaqueca";
+  if (t.includes("dor")) return "dor_cronica";
   return null;
 }
 
@@ -298,12 +285,8 @@ function extractProblemText(text) {
   const t = (text || "").trim();
   if (!t) return null;
   const low = norm(t);
-
-  if (/(dor|fibromialgia|insônia|insonia|sono|ansiedade|panico|pânico|artrose|artrite|enxaqueca|coluna|lombar|neuropat)/.test(low)) {
-    return t;
-  }
-
-  const m = t.match(/(?:quero tratar|tratar|meu problema é|meu problema e|tenho|sofro com)\s+(.+)$/i);
+  if (/(dor|fibromialgia|insônia|insonia|sono|ansiedade|panico|pânico|artrose|artrite|enxaqueca|coluna|lombar|neuropat)/.test(low)) return t;
+  const m = t.match(/(?:quero tratar|tratar|meu problema e|meu problema é|tenho|sofro com)\s+(.+)$/i);
   if (m?.[1]) return m[1].trim();
   return null;
 }
@@ -316,23 +299,22 @@ function extractDateKey(text) {
     const mm = Number(m[2]);
     if (mm === 3 && dd >= 1 && dd <= 31) return makeDateKey(dd, mm);
   }
-
   const low = norm(t);
-  if (/\bterca\b|\bterça\b/.test(low)) return "10-03";
   if (/\bquarta\b/.test(low)) return "11-03";
   if (/\bquinta\b/.test(low)) return "12-03";
+  if (/\bsexta\b/.test(low)) return "13-03";
   return null;
 }
 
 function extractHourOnly(text) {
   const low = norm(text);
-  let m = low.match(/\b([01]?\d|2[0-3])[:h]([0-5]\d)\b/);
+  const m = low.match(/\b([01]?\d|2[0-3])[:h]([0-5]\d)\b/);
   if (m) {
     const hh = Number(m[1]);
     const mm = Number(m[2]);
     return mm === 0 ? `${hh}h` : `${pad2(hh)}:${pad2(mm)}`;
   }
-  let m2 = low.match(/\b([01]?\d|2[0-3])\s?h\b/);
+  const m2 = low.match(/\b([01]?\d|2[0-3])\s?h\b/);
   if (m2) return `${Number(m2[1])}h`;
   return null;
 }
@@ -361,16 +343,6 @@ function wantsReschedule(text) {
   return /(trocar|mudar|alterar|pode ser|prefiro|so posso|só posso|nao posso|não posso|melhor)/.test(t) && !!extractHourOnly(text);
 }
 
-function wantsChangePlan(text) {
-  const t = norm(text);
-  return /\b(prefiro a opcao|prefiro a opção|quero a opcao|quero a opção|nao quero mais a opcao|não quero mais a opção|trocar plano|mudar plano|opcao 1|opção 1|opcao 2|opção 2|opcao 3|opção 3)\b/.test(t);
-}
-
-function isWantsDifferentTime(text) {
-  const t = norm(text);
-  return /\b(outro horario|outro horário|nenhum desses|nenhum|nao consigo nesses|não consigo nesses|tem outro|outro dia)\b/.test(t);
-}
-
 function maybeUseName(state) {
   const nome = state?.nome;
   if (!nome) return "";
@@ -379,133 +351,113 @@ function maybeUseName(state) {
   return "";
 }
 
-// ====== EVIDENCE ENGINE ======
 const EVIDENCE_DB = {
   fibromialgia: {
-    percent: 60,
     empathy: [
       "Entendo… fibromialgia realmente pode ser muito desgastante.",
-      "Fibromialgia costuma impactar muito a rotina e até o emocional da pessoa.",
+      "Fibromialgia costuma impactar muito a rotina, o sono e até o emocional.",
       "Quem tem fibromialgia muitas vezes sente que o corpo nunca descansa.",
     ],
-    text: "Um estudo publicado no Pain Medicine demonstrou redução média de cerca de 60% na intensidade da dor em pacientes com fibromialgia após algumas semanas de tratamento com canabinoides.",
+    study: "Um estudo publicado no *Pain Medicine* mostrou redução média de cerca de *60% na intensidade da dor* em pacientes com fibromialgia após algumas semanas de tratamento com canabinoides.",
+    bridge: "Claro que cada caso é diferente, e é justamente isso que o Dr. Alef avalia com precisão na consulta.",
   },
-  dor: {
-    percent: 50,
+  dor_cronica: {
     empathy: [
       "Entendo… viver com dor constante desgasta muito a qualidade de vida.",
       "Dor crônica realmente pode mexer com sono, humor e energia.",
       "Muita gente com dor passa anos tentando melhorar sem encontrar algo que ajude de verdade.",
     ],
-    text: "Estudos clínicos mostram que fitocanabinoides podem reduzir significativamente a intensidade da dor crônica em muitos pacientes.",
+    study: "Estudos clínicos mostram redução relevante da intensidade da dor em muitos pacientes com dor crônica, e em alguns cenários a melhora observada ficou por volta de *50%*.",
+    bridge: "O ponto importante é avaliar se isso pode fazer sentido para o seu quadro, com segurança.",
+  },
+  dor_lombar: {
+    empathy: [
+      "Entendo… dor lombar pode limitar muito a rotina.",
+      "Quando a coluna dói todos os dias, isso vai desgastando bastante.",
+      "Dor lombar crônica costuma atrapalhar movimento, sono e produtividade.",
+    ],
+    study: "Estudos em dor lombar crônica mostram melhora relevante de sintomas em parte dos pacientes tratados com canabinoides, com resultados que podem se aproximar de *40% a 50%* em alguns desfechos clínicos.",
+    bridge: "Mas quem vai dizer se isso faz sentido para você é o Dr. Alef, avaliando seu histórico completo.",
   },
   dor_neuropatica: {
-    percent: 50,
     empathy: [
       "Entendo… dor neuropática é uma das dores mais difíceis de tratar.",
-      "Dor neuropática costuma ser muito desgastante no dia a dia.",
+      "Dor neuropática costuma ser muito incômoda, principalmente quando vem como queimação, choque ou formigamento.",
       "Muita gente com dor neuropática passa muito tempo buscando algo que realmente ajude.",
     ],
-    text: "Estudos clínicos mostram melhora significativa da dor neuropática em pacientes que utilizaram canabinoides.",
-  },
-  insonia: {
-    percent: 70,
-    empathy: [
-      "Entendo… dormir mal afeta absolutamente tudo.",
-      "Insônia realmente compromete energia, humor e até concentração.",
-      "Quando a pessoa dorme mal por muito tempo, isso vai desgastando várias áreas da vida.",
-    ],
-    text: "Estudos clínicos mostram melhora significativa da qualidade do sono em pacientes que utilizaram canabinoides.",
+    study: "Em dor neuropática, estudos clínicos mostram melhora significativa em uma parcela dos pacientes, com reduções de sintomas que em alguns trabalhos ficaram na faixa de *30% a 50%*.",
+    bridge: "Isso pode indicar um quadro de dor neuropática, porém somente o Dr. Alef pode avaliar com precisão e te dizer o melhor caminho.",
   },
   ansiedade: {
-    percent: 65,
     empathy: [
-      "Entendo… ansiedade pode realmente dominar o dia da pessoa.",
-      "Ansiedade constante desgasta muito a mente e o corpo.",
+      "Entendo… ansiedade constante desgasta muito a mente e o corpo.",
+      "Ansiedade pode dominar o dia da pessoa e atrapalhar até o descanso.",
       "Muita gente com ansiedade sente dificuldade até para relaxar de verdade.",
     ],
-    text: "Um estudo publicado no Neurotherapeutics mostrou redução significativa dos sintomas de ansiedade com o uso de canabidiol.",
+    study: "Um estudo publicado no *Neurotherapeutics* mostrou redução significativa dos sintomas de ansiedade em muitos pacientes, com respostas clinicamente relevantes.",
+    bridge: "Mas a consulta é justamente para entender se esse caminho pode fazer sentido para o seu caso, com segurança.",
   },
-  enxaqueca: {
-    percent: 55,
+  insonia: {
     empathy: [
-      "Entendo… enxaqueca pode ser extremamente incapacitante.",
-      "Quem sofre com enxaqueca sabe como isso pode parar o dia inteiro.",
-      "Enxaqueca recorrente realmente desgasta muito.",
+      "Entendo… dormir mal afeta absolutamente tudo.",
+      "Insônia realmente compromete energia, humor e concentração.",
+      "Quando a pessoa dorme mal por muito tempo, isso vai desgastando várias áreas da vida.",
     ],
-    text: "Estudos clínicos indicam redução da frequência e intensidade das crises de enxaqueca com o uso de canabinoides.",
+    study: "Estudos clínicos mostram melhora significativa da qualidade do sono em muitos pacientes, e em alguns levantamentos o impacto percebido no sono foi um dos principais motivos de procura por cannabis medicinal.",
+    bridge: "A avaliação serve para entender o seu padrão de sono e se esse tratamento pode fazer sentido para você.",
   },
   artrose: {
-    percent: 50,
     empathy: [
       "Entendo… artrose pode limitar muito movimento e qualidade de vida.",
       "Artrose costuma gerar dor constante e rigidez nas articulações.",
       "Muita gente com artrose sente dificuldade até nas tarefas simples.",
     ],
-    text: "Estudos indicam que os canabinoides podem ajudar na redução da dor e inflamação em pacientes com doenças articulares.",
+    study: "Em artrose, estudos indicam redução de dor e melhora funcional em parte dos pacientes, com respostas que em alguns cenários ficam na faixa de *30% a 50%*.",
+    bridge: "Mas isso precisa ser individualizado, principalmente considerando seu histórico e outras medicações.",
   },
   artrite: {
-    percent: 50,
     empathy: [
       "Entendo… artrite realmente pode causar muita dor e inflamação.",
       "A artrite costuma limitar bastante o dia a dia.",
-      "Muita gente com artrite sofre com dor articular constante.",
+      "Muita gente com artrite sofre com dor articular constante e rigidez.",
     ],
-    text: "Estudos mostram que os fitocanabinoides possuem propriedades anti-inflamatórias que podem ajudar pacientes com artrite.",
+    study: "Estudos sugerem melhora de dor e inflamação em parte dos pacientes com artrite, com resultados clínicos relevantes em alguns trabalhos.",
+    bridge: "Só que isso sempre precisa ser avaliado com critério pelo médico responsável.",
   },
-  coluna: {
-    percent: 50,
+  enxaqueca: {
     empathy: [
-      "Entendo… dor na coluna pode limitar muito a rotina.",
-      "Dor na coluna realmente atrapalha movimento, sono e produtividade.",
-      "Quando a coluna dói todos os dias, isso vai desgastando muito.",
+      "Entendo… enxaqueca pode ser extremamente incapacitante.",
+      "Quem sofre com enxaqueca sabe como isso pode parar o dia inteiro.",
+      "Enxaqueca recorrente realmente desgasta muito.",
     ],
-    text: "Estudos mostram melhora significativa da dor lombar crônica em pacientes tratados com canabinoides.",
+    study: "Estudos clínicos indicam redução da frequência e da intensidade das crises em parte dos pacientes com enxaqueca.",
+    bridge: "O Dr. Alef avalia se isso pode fazer sentido para o seu caso específico.",
   },
 };
 
 function buildEvidenceMessage(condition) {
   const ev = EVIDENCE_DB[condition];
   if (!ev) return null;
-  return (
-    `${pickRandom(ev.empathy)}\n\n` +
-    `${ev.text}\n\n` +
-    pickRandom([
-      `Agora me diz… como seria sua vida com cerca de ${ev.percent}% menos sintomas?`,
-      `Imagina como seria seu dia a dia com uma melhora assim.`,
-      `Se isso ajudou outras pessoas, também pode fazer sentido avaliar se pode ajudar você.`,
-    ])
-  );
+  return `${pickRandom(ev.empathy)}\n\n${ev.study}\n\n${ev.bridge}`;
 }
 
 function shouldUseEvidence(flags, state, incomingText) {
   if (Number(state.evidence_used_count || 0) >= 2) return false;
+  if (flags.asksHowConsultWorks || flags.asksLegal || flags.asksIfOnline || flags.asksChapado || flags.asksPriceDirect) return false;
   const cond = detectCondition(incomingText) || state.condition || null;
   if (!cond) return false;
   if (flags.asksIfWorks) return true;
-  if (flags.saysUnsure) return true;
+  if (flags.saysUnsure && !flags.asksHowConsultWorks) return true;
   if (!state.problem_text && cond) return true;
   const t = norm(incomingText);
   if (/(nao aguento|não aguento|to sofrendo|tô sofrendo|muito ruim|muito dificil|muito difícil)/.test(t)) return true;
   return false;
 }
 
-// ====== AGENDA ======
 function getGenericSlotsForDate(dateKey) {
-  const dt = parseDateKeyToDate(dateKey);
-  const day = dt.getDay();
-  if (day === 0) return [];
-  if (day === 1) return [];
-  if (day === 2) return ["16h", "17h", "18h", "19h", "20h", "21h"];
-  if (day === 6) return ["9h", "10h", "11h"];
-  return ["9h", "10h", "11h", "13h", "14h", "15h", "16h", "17h", "18h", "19h"];
+  return FIXED_SCHEDULE[dateKey] ? [...FIXED_SCHEDULE[dateKey].slots] : [];
 }
-
-function getBaseSlotsForDate(dateKey) {
-  if (FIXED_SCHEDULE[dateKey]) return [...FIXED_SCHEDULE[dateKey].slots];
-  return getGenericSlotsForDate(dateKey);
-}
-
+function getBaseSlotsForDate(dateKey) { return getGenericSlotsForDate(dateKey); }
 function sortSlotsSmart(slots) {
   const unique = removeDuplicates(slots);
   const prioritized = [];
@@ -560,10 +512,7 @@ async function acquireSlotHold(dateKey, time, phone, minutes = HOLD_MINUTES) {
 
   if (row.status === "held" && row.phone === phone) {
     await pool.query(
-      `UPDATE wa_slot_locks
-       SET expires_at = NOW() + ($2 || ' minutes')::interval,
-           updated_at = NOW()
-       WHERE slot_key=$1`,
+      `UPDATE wa_slot_locks SET expires_at = NOW() + ($2 || ' minutes')::interval, updated_at = NOW() WHERE slot_key=$1`,
       [key, String(minutes)]
     );
     return { ok: true, slot_key: key };
@@ -575,15 +524,10 @@ async function acquireSlotHold(dateKey, time, phone, minutes = HOLD_MINUTES) {
 
   await pool.query(
     `UPDATE wa_slot_locks
-     SET phone=$2,
-         status='held',
-         expires_at = NOW() + ($3 || ' minutes')::interval,
-         updated_at = NOW(),
-         paid_at = NULL
+     SET phone=$2, status='held', expires_at = NOW() + ($3 || ' minutes')::interval, updated_at = NOW(), paid_at = NULL
      WHERE slot_key=$1`,
     [key, phone, String(minutes)]
   );
-
   return { ok: true, slot_key: key };
 }
 
@@ -617,67 +561,104 @@ async function getSuggestedDayKeys() {
 }
 
 function urgencyAgendaPrefix() {
-  return "Essa semana os horários estão quase completos, mas ainda tenho alguns disponíveis.\n\n";
+  return "Essa semana ainda tenho alguns horários disponíveis em horário de Brasília.\n\n";
 }
 
 function formatDayOptions(dayKeys) {
   return dayKeys.map((d, i) => `${i + 1}) *${formatDatePt(d)}*`).join("\n");
 }
 
-// ====== COPY / UX ======
+function consultationExplanationReply() {
+  return (
+    "A avaliação com o Dr. Alef é *100% online, segura e individualizada*, com duração média de *45 minutos*.\n\n" +
+    "Nela, ele analisa seu histórico, o que você já tentou, medicações em uso, como os sintomas impactam sua rotina e se esse tratamento pode fazer sentido para o seu caso.\n\n" +
+    "Se fizer sentido, ele orienta os próximos passos com segurança."
+  );
+}
+
+function legalReply() {
+  return "Sim 🙂 O uso medicinal de canabinoides é legal no Brasil, mas sempre com avaliação e prescrição médica quando indicado.";
+}
+
+function chapadoReply() {
+  return (
+    "Essa é uma dúvida muito comum 🙂\n\n" +
+    "O tratamento medicinal não é a mesma coisa que uso recreativo. Tudo depende da avaliação médica, do tipo de formulação e da indicação correta."
+  );
+}
+
+function neuroHintReply() {
+  return "Isso pode indicar um quadro de dor neuropática, porém somente o Dr. Alef, que é o médico responsável, pode avaliar com precisão e te dizer como tratar.";
+}
+
+function onlineReply() {
+  return "Sim 🙂 A consulta é *100% online* e não precisa ir presencialmente a nenhum lugar.";
+}
+
+function whoReply() {
+  return "O Dr. Alef Kotula é o médico responsável pelos atendimentos. A consulta é individualizada e focada em entender com profundidade se esse tratamento pode fazer sentido para o seu caso.";
+}
+
 function prePriceValueReply() {
   return (
-    "Entendi 🙂\n\n" +
-    "Muitas pessoas que chegam aqui já tentaram vários tratamentos e ainda convivem com sintomas que impactam muito a rotina.\n\n" +
-    "A consulta com o Dr. Alef é *100% online, segura e individualizada*, com duração média de *45 minutos*.\n\n" +
-    "Com base na experiência da formação médica na Rússia, ele estruturou um método de avaliação clínica que busca entender o quadro com profundidade.\n\n" +
-    "Durante a consulta ele:\n\n" +
-    "1 - Revisa todo o seu histórico de saúde\n" +
-    "2 - Entende como os sintomas impactam sua rotina\n" +
-    "3 - Analisa tratamentos que você já tentou\n" +
-    "4 - Verifica medicações em uso e possíveis interações\n" +
-    "5 - Define objetivos claros de melhora, alinhados ao seu caso\n\n" +
-    "A maioria dos pacientes prefere iniciar já com acompanhamento, porque assim conseguimos ajustar o plano com mais segurança."
+    "Claro 🙂\n\n" +
+    "Antes de te passar as opções, eu te explico rapidamente o que está incluído, para o valor fazer sentido no contexto.\n\n" +
+    "O Dr. Alef faz uma avaliação médica aprofundada do seu caso, entende o que você já tentou, confere medicações em uso e define com mais clareza quais caminhos podem fazer sentido para você."
   );
 }
 
 function priceReply() {
   return (
-    prePriceValueReply() + "\n\n" +
-    "Funciona assim:\n\n" +
-    `1️⃣ *${PLANS.full.label}*\n${PLANS.full.subtitle} — R$${PLANS.full.price} ➡️\n⭐ opção escolhida por *87% dos pacientes*\n\n` +
-    `2️⃣ *${PLANS.basic.label}*\n${PLANS.basic.subtitle} — R$${PLANS.basic.price}\n\n` +
-    `3️⃣ *${PLANS.retorno.label}*\n${PLANS.retorno.subtitle} — R$${PLANS.retorno.price}\n\n` +
-    "Qual dessas opções faz mais sentido para você agora? Me responda com *1, 2 ou 3*."
-  );
-}
-
-function askPlanReply() {
-  return priceReply();
+    "Hoje trabalhamos com estas opções:\n\n" +
+    `1) *${PLANS.full.label}* (${PLANS.full.subtitle}) — *R$${PLANS.full.price}* *(87% das pessoas escolhem essa opção)* ⭐\n` +
+    `2) *${PLANS.basic.label}* (${PLANS.basic.subtitle}) — *R$${PLANS.basic.price}*\n` +
+    `3) *${PLANS.retorno.label}* (${PLANS.retorno.subtitle}) — *R$${PLANS.retorno.price}*\n\n` +
+    "Qual dessas opções faz mais sentido para você agora? Me responda com *1, 2 ou 3*.")
 }
 
 function askNameIntroReply() {
-  return "Oi 🙂\nEu sou a Lia, da equipe do Dr. Alef Kotula.\n\nPosso te ajudar por aqui.\n\nQual é o seu *primeiro nome*?";
+  return "Oi 🙂\nEu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nQual é o seu *primeiro nome*?";
 }
 
 function askProblemAfterNameReply(state) {
   const nome = maybeUseName(state) || state.nome || "";
-  return `${nome ? `Prazer, ${nome} 🙂\n\n` : ""}Me conta uma coisa rápida:\n\nO que você gostaria de tratar hoje?\n*Dor, sono, ansiedade ou outro problema?*`;
+  return `${nome ? `Prazer, ${nome} 🙂\n\n` : ""}Me conta uma coisa rápida: o que tem te incomodado mais hoje?\n\n*Dor, sono, ansiedade ou outro problema?*`;
 }
 
-function askOnlyProblemReply() {
-  return "Me conta uma coisa rápida:\n\nO que você gostaria de tratar hoje?\n*Dor, sono, ansiedade ou outro problema?*";
-}
-
-function askDayIntroWithRapportReply(state) {
+function q1Reply(state) {
   const nome = maybeUseName(state) || state.nome || "";
-  if (nome) return `Perfeito, ${nome} 🙂\n\nAgora vou te mostrar os próximos horários disponíveis.`;
-  return "Perfeito 🙂\n\nAgora vou te mostrar os próximos horários disponíveis.";
+  return `${nome ? `${nome}, ` : ""}só para eu entender melhor seu caso: isso já acontece há quanto tempo com você?`;
+}
+
+function q2Reply(state) {
+  const cond = state.condition || state.focus || "";
+  if (cond === "fibromialgia") return "Entendi. E hoje o que mais te incomoda nisso: a dor em si, o cansaço, o sono ou tudo isso junto?";
+  if (cond === "insonia") return "Entendi. Você tem mais dificuldade para pegar no sono, manter o sono ou acorda várias vezes durante a noite?";
+  if (cond === "ansiedade") return "Entendi. No seu caso pesa mais a mente acelerada, a insônia, a tensão no corpo ou as crises?";
+  if (cond === "dor_neuropatica") return "Entendi. No seu caso incomoda mais como ardência, choque, formigamento ou dor contínua?";
+  if (cond === "artrose") return "Entendi. No seu caso incomoda mais joelho, quadril, mãos, coluna ou outra articulação?";
+  if (cond === "artrite") return "Entendi. Hoje o que mais te incomoda é a dor, a rigidez ou o inchaço nas articulações?";
+  return "Entendi. E hoje o que mais te incomoda nisso: a dor em si, o sono, o cansaço ou o impacto na sua rotina?";
+}
+
+function q3Reply() {
+  return "Entendi. Você já tentou algum tratamento ou medicação para isso antes?";
+}
+
+function bridgeToConsultReply(state) {
+  const cond = state.condition || detectCondition(state.problem_text || "") || "dor_cronica";
+  const ev = buildEvidenceMessage(cond);
+  return (
+    "Faz sentido. Muitas pessoas chegam aqui depois de já terem tentado algumas opções e ainda assim continuarem sofrendo.\n\n" +
+    (ev ? `${ev}\n\n` : "") +
+    consultationExplanationReply() +
+    "\n\nSe você quiser, eu posso te mostrar os próximos horários disponíveis 🙂"
+  );
 }
 
 async function askDayReply() {
   const dayKeys = await getSuggestedDayKeys();
-  if (!dayKeys.length) return "No momento os horários dessa semana já estão completos. Quer que eu te coloque na lista de prioridade assim que abrir uma vaga? 🙂";
+  if (!dayKeys.length) return "No momento os horários desta semana já estão completos. Quer que eu te coloque na lista de prioridade assim que abrir uma vaga? 🙂";
   return (
     "Perfeito 🙂\n\n" +
     urgencyAgendaPrefix() +
@@ -693,7 +674,7 @@ async function offerSlotsReply(state) {
   if (!best.length) return "Esse dia acabou de ficar sem vagas 🙏 Quer que eu te mostre outra data próxima?";
   state.offered_slots = best;
   return (
-    "Claro 🙂\n" +
+    "Perfeito 🙂\n\n" +
     urgencyAgendaPrefix() +
     `Para *${formatDatePt(dateKey)}* tenho:\n\n` +
     best.map((s, i) => `${i + 1}) *${s}*`).join("\n") +
@@ -706,19 +687,17 @@ function askPreferredTimeReply(state) {
 }
 
 function askFullNameReply(state) {
-  return (
-    `Perfeito. Vou reservar provisoriamente *${prettySlot(state.date_key, state.slot_time)}* para você por alguns minutos.\n\n` +
-    "Só preciso confirmar alguns dados rápidos.\n\n" +
-    "Qual seu *nome completo*?"
-  );
+  return `Perfeito. Vou reservar provisoriamente *${prettySlot(state.date_key, state.slot_time)}* para você por alguns minutos.\n\nSó preciso confirmar alguns dados rápidos.\n\nQual seu *nome completo*?`;
 }
-
 function askBirthdateReply(state) {
   return `Obrigado, ${state.nome_completo.split(" ")[0]} 🙂\n\nQual sua *data de nascimento*?`;
 }
-
 function askEmailReply() {
   return "Perfeito 🙂\n\nE qual *e-mail* você prefere usar para receber as orientações da consulta?";
+}
+
+function askPlanReply() {
+  return consultationExplanationReply() + "\n\n" + priceReply();
 }
 
 function paymentSentReply(plan, link, state) {
@@ -742,20 +721,10 @@ function pendingPaymentReply(state) {
   );
 }
 
-function pendingPaymentWithEvidenceReply(state, incomingText) {
-  const cond = detectCondition(incomingText) || state.condition || null;
-  const ev = cond && Number(state.evidence_used_count || 0) < 2 ? buildEvidenceMessage(cond) : null;
-  if (ev) {
-    state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
-    return `${ev}\n\nSeu horário segue pré-reservado em *${prettySlot(state.date_key, state.slot_time)}*.\n\nSe quiser confirmar agora, é só finalizar por aqui:\n${state.payment.link}`;
-  }
-  return pendingPaymentReply(state);
-}
-
 function afterPaidReply(state) {
   return (
     "Pagamento confirmado ✅\n\n" +
-    `Sua consulta online ficou confirmada para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
+    `Sua consulta ficou confirmada para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
     "Mais perto do horário eu envio as orientações da consulta 🙂"
   );
 }
@@ -763,36 +732,24 @@ function afterPaidReply(state) {
 function buildExpensiveReply() {
   return (
     "Entendo você pensar nisso 🙂\n\n" +
-    "Mas aqui não é só uma conversa rápida. A consulta é uma avaliação médica completa, individualizada e com cerca de 45 minutos, para entender seu histórico, o que você já tentou, medicações em uso e montar um plano com segurança.\n\n" +
-    "Muita gente prefere já iniciar com acompanhamento justamente para ajustar tudo com mais segurança e evitar tentativa e erro.\n\n" +
-    "Se quiser, eu posso deixar seu horário reservado por alguns minutos enquanto você decide."
+    "Mas aqui não é só uma conversa rápida. É uma avaliação médica individualizada, com profundidade, justamente para entender seu histórico, o que você já tentou e qual caminho pode fazer sentido para você com segurança.\n\n" +
+    "Se quiser, eu posso te explicar rapidamente a diferença entre as opções."
   );
 }
 
 function buildThinkingReply(state) {
   if (state?.date_key && state?.slot_time) {
-    return (
-      "Claro 🙂\n\n" +
-      "Só te aviso que os horários costumam preencher rápido.\n\n" +
-      `Se quiser, posso manter *${prettySlot(state.date_key, state.slot_time)}* pré-reservado por alguns minutos enquanto você decide.`
-    );
+    return `Claro 🙂\n\nSe quiser, eu consigo manter *${prettySlot(state.date_key, state.slot_time)}* pré-reservado por alguns minutos enquanto você decide.`;
   }
-  return (
-    "Claro 🙂\n\n" +
-    "Só te aviso que os horários costumam preencher rápido.\n\n" +
-    "Se quiser, eu posso te mostrar a melhor opção disponível e deixar reservada por alguns minutos enquanto você decide."
-  );
+  return "Claro 🙂\n\nSe quiser, eu posso te mostrar os horários disponíveis e você decide com calma.";
 }
 
 function buildUnsureReply(state, incomingText) {
   const cond = detectCondition(incomingText) || state.condition || null;
-  const ev = cond ? buildEvidenceMessage(cond) : null;
-  const base =
-    "É super normal ter essa dúvida 🙂\n\n" +
-    "A avaliação serve justamente para entender seu caso com profundidade e ver se esse tratamento realmente faz sentido para você, com segurança e individualização.";
-
-  if (ev && Number(state.evidence_used_count || 0) < 2) {
-    state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
+  const base = "É super normal ter essa dúvida 🙂\n\nA avaliação serve justamente para entender seu caso com profundidade e ver se esse tratamento pode fazer sentido para você, com segurança e individualização.";
+  const ev = cond && Number(state.evidence_used_count || 0) < 2 ? buildEvidenceMessage(cond) : null;
+  if (ev) {
+    state.evidence_used_count += 1;
     return `${base}\n\n${ev}`;
   }
   return base;
@@ -803,15 +760,15 @@ function buildWorksReply(state, incomingText) {
   const ev = cond ? buildEvidenceMessage(cond) : null;
   if (ev) {
     state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
-    return `Sim, existem evidências interessantes 🙂\n\n${ev}\n\nA avaliação médica serve justamente para entender se isso pode fazer sentido para o seu caso.`;
+    return `Sim, existem evidências interessantes 🙂\n\n${ev}`;
   }
-  return "Sim, existem evidências interessantes em alguns casos 🙂\n\nMas a avaliação médica é importante justamente para entender se isso faz sentido para o seu caso e com segurança.";
+  return "Sim, existem evidências interessantes em alguns casos 🙂 Mas a avaliação médica é importante para entender se isso faz sentido para o seu caso e com segurança.";
 }
 
-// ====== INTENTS ======
 function detectIntent(text) {
   const t = norm(text);
   const wantsPrice = /\b(preco|preço|valor|quanto custa|investimento|custa|valores)\b/.test(t);
+  const asksPriceDirect = wantsPrice;
   const intentPay = /\b(como (pagar|fa[cç]o para pagar)|pagar|pagamento|pix|cartao|cartão|credito|crédito|debito|débito|boleto|link|parcel|parcela|quero pagar)\b/.test(t);
   const wantsBook = /\b(quero marcar|quero agendar|agendar|marcar|confirmar consulta|quero consulta|gostaria de agendar|tem horario|tem horário|agenda)\b/.test(t);
   const asksHours = /\b(horarios|horário|horario|que horas|vagas|disponibilidade)\b/.test(t);
@@ -819,20 +776,31 @@ function detectIntent(text) {
   const refuses = /\b(nao quero|não quero|pare|para|chega|rude|grosso|nao gostei|não gostei)\b/.test(t);
   const asksStartNow = /\b(como tomar|dose|dosagem|quantas gotas|comecar agora|começar agora)\b/.test(t);
   const urgency = /\b(dor no peito|falta de ar|desmaio|avc|convuls|paralisia|confusao|confusão)\b/.test(t);
-  const asksWho = /\b(quem e|quem eh|quem e o dr|quem é|quem é o dr)\b/.test(t);
+  const asksWho = /\b(quem e|quem eh|quem é|quem e o dr|quem é o dr|quem e o doutor|quem é o doutor)\b/.test(t);
   const asksIfWorks = /\b(funciona|serve|vale a pena|ajuda|melhora|tem resultado)\b/.test(t);
   const saysWillSee = /\b(vou ver|depois te falo|vou confirmar|vou pensar|te aviso|depois vejo)\b/.test(t);
   const saysIndecisive = /\b(tanto faz|qual voce acha melhor|qual você acha melhor)\b/.test(t);
   const saysExpensive = /\b(caro|caríssima|carissimo|caríssimo|achei caro|muito caro|pesado)\b/.test(t);
-  const saysUnsure = /\b(nao tenho certeza|não tenho certeza|nao sei|não sei|será|sera|to na duvida|tô na dúvida|duvida|dúvida)\b/.test(t);
+  const saysUnsure = /\b(nao tenho certeza|não tenho certeza|nao sei|não sei|sera|será|to na duvida|tô na dúvida|duvida|dúvida)\b/.test(t);
+  const asksHowConsultWorks = /\b(como funciona a consulta|como funciona essa consulta|como funciona essa avaliacao|como funciona essa avaliação|como funciona a avaliacao|como funciona a avaliação)\b/.test(t);
+  const asksIfOnline = /\b(e online|é online|online mesmo|presencial|precisa ir|tem que ir|ir em algum lugar|precisa ir na clinica|precisa ir na clínica)\b/.test(t);
+  const asksLegal = /\b(legal no brasil|e legal|é legal|precisa de receita|receita|pode comprar|comprar sem receita|anvisa)\b/.test(t);
+  const asksChapado = /\b(chapado|chapar|maconha mesmo|isso e maconha|isso é maconha|droga)\b/.test(t);
+
   const focus =
-    (/\b(insonia|insomnia|dormir|sono|acordar)\b/.test(t) && "insonia") ||
+    (/\b(insonia|insônia|dormir|sono|acordar)\b/.test(t) && "insonia") ||
     (/\b(ansiedade|panico|pânico|crise)\b/.test(t) && "ansiedade") ||
-    (/\b(dor|fibromialgia|lombar|artrose|artrite|neuropat|enxaqueca|coluna)\b/.test(t) && "dor") ||
+    (/\b(fibromialgia)\b/.test(t) && "fibromialgia") ||
+    (/\b(neuropat)\b/.test(t) && "dor_neuropatica") ||
+    (/\b(artrose)\b/.test(t) && "artrose") ||
+    (/\b(artrite)\b/.test(t) && "artrite") ||
+    (/\b(coluna|lombar)\b/.test(t) && "dor_lombar") ||
+    (/\b(dor)\b/.test(t) && "dor_cronica") ||
     null;
 
   return {
     wantsPrice,
+    asksPriceDirect,
     intentPay,
     wantsBook,
     asksHours,
@@ -846,11 +814,14 @@ function detectIntent(text) {
     saysIndecisive,
     saysExpensive,
     saysUnsure,
+    asksHowConsultWorks,
+    asksIfOnline,
+    asksLegal,
+    asksChapado,
     focus,
   };
 }
 
-// ====== OPENAI ======
 function compactMemory(state) {
   const s = state || {};
   return {
@@ -869,6 +840,8 @@ function compactMemory(state) {
     evidence_used_count: s.evidence_used_count || 0,
     objection_used_count: s.objection_used_count || 0,
     rapport_done: !!s.rapport_done,
+    diagnostic_step: s.diagnostic_step || 0,
+    price_ask_count: s.price_ask_count || 0,
     last_user_message: s.last_user_message || "",
     last_bot_reply: s.last_bot_reply || "",
   };
@@ -876,30 +849,29 @@ function compactMemory(state) {
 
 function buildSystemPrompt() {
   return `
-Você é "Lia", secretária premium do Dr. Alef Kotula.
+Você é "Lia", secretária humana e premium do Dr. Alef Kotula.
 
 OBJETIVO:
-- conduzir a conversa para qualificação, agendamento e pagamento
-- soar humana, consultiva, acolhedora e objetiva
-- aumentar confiança, clareza e conversão
+- soar humana, acolhedora, clara e objetiva
+- responder perguntas abertas com naturalidade
+- conduzir a conversa com elegância até consulta/agendamento
+- nunca parecer robótica ou apressada
 
 REGRAS ABSOLUTAS:
-- Nunca inventar preço.
-- Nunca enviar links.
-- Nunca citar valores em R$.
-- Nunca prometer cura ou garantir resultado.
-- Nunca prescrever dose, nunca orientar compra, nunca recomendar marca.
-- Nunca dizer que o tratamento serve com certeza para todos.
+- Nunca invente preço.
+- Nunca envie links.
+- Nunca cite valores em R$ por conta própria.
+- Nunca prometa cura ou resultado garantido.
+- Nunca prescreva dose, marca, compra ou produto.
+- Responda como uma ótima secretária humana.
 - No máximo 1 pergunta principal por mensagem.
-- Fale como uma secretária humana muito boa em atendimento.
-- Pode acolher, resumir, clarificar, quebrar objeções leves e manter rapport.
-- Pode ajudar a pessoa a avançar no funil com suavidade.
+- Responda primeiro a pergunta do paciente, depois conduza.
 
-COMANDOS DE SAÍDA ESPECIAL:
-- Se pedirem preço, valores ou quanto custa: responda exatamente "PRECISA_PRECO"
-- Se pedirem link de pagamento ou como pagar: responda exatamente "PRECISA_PAGAR"
-- Se pedirem agendar ou horários: responda exatamente "PRECISA_AGENDAR"
-- Se houver urgência médica grave: responda exatamente "URGENTE"
+COMANDOS ESPECIAIS:
+- Se pedirem preço ou valor: responda exatamente "PRECISA_PRECO"
+- Se pedirem pagamento ou link: responda exatamente "PRECISA_PAGAR"
+- Se pedirem horários ou agendar: responda exatamente "PRECISA_AGENDAR"
+- Se houver urgência médica: responda exatamente "URGENTE"
 
 FORMATO JSON:
 {
@@ -928,12 +900,11 @@ ${incomingText}
 SINAIS DETECTADOS:
 ${JSON.stringify(flags)}
 
-INSTRUÇÕES DESTA RESPOSTA:
-- Se o paciente estiver frio, priorize rapport.
-- Se já houver contexto suficiente, avance com suavidade.
-- Se o paciente estiver em dúvida, responda de forma consultiva e leve.
-- Se a conversa estiver próxima do agendamento, mantenha foco e não disperse.
-- Se houver pergunta médica geral, acolha e responda sem prometer cura.
+INSTRUÇÕES:
+- Responda primeiro a dúvida principal do paciente.
+- Depois conduza com suavidade, sem pressão.
+- Se o paciente estiver frio, seja acolhedora.
+- Se já houver contexto suficiente, avance com naturalidade.
 - Pode salvar nome, problema e condição em updates quando identificar.
 `;
 }
@@ -961,7 +932,7 @@ async function runLia({ incomingText, state, flags, mode = "guided" }) {
   try { parsed = JSON.parse(content); } catch { parsed = null; }
 
   if (!parsed || typeof parsed !== "object" || !parsed.reply) {
-    return { reply: "Entendi 🙂 Me conta só qual é sua principal queixa hoje?", updates: {} };
+    return { reply: "Entendi 🙂 Me conta só qual é sua principal dúvida agora?", updates: {} };
   }
 
   const r = String(parsed.reply || "").trim();
@@ -971,7 +942,7 @@ async function runLia({ incomingText, state, flags, mode = "guided" }) {
   if (r === "URGENTE") return { reply: "__URGENT__", updates: parsed.updates || {} };
 
   if (violatesNoPriceNoLink(r)) {
-    return { reply: "Entendi 🙂 Me conta só qual é sua principal queixa hoje?", updates: {} };
+    return { reply: "Entendi 🙂 Me conta só qual é sua principal dúvida agora?", updates: {} };
   }
 
   parsed.reply = clip(r, 1100);
@@ -979,7 +950,6 @@ async function runLia({ incomingText, state, flags, mode = "guided" }) {
   return parsed;
 }
 
-// ====== MERCADO PAGO ======
 async function mpCreatePreference({ phone, planKey }) {
   const plan = PLANS[planKey];
   if (!plan) throw new Error("Plano inválido");
@@ -1004,12 +974,10 @@ async function mpCreatePreference({ phone, planKey }) {
     headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-
   if (!r.ok) {
     const t = await r.text().catch(() => "");
     throw new Error(`MP preference erro: ${r.status} ${t}`);
   }
-
   const data = await r.json();
   return {
     preference_id: data.id,
@@ -1035,18 +1003,16 @@ function mpExtractPhoneFromPayment(payment) {
   return md.phone ? String(md.phone).trim() : null;
 }
 
-// ====== SEND ======
 function computeHumanDelay(flags, state) {
   let base = randInt(MIN_DELAY, MAX_DELAY);
-  if (flags.wantsBook || flags.asksHours) base = randInt(2, 5);
-  if (flags.wantsPrice) base = randInt(3, 6);
-  if (flags.intentPay) base = randInt(2, 4);
-  if (flags.asksIfWorks) base = randInt(4, 8);
-  if (flags.refuses) base = randInt(4, 8);
-  if (flags.saysExpensive || flags.saysUnsure || flags.saysWillSee) base = randInt(3, 6);
+  if (flags.wantsBook || flags.asksHours) base = randInt(1, 3);
+  if (flags.wantsPrice) base = randInt(2, 4);
+  if (flags.intentPay) base = randInt(1, 3);
+  if (flags.asksIfWorks) base = randInt(2, 4);
+  if (flags.refuses) base = randInt(2, 4);
   const lastAt = Number(state.last_sent_at || 0);
-  if (Date.now() - lastAt < 2000) base += 2;
-  return Math.max(2, base);
+  if (Date.now() - lastAt < 2000) base += 1;
+  return Math.max(1, base);
 }
 
 async function sendWhatsApp(to, from, body, delaySec) {
@@ -1054,7 +1020,6 @@ async function sendWhatsApp(to, from, body, delaySec) {
   await twilioClient.messages.create({ to, from, body });
 }
 
-// ====== ROUTES ======
 app.get("/", (req, res) => res.send("OK"));
 app.get("/mp/thanks", (req, res) => res.send("OK"));
 
@@ -1087,7 +1052,11 @@ app.post("/mp/webhook", async (req, res) => {
         const botFrom = state?.last_bot_from || null;
         if (botFrom) {
           try {
-            await twilioClient.messages.create({ to: `whatsapp:${phone}`, from: botFrom, body: afterPaidReply(state) });
+            await twilioClient.messages.create({
+              to: `whatsapp:${phone}`,
+              from: botFrom,
+              body: afterPaidReply(state),
+            });
           } catch {}
         }
       }
@@ -1096,6 +1065,36 @@ app.post("/mp/webhook", async (req, res) => {
     console.error("❌ MP webhook erro:", err);
   }
 });
+
+function initializeState(state, bot) {
+  state.last_bot_reply = state.last_bot_reply || "";
+  state.last_user_message = state.last_user_message || "";
+  state.last_sent_at = state.last_sent_at || 0;
+  state.nome = state.nome || null;
+  state.focus = state.focus || null;
+  state.condition = state.condition || null;
+  state.problem_text = state.problem_text || null;
+  state.payment = state.payment || null;
+  state.stage = state.stage || null;
+  state.selected_plan_key = state.selected_plan_key || null;
+  state.rapport_done = !!state.rapport_done;
+  state.name_used_count = Number(state.name_used_count || 0);
+  state.evidence_used_count = Number(state.evidence_used_count || 0);
+  state.objection_used_count = Number(state.objection_used_count || 0);
+  state.offered_slots = state.offered_slots || [];
+  state.date_key = state.date_key || null;
+  state.slot_time = state.slot_time || null;
+  state.slot_key = state.slot_key || null;
+  state.nome_completo = state.nome_completo || null;
+  state.birthdate = state.birthdate || null;
+  state.email = state.email || null;
+  state.price_ask_count = Number(state.price_ask_count || 0);
+  state.diagnostic_step = Number(state.diagnostic_step || 0);
+  state.diagnostic_answers = state.diagnostic_answers || {};
+  state.awaiting_operational_permission = !!state.awaiting_operational_permission;
+  state.last_bot_from = bot;
+  return state;
+}
 
 app.post("/whatsapp", async (req, res) => {
   const twiml = new twilio.twiml.MessagingResponse();
@@ -1133,33 +1132,9 @@ app.post("/whatsapp", async (req, res) => {
         return;
       }
 
-      let state = await getUserState(phone);
-      state.last_bot_reply = state.last_bot_reply || "";
-      state.last_user_message = state.last_user_message || "";
-      state.last_sent_at = state.last_sent_at || 0;
-      state.nome = state.nome || null;
-      state.focus = state.focus || null;
-      state.condition = state.condition || null;
-      state.problem_text = state.problem_text || null;
-      state.payment = state.payment || null;
-      state.stage = state.stage || null;
-      state.selected_plan_key = state.selected_plan_key || null;
-      state.rapport_done = !!state.rapport_done;
-      state.name_used_count = Number(state.name_used_count || 0);
-      state.evidence_used_count = Number(state.evidence_used_count || 0);
-      state.objection_used_count = Number(state.objection_used_count || 0);
-      state.offered_slots = state.offered_slots || [];
-      state.date_key = state.date_key || null;
-      state.slot_time = state.slot_time || null;
-      state.slot_key = state.slot_key || null;
-      state.nome_completo = state.nome_completo || null;
-      state.birthdate = state.birthdate || null;
-      state.email = state.email || null;
-      state.last_bot_from = bot;
-
+      let state = initializeState(await getUserState(phone), bot);
       const flags = detectIntent(finalText);
-      if (flags.focus) state.focus = flags.focus;
-
+      if (flags.focus && !state.focus) state.focus = flags.focus;
       const detectedCondition = detectCondition(finalText);
       if (detectedCondition && !state.condition) state.condition = detectedCondition;
       const detectedProblem = extractProblemText(finalText);
@@ -1167,162 +1142,114 @@ app.post("/whatsapp", async (req, res) => {
 
       let reply = "";
 
-      // 0) pagamento já aprovado
+      // 0) confirmado
       if (state.payment?.status === "approved") {
         reply = afterPaidReply(state);
       }
 
       // 1) urgência
       else if (flags.urgency) {
-        reply = "Entendi. Pela sua mensagem, isso pode precisar de avaliação URGENTE. Procure um pronto atendimento agora (ou SAMU 192). Assim que estiver seguro(a), me chama aqui.";
+        reply = "Entendi. Pela sua mensagem, isso pode precisar de avaliação urgente. Procure um pronto atendimento agora (ou SAMU 192). Assim que estiver seguro(a), me chama aqui.";
       }
 
-      // 2) apresentação inicial realmente humana
+      // 2) abertura
       else if (!state.stage && !state.nome) {
-        if (detectedCondition || flags.wantsBook || flags.asksHours || flags.wantsPrice || flags.intentPay) {
-          const ev = detectedCondition ? buildEvidenceMessage(detectedCondition) : null;
-          if (detectedCondition && ev && !flags.wantsPrice && !flags.intentPay) {
-            reply = `Oi 🙂\nEu sou a Lia, da equipe do Dr. Alef Kotula.\n\n${pickRandom(EVIDENCE_DB[detectedCondition]?.empathy || ["Entendi."])}\n\nAntes de te explicar direitinho, posso saber seu *primeiro nome*?`;
-          } else {
-            reply = askNameIntroReply();
-          }
-        } else {
-          reply = askNameIntroReply();
-        }
         state.stage = "ASK_NAME";
+        reply = askNameIntroReply();
       }
 
-      // 3) captação do nome
+      // 3) pergunta prioritária sempre primeiro
+      else if (flags.asksWho) {
+        reply = whoReply() + "\n\nSe você quiser, eu posso te explicar rapidamente como funciona a avaliação.";
+      }
+      else if (flags.asksIfOnline || flags.asksHowConsultWorks) {
+        reply = `${consultationExplanationReply()}\n\n${flags.asksIfOnline ? onlineReply() + "\n\n" : ""}Se você quiser, eu posso te mostrar os próximos horários disponíveis 🙂`;
+      }
+      else if (flags.asksLegal) {
+        reply = legalReply() + "\n\nSe quiser, eu também posso te explicar rapidamente como funciona a avaliação.";
+      }
+      else if (flags.asksChapado) {
+        reply = chapadoReply() + "\n\nSe você quiser, eu posso te explicar como funciona a avaliação médica com o Dr. Alef.";
+      }
+
+      // 4) captura do nome
       else if (state.stage === "ASK_NAME" && !state.nome) {
         const nm = extractFirstName(finalText);
         if (nm) {
           state.nome = nm;
           state.rapport_done = true;
-          if (state.problem_text || detectedProblem) {
-            if (!state.problem_text && detectedProblem) state.problem_text = detectedProblem;
-            if (!state.condition && state.problem_text) state.condition = detectCondition(state.problem_text);
-            state.stage = "ASK_DAY";
-            const cond = state.condition;
-            if (cond && shouldUseEvidence(flags, state, state.problem_text || finalText)) {
-              const ev = buildEvidenceMessage(cond);
-              if (ev) {
-                state.evidence_used_count += 1;
-                reply = `Prazer, ${state.nome} 🙂\n\n${ev}\n\nAgora, se quiser, eu já posso te mostrar os próximos horários disponíveis.`;
-              } else {
-                reply = askProblemAfterNameReply(state);
-                state.stage = "ASK_PROBLEM";
-              }
-            } else {
-              reply = askProblemAfterNameReply(state);
-              state.stage = "ASK_PROBLEM";
-            }
-          } else {
-            reply = askProblemAfterNameReply(state);
-            state.stage = "ASK_PROBLEM";
-          }
+          state.stage = "ASK_PROBLEM";
+          reply = askProblemAfterNameReply(state);
         } else {
           const ai = await runLia({ incomingText: finalText, state, flags, mode: "rapport" });
-          if (ai.reply === "__NEED_PRICE__" || ai.reply === "__NEED_PAY__" || ai.reply === "__NEED_BOOK__") {
+          if (ai.reply === "__NEED_PRICE__" || ai.reply === "__NEED_BOOK__" || ai.reply === "__NEED_PAY__") {
             reply = askNameIntroReply();
           } else {
-            reply = `Perfeito 🙂 Antes de seguir, me diz só seu *primeiro nome*.`;
+            reply = "Perfeito 🙂 Antes de seguir, me diz só seu *primeiro nome*.";
           }
         }
       }
 
-      // 4) captação do problema com IA guiada
+      // 5) captura problema
       else if (state.stage === "ASK_PROBLEM" || (state.nome && !state.problem_text && !state.date_key)) {
         const pb = extractProblemText(finalText);
         if (pb) {
           state.problem_text = pb;
-          if (!state.condition) state.condition = detectCondition(pb);
-
-          const cond = state.condition;
-          if (cond && shouldUseEvidence(flags, state, pb)) {
-            const ev = buildEvidenceMessage(cond);
-            if (ev) {
-              state.evidence_used_count += 1;
-              reply = `Entendi, ${state.nome || ""}.\n\n${ev}\n\nAgora, se quiser, eu já posso te mostrar os próximos horários disponíveis.`.replace("Entendi, .", "Entendi.");
-              state.stage = "ASK_DAY";
-            } else {
-              state.stage = "ASK_DAY";
-              reply = await askDayReply();
-            }
-          } else {
-            state.stage = "ASK_DAY";
-            reply = await askDayReply();
-          }
+          state.condition = state.condition || detectCondition(pb) || state.focus || null;
+          state.stage = "DIAG_Q1";
+          state.diagnostic_step = 1;
+          reply = q1Reply(state);
         } else {
           const ai = await runLia({ incomingText: finalText, state, flags, mode: "qualify_problem" });
-          if (ai.reply === "__NEED_PRICE__") {
-            reply = askOnlyProblemReply();
-          } else if (ai.reply === "__NEED_BOOK__") {
-            reply = askOnlyProblemReply();
-          } else {
-            reply = askOnlyProblemReply();
-          }
+          if (ai.reply === "__NEED_PRICE__") reply = "Claro 🙂 Antes de entrar nos valores, eu quero entender rapidinho seu foco principal. O que você gostaria de tratar hoje?";
+          else reply = askProblemAfterNameReply(state);
         }
       }
 
-      // 5) troca de horário
-      else if (state.date_key && wantsReschedule(finalText)) {
-        const requestedTime = extractHourOnly(finalText);
-        const available = await getAvailableSlotsForDate(state.date_key);
+      // 6) script diagnóstico
+      else if (state.stage === "DIAG_Q1") {
+        state.diagnostic_answers.q1 = finalText;
+        state.diagnostic_step = 2;
+        state.stage = "DIAG_Q2";
+        reply = q2Reply(state);
+      }
+      else if (state.stage === "DIAG_Q2") {
+        state.diagnostic_answers.q2 = finalText;
+        state.diagnostic_step = 3;
+        state.stage = "DIAG_Q3";
+        reply = q3Reply();
+      }
+      else if (state.stage === "DIAG_Q3") {
+        state.diagnostic_answers.q3 = finalText;
+        state.diagnostic_step = 3;
+        state.stage = "AFTER_DIAGNOSTIC";
+        reply = bridgeToConsultReply(state);
+      }
 
-        if (!requestedTime) {
-          reply = `Sem problema 🙂 Me diz o horário exato em *${formatDatePt(state.date_key)}*, por exemplo *16h*.`;
-        } else if (available.includes(requestedTime)) {
-          const hold = await acquireSlotHold(state.date_key, requestedTime, phone);
-          if (!hold.ok) {
-            reply = "Esse horário acabou de ser preenchido 🙏 Vou te mostrar as próximas melhores opções.";
-            state.slot_time = null;
-            state.slot_key = null;
-            state.stage = "OFFER_SLOTS";
-            reply += "\n\n" + (await offerSlotsReply(state));
-          } else {
-            state.slot_time = requestedTime;
-            state.slot_key = hold.slot_key;
-            await releaseOldHeldSlotsForPhone(phone, hold.slot_key);
-
-            if (state.payment?.status === "pending" && state.payment?.link) {
-              reply = `Perfeito 🙂 Ajustei para *${prettySlot(state.date_key, state.slot_time)}*.\n\nSeu link continua o mesmo:\n${state.payment.link}`;
-              state.stage = "WAIT_PAYMENT";
-            } else {
-              reply = `Perfeito 🙂 Ajustei para *${prettySlot(state.date_key, state.slot_time)}*.`;
-            }
-          }
+      // 7) se o paciente quiser ver horários após a ponte
+      else if (state.stage === "AFTER_DIAGNOSTIC" && (flags.wantsBook || flags.asksHours || flags.confirms)) {
+        state.stage = "ASK_DAY";
+        reply = await askDayReply();
+      }
+      else if (state.stage === "AFTER_DIAGNOSTIC") {
+        const ai = await runLia({ incomingText: finalText, state, flags, mode: "after_diagnostic" });
+        if (ai.reply === "__NEED_BOOK__") {
+          state.stage = "ASK_DAY";
+          reply = await askDayReply();
+        } else if (ai.reply === "__NEED_PRICE__") {
+          state.price_ask_count += 1;
+          reply = state.price_ask_count >= 2 ? priceReply() : prePriceValueReply();
+          if (state.price_ask_count >= 2) state.stage = "ASK_PLAN";
         } else {
-          const best2 = await chooseBestSlotsForDate(state.date_key, 3);
-          reply = `Esse horário específico não está disponível em *${formatDatePt(state.date_key)}*.\n\nO mais próximo que tenho é:\n${best2.map((s, i) => `${i + 1}) *${s}*`).join("\n")}\n\nQual fica melhor para você?`;
-          state.stage = "OFFER_SLOTS";
+          reply = ai.reply;
+          state = mergeState(state, ai.updates);
         }
       }
 
-      // 6) aguardando pagamento: permitir troca de plano também
+      // 8) intenção de pagar / pagamento pendente
       else if (state.payment?.status === "pending" && state.payment?.link) {
-        if (wantsChangePlan(finalText)) {
-          const newPlanKey = extractPlanChoice(finalText);
-          if (newPlanKey && newPlanKey !== state.payment.plan_key) {
-            const pref = await mpCreatePreference({ phone, planKey: newPlanKey });
-            state.selected_plan_key = newPlanKey;
-            state.payment = {
-              status: "pending",
-              plan_key: newPlanKey,
-              preference_id: pref.preference_id,
-              link: pref.link,
-              external_reference: pref.external_reference,
-              created_at: Date.now(),
-            };
-            reply = `Perfeito 🙂 Ajustei para o novo plano.\n\n${paymentSentReply(pref.plan, pref.link, state)}`;
-          } else {
-            reply = pendingPaymentReply(state);
-          }
-          state.stage = "WAIT_PAYMENT";
-        } else if (flags.intentPay) {
+        if (flags.intentPay) {
           reply = pendingPaymentReply(state);
-          state.stage = "WAIT_PAYMENT";
-        } else if (flags.asksIfWorks || detectedCondition) {
-          reply = pendingPaymentWithEvidenceReply(state, finalText);
           state.stage = "WAIT_PAYMENT";
         } else if (flags.saysExpensive) {
           reply = buildExpensiveReply() + `\n\nSe quiser confirmar agora, seu link continua ativo:\n${state.payment.link}`;
@@ -1331,23 +1258,17 @@ app.post("/whatsapp", async (req, res) => {
           reply = buildThinkingReply(state) + `\n\nSe quiser finalizar agora, seu link continua aqui:\n${state.payment.link}`;
           state.stage = "WAIT_PAYMENT";
         } else {
-          const ai = await runLia({ incomingText: finalText, state, flags, mode: "pre_payment_guided" });
-          if (ai.reply === "__NEED_PAY__") reply = pendingPaymentReply(state);
-          else if (ai.reply === "__NEED_BOOK__") reply = pendingPaymentReply(state);
-          else if (ai.reply === "__NEED_PRICE__") reply = pendingPaymentReply(state);
-          else reply = pendingPaymentReply(state);
+          reply = pendingPaymentReply(state);
           state.stage = "WAIT_PAYMENT";
         }
       }
-
-      // 7) intenção pagar
       else if (flags.intentPay) {
         if (!state.nome) {
           state.stage = "ASK_NAME";
           reply = askNameIntroReply();
         } else if (!state.problem_text) {
           state.stage = "ASK_PROBLEM";
-          reply = askOnlyProblemReply();
+          reply = askProblemAfterNameReply(state);
         } else if (!state.date_key) {
           state.stage = "ASK_DAY";
           reply = "Perfeito 🙂 Antes do pagamento, vou te mostrar os horários disponíveis para reservar seu atendimento.";
@@ -1370,8 +1291,7 @@ app.post("/whatsapp", async (req, res) => {
             state.slot_time = null;
             state.slot_key = null;
             state.stage = "OFFER_SLOTS";
-            reply = "Esse horário acabou de ser preenchido antes da confirmação 🙏 Vou te mostrar as próximas melhores opções.";
-            reply += "\n\n" + (await offerSlotsReply(state));
+            reply = "Esse horário acabou de ser preenchido antes da confirmação 🙏 Vou te mostrar as próximas melhores opções.\n\n" + (await offerSlotsReply(state));
           } else {
             state.slot_key = holdCheck.slot_key;
             const pref = await mpCreatePreference({ phone, planKey });
@@ -1392,26 +1312,26 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 8) preço
+      // 9) preço: uma vez faz rapport/valor, duas vezes revela
       else if (flags.wantsPrice) {
+        state.price_ask_count += 1;
         if (!state.nome) {
           state.stage = "ASK_NAME";
-          reply = askNameIntroReply();
-        } else if (!state.problem_text) {
+          reply = state.price_ask_count >= 2 ? `${prePriceValueReply()}\n\n${priceReply()}` : "Claro 🙂 Antes de te passar as opções, eu quero entender rapidinho seu caso para te orientar melhor.\n\nQual é o seu *primeiro nome*?";
+          if (state.price_ask_count >= 2) state.stage = "ASK_PLAN";
+        } else if (!state.problem_text && state.price_ask_count < 2) {
           state.stage = "ASK_PROBLEM";
-          reply = askOnlyProblemReply();
+          reply = prePriceValueReply() + "\n\nMe conta rapidinho o que você gostaria de tratar hoje.";
         } else {
           reply = priceReply();
           state.stage = "ASK_PLAN";
         }
       }
 
-      // 9) dose / compra
+      // 10) objeções e dúvidas
       else if (flags.asksStartNow) {
         reply = "Entendi sua vontade de começar. Por segurança, eu não consigo orientar dose/como tomar por aqui 🙏 Isso depende do seu caso e das medicações. Se quiser, eu te explico como funciona a avaliação e já te ajudo a confirmar.";
       }
-
-      // 10) objeções principais
       else if (flags.saysExpensive) {
         state.objection_used_count += 1;
         reply = buildExpensiveReply();
@@ -1430,7 +1350,7 @@ app.post("/whatsapp", async (req, res) => {
           : "Os horários que os pacientes costumam preferir são no início da noite.\n\nTenho *18h* ou *19h* disponíveis.\n\nQual fica melhor para você?";
       }
       else if (flags.asksIfWorks) {
-        reply = buildWorksReply(state, finalText);
+        reply = buildWorksReply(state, finalText) + "\n\nSe você quiser, eu posso te explicar rapidamente como funciona a avaliação.";
       }
 
       // 11) entrada de agendamento
@@ -1440,7 +1360,7 @@ app.post("/whatsapp", async (req, res) => {
           reply = askNameIntroReply();
         } else if (!state.problem_text) {
           state.stage = "ASK_PROBLEM";
-          reply = askOnlyProblemReply();
+          reply = askProblemAfterNameReply(state);
         } else if (!state.date_key) {
           state.stage = "ASK_DAY";
           reply = await askDayReply();
@@ -1467,24 +1387,20 @@ app.post("/whatsapp", async (req, res) => {
         const dayChoice = extractNumericChoice(finalText);
         const explicitDate = extractDateKey(finalText);
         const suggested = await getSuggestedDayKeys();
-
         if (dayChoice && suggested[dayChoice - 1]) {
           state.date_key = suggested[dayChoice - 1];
           state.stage = "OFFER_SLOTS";
           reply = await offerSlotsReply(state);
         } else if (explicitDate) {
           const avail = await getAvailableSlotsForDate(explicitDate);
-          if (!avail.length) {
-            reply = "Esse dia está indisponível no momento 🙏 Quer que eu te mostre outra data próxima?";
-          } else {
+          if (!avail.length) reply = "Esse dia está indisponível no momento 🙏 Quer que eu te mostre outra data próxima?";
+          else {
             state.date_key = explicitDate;
             state.stage = "OFFER_SLOTS";
             reply = await offerSlotsReply(state);
           }
         } else {
-          const ai = await runLia({ incomingText: finalText, state, flags, mode: "schedule_day" });
-          if (ai.reply === "__NEED_BOOK__") reply = await askDayReply();
-          else reply = "Qual data fica melhor para você? Pode me responder com o número da opção ou com a data, por exemplo *10/03* 🙂";
+          reply = "Qual data fica melhor para você? Pode me responder com o número da opção ou com o dia, por exemplo *quarta-feira* 🙂";
         }
       }
 
@@ -1498,8 +1414,7 @@ app.post("/whatsapp", async (req, res) => {
           const chosen = best[choiceNum - 1];
           const hold = await acquireSlotHold(state.date_key, chosen, phone);
           if (!hold.ok) {
-            reply = "Esse horário acabou de ser preenchido 🙏 Vou te mostrar as próximas melhores opções.";
-            reply += "\n\n" + (await offerSlotsReply(state));
+            reply = "Esse horário acabou de ser preenchido 🙏 Vou te mostrar as próximas melhores opções.\n\n" + (await offerSlotsReply(state));
           } else {
             state.slot_time = chosen;
             state.slot_key = hold.slot_key;
@@ -1512,8 +1427,7 @@ app.post("/whatsapp", async (req, res) => {
           if (available.includes(requestedTime)) {
             const hold = await acquireSlotHold(state.date_key, requestedTime, phone);
             if (!hold.ok) {
-              reply = "Esse horário acabou de ser preenchido 🙏 Posso te mostrar as próximas melhores opções.";
-              reply += "\n\n" + (await offerSlotsReply(state));
+              reply = "Esse horário acabou de ser preenchido 🙏 Posso te mostrar as próximas melhores opções.\n\n" + (await offerSlotsReply(state));
             } else {
               state.slot_time = requestedTime;
               state.slot_key = hold.slot_key;
@@ -1525,7 +1439,7 @@ app.post("/whatsapp", async (req, res) => {
             const best2 = await chooseBestSlotsForDate(state.date_key, 3);
             reply = `Esse horário específico não está disponível em *${formatDatePt(state.date_key)}*.\n\nO mais próximo que tenho é:\n${best2.map((s, i) => `${i + 1}) *${s}*`).join("\n")}\n\nQual fica melhor para você?`;
           }
-        } else if (isWantsDifferentTime(finalText)) {
+        } else if (/\b(outro horario|outro horário|nenhum desses|nenhum|tem outro|outro dia)\b/.test(norm(finalText))) {
           state.stage = "ASK_SPECIFIC_TIME";
           reply = askPreferredTimeReply(state);
         } else {
@@ -1533,7 +1447,7 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 14) pedir horário específico
+      // 14) horário específico
       else if (state.stage === "ASK_SPECIFIC_TIME") {
         const requestedTime = extractHourOnly(finalText);
         if (!requestedTime) {
@@ -1543,9 +1457,8 @@ app.post("/whatsapp", async (req, res) => {
           if (available.includes(requestedTime)) {
             const hold = await acquireSlotHold(state.date_key, requestedTime, phone);
             if (!hold.ok) {
-              reply = "Esse horário acabou de ser preenchido 🙏 Vou te mostrar outras opções.";
+              reply = "Esse horário acabou de ser preenchido 🙏 Vou te mostrar outras opções.\n\n" + (await offerSlotsReply(state));
               state.stage = "OFFER_SLOTS";
-              reply += "\n\n" + (await offerSlotsReply(state));
             } else {
               state.slot_time = requestedTime;
               state.slot_key = hold.slot_key;
@@ -1563,11 +1476,23 @@ app.post("/whatsapp", async (req, res) => {
       // 15) dados cadastrais
       else if (state.stage === "ASK_FULLNAME") {
         const full = extractFullName(finalText);
-        reply = full ? (state.nome_completo = full, state.stage = "ASK_BIRTHDATE", askBirthdateReply(state)) : "Perfeito 🙂 Me manda seu *nome completo* certinho, por favor.";
+        if (full) {
+          state.nome_completo = full;
+          state.stage = "ASK_BIRTHDATE";
+          reply = askBirthdateReply(state);
+        } else {
+          reply = "Perfeito 🙂 Me manda seu *nome completo* certinho, por favor.";
+        }
       }
       else if (state.stage === "ASK_BIRTHDATE") {
         const bd = extractBirthDate(finalText);
-        reply = bd ? (state.birthdate = bd, state.stage = "ASK_EMAIL", askEmailReply()) : "Me manda sua *data de nascimento* no formato *dd/mm/aaaa* 🙂";
+        if (bd) {
+          state.birthdate = bd;
+          state.stage = "ASK_EMAIL";
+          reply = askEmailReply();
+        } else {
+          reply = "Me manda sua *data de nascimento* no formato *dd/mm/aaaa* 🙂";
+        }
       }
       else if (state.stage === "ASK_EMAIL") {
         const em = extractEmail(finalText);
@@ -1580,23 +1505,20 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 16) escolha de plano
+      // 16) plano
       else if (state.stage === "ASK_PLAN") {
         const planKey = extractPlanChoice(finalText);
         if (flags.saysExpensive) reply = buildExpensiveReply();
         else if (flags.saysWillSee) reply = buildThinkingReply(state);
         else if (flags.saysUnsure) reply = buildUnsureReply(state, finalText);
-        else if (flags.asksIfWorks) reply = buildWorksReply(state, finalText);
-        else if (!planKey) reply = askPlanReply();
-        else {
+        else if (planKey) {
           state.selected_plan_key = planKey;
           const holdCheck = await acquireSlotHold(state.date_key, state.slot_time, phone);
           if (!holdCheck.ok) {
             state.slot_time = null;
             state.slot_key = null;
             state.stage = "OFFER_SLOTS";
-            reply = "Esse horário acabou de ser preenchido antes da confirmação 🙏 Vou te mostrar as próximas melhores opções.";
-            reply += "\n\n" + (await offerSlotsReply(state));
+            reply = "Esse horário acabou de ser preenchido antes da confirmação 🙏 Vou te mostrar as próximas melhores opções.\n\n" + (await offerSlotsReply(state));
           } else {
             state.slot_key = holdCheck.slot_key;
             const already = state.payment && state.payment.preference_id && state.payment.plan_key === planKey && state.payment.status === "pending";
@@ -1616,6 +1538,8 @@ app.post("/whatsapp", async (req, res) => {
             }
             state.stage = "WAIT_PAYMENT";
           }
+        } else {
+          reply = "Qual dessas opções faz mais sentido para você? Me responde com *1, 2 ou 3* 🙂";
         }
       }
 
@@ -1624,13 +1548,13 @@ app.post("/whatsapp", async (req, res) => {
         reply = "Tranquilo 🙂 Desculpa se soou pressionado. Quer que eu te explique rapidinho como funciona ou prefere só tirar uma dúvida agora?";
       }
 
-      // 18) evidence engine útil
+      // 18) evidence útil
       else if (shouldUseEvidence(flags, state, finalText)) {
         const cond = detectCondition(finalText) || state.condition;
         const ev = buildEvidenceMessage(cond);
         if (ev) {
           state.evidence_used_count += 1;
-          reply = ev;
+          reply = ev + "\n\nSe você quiser, eu posso te explicar rapidamente como funciona a avaliação.";
         } else {
           const ai = await runLia({ incomingText: finalText, state, flags, mode: "guided" });
           reply = ai.reply;
@@ -1642,49 +1566,29 @@ app.post("/whatsapp", async (req, res) => {
       else {
         const ai = await runLia({ incomingText: finalText, state, flags, mode: "open_conversation" });
         if (ai.reply === "__NEED_PRICE__") {
-          if (!state.nome) {
-            state.stage = "ASK_NAME";
-            reply = askNameIntroReply();
-          } else if (!state.problem_text) {
-            state.stage = "ASK_PROBLEM";
-            reply = askOnlyProblemReply();
-          } else {
-            reply = priceReply();
-            state.stage = "ASK_PLAN";
-          }
-        } else if (ai.reply === "__NEED_PAY__") {
-          if (state.payment?.status === "pending" && state.payment?.link) {
-            reply = pendingPaymentReply(state);
-            state.stage = "WAIT_PAYMENT";
-          } else if (state.selected_plan_key && state.date_key && state.slot_time && state.slot_key && state.nome_completo && state.birthdate && state.email) {
-            const pref = await mpCreatePreference({ phone, planKey: state.selected_plan_key });
-            state.payment = {
-              status: "pending",
-              plan_key: state.selected_plan_key,
-              preference_id: pref.preference_id,
-              link: pref.link,
-              external_reference: pref.external_reference,
-              created_at: Date.now(),
-            };
-            reply = paymentSentReply(pref.plan, pref.link, state);
-            state.stage = "WAIT_PAYMENT";
-          } else {
-            state.stage = state.nome ? (state.problem_text ? "ASK_DAY" : "ASK_PROBLEM") : "ASK_NAME";
-            reply = state.stage === "ASK_NAME" ? askNameIntroReply() : state.stage === "ASK_PROBLEM" ? askOnlyProblemReply() : await askDayReply();
-          }
+          state.price_ask_count += 1;
+          reply = state.price_ask_count >= 2 ? priceReply() : prePriceValueReply();
+          if (state.price_ask_count >= 2) state.stage = "ASK_PLAN";
         } else if (ai.reply === "__NEED_BOOK__") {
           if (!state.nome) {
             state.stage = "ASK_NAME";
             reply = askNameIntroReply();
           } else if (!state.problem_text) {
             state.stage = "ASK_PROBLEM";
-            reply = askOnlyProblemReply();
+            reply = askProblemAfterNameReply(state);
           } else {
             state.stage = "ASK_DAY";
             reply = await askDayReply();
           }
+        } else if (ai.reply === "__NEED_PAY__") {
+          if (state.payment?.status === "pending" && state.payment?.link) {
+            reply = pendingPaymentReply(state);
+            state.stage = "WAIT_PAYMENT";
+          } else {
+            reply = "Perfeito 🙂 Antes de finalizar, eu só preciso reservar seu horário e confirmar alguns dados.";
+          }
         } else if (ai.reply === "__URGENT__") {
-          reply = "Entendi. Pela sua mensagem, isso pode precisar de avaliação URGENTE. Procure um pronto atendimento agora (ou SAMU 192). Assim que estiver seguro(a), me chama aqui.";
+          reply = "Pela sua mensagem, isso pode precisar de avaliação urgente. Procure um pronto atendimento agora (ou SAMU 192).";
         } else {
           reply = ai.reply;
           state = mergeState(state, ai.updates);
@@ -1694,22 +1598,22 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // ===== anti-loop =====
       if (similar(reply, state.last_bot_reply)) {
         if (!state.nome) reply = askNameIntroReply();
-        else if (!state.problem_text) reply = askOnlyProblemReply();
+        else if (!state.problem_text) reply = askProblemAfterNameReply(state);
+        else if (state.stage === "DIAG_Q1") reply = q1Reply(state);
+        else if (state.stage === "DIAG_Q2") reply = q2Reply(state);
+        else if (state.stage === "DIAG_Q3") reply = q3Reply();
         else if (!state.date_key) reply = await askDayReply();
         else if (!state.slot_time) reply = await offerSlotsReply(state);
         else if (!state.nome_completo) reply = askFullNameReply(state);
         else if (!state.birthdate) reply = askBirthdateReply(state);
         else if (!state.email) reply = askEmailReply();
         else if (state.payment?.status === "pending" && state.payment?.link) reply = pendingPaymentReply(state);
-        else reply = "Entendi 🙂 Me conta só sua principal dúvida agora.";
+        else reply = "Entendi 🙂 Me diz só: seu foco hoje é mais dor, sono, ansiedade ou outra questão?";
       }
 
-      if (state.nome && reply.includes(state.nome)) {
-        state.name_used_count = Number(state.name_used_count || 0) + 1;
-      }
+      if (state.nome && reply.includes(state.nome)) state.name_used_count = Number(state.name_used_count || 0) + 1;
 
       const delaySec = computeHumanDelay(flags, state);
       state.last_bot_reply = reply;
@@ -1733,49 +1637,5 @@ app.post("/whatsapp", async (req, res) => {
   })();
 });
 
-// ====== DEBUG ======
-app.post("/create-payment", async (req, res) => {
-  try {
-    const amount = Number(req.body?.amount);
-    const description = String(req.body?.description || "Pagamento");
-    const phone = String(req.body?.phone || "").trim().replace(/^whatsapp:/, "");
-    if (!amount || amount <= 0) return res.status(400).json({ error: "amount inválido" });
-
-    const response = await fetch("https://api.mercadopago.com/checkout/preferences", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        items: [{ title: description, quantity: 1, currency_id: "BRL", unit_price: amount }],
-        notification_url: `${BASE_URL}/mp/webhook`,
-        metadata: { phone: phone || null },
-      }),
-    });
-
-    const data = await response.json();
-    res.json({ payment_link: data.init_point || data.sandbox_init_point });
-  } catch (error) {
-    console.error(error);
-    res.status(500).send("Erro ao criar pagamento");
-  }
-});
-
-app.post("/simulate-payment", async (req, res) => {
-  try {
-    const phone = String(req.body?.phone || "").trim().replace(/^whatsapp:/, "");
-    if (!phone) return res.status(400).send("phone obrigatório");
-
-    const state = await getUserState(phone);
-    state.payment = state.payment || {};
-    state.payment.status = "approved";
-    state.payment.simulated = true;
-    if (state.slot_key) await markSlotPaid(state.slot_key, phone);
-    await saveUserState(phone, state);
-    res.send("Pagamento simulado com sucesso");
-  } catch (e) {
-    console.error(e);
-    res.status(500).send("Erro ao simular pagamento");
-  }
-});
-
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 LIA V13 rodando na porta ${PORT}`));
