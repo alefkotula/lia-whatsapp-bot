@@ -34,6 +34,44 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(express.json());
 app.use("/mp", express.json({ type: ["application/json", "text/json", "*/*"] }));
+function rememberPatientContext(state, message) {
+
+  if (!state.memory) {
+    state.memory = {}
+  }
+
+  const text = (message || "").toLowerCase()
+
+  if (text.includes("fibromialgia")) {
+    state.memory.condition = "fibromialgia"
+  }
+
+  if (text.includes("coluna") || text.includes("lombar")) {
+    state.memory.condition = "dor lombar"
+  }
+
+  if (text.includes("artrose")) {
+    state.memory.condition = "artrose"
+  }
+
+  if (text.includes("artrite")) {
+    state.memory.condition = "artrite"
+  }
+
+  if (text.includes("ansiedade")) {
+    state.memory.condition = "ansiedade"
+  }
+
+  if (text.includes("insônia") || text.includes("insonia")) {
+    state.memory.condition = "insônia"
+  }
+
+  if (text.includes("dor")) {
+    state.memory.symptom = "dor"
+  }
+
+  return state
+}
 
 const {
   OPENAI_API_KEY,
