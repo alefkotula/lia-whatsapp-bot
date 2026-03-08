@@ -20,7 +20,7 @@
  * ENV:
  * OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, DATABASE_URL
  * MP_ACCESS_TOKEN, PUBLIC_BASE_URL
- * MODEL_CHAT (opcional, padrão gpt-4.1)
+ * MODEL_CHAT (opcional, padrão gpt-5.2)
  * MIN_DELAY_SEC / MAX_DELAY_SEC (opcional)
  */
 
@@ -56,7 +56,7 @@ if (!PUBLIC_BASE_URL) console.warn("⚠️ PUBLIC_BASE_URL não definido.");
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-const CHAT_MODEL = MODEL_CHAT || "gpt-4.1";
+const CHAT_MODEL = MODEL_CHAT || "gpt-5.2";
 const MIN_DELAY = Number(MIN_DELAY_SEC || 1);
 const MAX_DELAY = Number(MAX_DELAY_SEC || 4);
 const BASE_URL = (PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") || "http://localhost:10000";
@@ -87,11 +87,12 @@ const PLANS = {
   },
 };
 
-// Agenda inicial: quarta, quinta e sexta, 9h–21h, horário de Brasília.
+// Agenda inicial: quarta, quinta e sexta, 9h–21h, e sábado, 9h–12h, horário de Brasília.
 const FIXED_SCHEDULE = {
   "11-03": { dayName: "quarta-feira", slots: ["9h", "10h", "11h", "12h", "13h", "14h", "15h", "16h", "17h", "18h", "19h", "20h", "21h"] },
   "12-03": { dayName: "quinta-feira", slots: ["9h", "10h", "11h", "12h", "13h", "14h", "15h", "16h", "17h", "18h", "19h", "20h", "21h"] },
   "13-03": { dayName: "sexta-feira", slots: ["9h", "10h", "11h", "12h", "13h", "14h", "15h", "16h", "17h", "18h", "19h", "20h", "21h"] },
+  "14-03": { dayName: "sábado", slots: ["9h", "10h", "11h", "12h"] },
 };
 
 const PREMIUM_SLOT_PRIORITY = ["19h", "18h", "20h", "17h", "21h", "16h", "15h", "14h", "13h", "12h", "11h", "10h", "9h"];
@@ -303,6 +304,7 @@ function extractDateKey(text) {
   if (/\bquarta\b/.test(low)) return "11-03";
   if (/\bquinta\b/.test(low)) return "12-03";
   if (/\bsexta\b/.test(low)) return "13-03";
+  if (/\bsabado\b|\bsábado\b/.test(low)) return "14-03";
   return null;
 }
 
@@ -765,6 +767,44 @@ function buildWorksReply(state, incomingText) {
   return "Sim, existem evidências interessantes em alguns casos 🙂 Mas a avaliação médica é importante para entender se isso faz sentido para o seu caso e com segurança.";
 }
 
+function buildInitialPriorityReply(state, flags, incomingText) {
+  const parts = ["Oi 🙂", "Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer."];
+
+  if (flags.asksChapado) {
+    parts.push("", chapadoReply());
+  }
+
+  if (flags.asksLegal) {
+    parts.push("", legalReply());
+  }
+
+  if (flags.asksIfOnline || flags.asksHowConsultWorks) {
+    parts.push("", consultationExplanationReply());
+    if (flags.asksIfOnline) parts.push("", onlineReply());
+  }
+
+  if (flags.asksIfWorks) {
+    parts.push("", buildWorksReply(state, incomingText));
+  }
+
+  if (flags.wantsPrice) {
+    state.price_ask_count = Number(state.price_ask_count || 0) + 1;
+    parts.push("", state.price_ask_count >= 2 ? priceReply() : prePriceValueReply());
+    if (state.price_ask_count >= 2) state.stage = "ASK_PLAN";
+  }
+
+  if (flags.asksWho) {
+    parts.push("", whoReply());
+  }
+
+  if (!flags.wantsPrice || state.price_ask_count < 2) {
+    parts.push("", "Antes de seguir, posso saber seu *primeiro nome*?");
+    if (!state.stage) state.stage = "ASK_NAME";
+  }
+
+  return parts.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function detectIntent(text) {
   const t = norm(text);
   const wantsPrice = /\b(preco|preço|valor|quanto custa|investimento|custa|valores)\b/.test(t);
@@ -1152,13 +1192,10 @@ app.post("/whatsapp", async (req, res) => {
         reply = "Entendi. Pela sua mensagem, isso pode precisar de avaliação urgente. Procure um pronto atendimento agora (ou SAMU 192). Assim que estiver seguro(a), me chama aqui.";
       }
 
-      // 2) abertura
-      else if (!state.stage && !state.nome) {
-        state.stage = "ASK_NAME";
-        reply = askNameIntroReply();
+      // 2) pergunta prioritária sempre primeiro
+      else if (!state.nome && !state.stage && (flags.asksWho || flags.asksIfOnline || flags.asksHowConsultWorks || flags.asksLegal || flags.asksChapado || flags.asksIfWorks || flags.wantsPrice)) {
+        reply = buildInitialPriorityReply(state, flags, finalText);
       }
-
-      // 3) pergunta prioritária sempre primeiro
       else if (flags.asksWho) {
         reply = whoReply() + "\n\nSe você quiser, eu posso te explicar rapidamente como funciona a avaliação.";
       }
@@ -1172,14 +1209,41 @@ app.post("/whatsapp", async (req, res) => {
         reply = chapadoReply() + "\n\nSe você quiser, eu posso te explicar como funciona a avaliação médica com o Dr. Alef.";
       }
 
+      // 3) abertura
+      else if (!state.stage && !state.nome) {
+        state.stage = "ASK_NAME";
+        reply = askNameIntroReply();
+      }
+
       // 4) captura do nome
       else if (state.stage === "ASK_NAME" && !state.nome) {
         const nm = extractFirstName(finalText);
         if (nm) {
           state.nome = nm;
           state.rapport_done = true;
-          state.stage = "ASK_PROBLEM";
-          reply = askProblemAfterNameReply(state);
+
+          if (flags.wantsPrice) {
+            state.price_ask_count += 1;
+            if (state.price_ask_count >= 2) {
+              state.stage = "ASK_PLAN";
+              reply = `Perfeito, ${state.nome} 🙂\n\n${priceReply()}`;
+            } else {
+              state.stage = "ASK_PROBLEM";
+              reply = `Perfeito, ${state.nome} 🙂\n\n${prePriceValueReply()}\n\nPara eu te orientar melhor, me conta rapidinho o que você gostaria de tratar hoje.`;
+            }
+          } else if (flags.asksIfWorks) {
+            state.stage = "ASK_PROBLEM";
+            reply = `Perfeito, ${state.nome} 🙂\n\n${buildWorksReply(state, finalText)}\n\nAgora me conta rapidinho: o que tem te incomodado mais hoje?`;
+          } else if (flags.asksChapado) {
+            state.stage = "ASK_PROBLEM";
+            reply = `Perfeito, ${state.nome} 🙂\n\n${chapadoReply()}\n\nMe conta rapidinho o que você gostaria de tratar hoje.`;
+          } else if (flags.asksLegal) {
+            state.stage = "ASK_PROBLEM";
+            reply = `Perfeito, ${state.nome} 🙂\n\n${legalReply()}\n\nMe conta rapidinho o que você gostaria de tratar hoje.`;
+          } else {
+            state.stage = "ASK_PROBLEM";
+            reply = askProblemAfterNameReply(state);
+          }
         } else {
           const ai = await runLia({ incomingText: finalText, state, flags, mode: "rapport" });
           if (ai.reply === "__NEED_PRICE__" || ai.reply === "__NEED_BOOK__" || ai.reply === "__NEED_PAY__") {
@@ -1238,7 +1302,7 @@ app.post("/whatsapp", async (req, res) => {
           reply = await askDayReply();
         } else if (ai.reply === "__NEED_PRICE__") {
           state.price_ask_count += 1;
-          reply = state.price_ask_count >= 2 ? priceReply() : prePriceValueReply();
+          reply = state.price_ask_count >= 2 ? priceReply() : prePriceValueReply() + "\n\nSe você quiser, eu também posso te mostrar os próximos horários disponíveis 🙂";
           if (state.price_ask_count >= 2) state.stage = "ASK_PLAN";
         } else {
           reply = ai.reply;
@@ -1567,7 +1631,7 @@ app.post("/whatsapp", async (req, res) => {
         const ai = await runLia({ incomingText: finalText, state, flags, mode: "open_conversation" });
         if (ai.reply === "__NEED_PRICE__") {
           state.price_ask_count += 1;
-          reply = state.price_ask_count >= 2 ? priceReply() : prePriceValueReply();
+          reply = state.price_ask_count >= 2 ? priceReply() : prePriceValueReply() + "\n\nSe você quiser, eu também posso te mostrar os próximos horários disponíveis 🙂";
           if (state.price_ask_count >= 2) state.stage = "ASK_PLAN";
         } else if (ai.reply === "__NEED_BOOK__") {
           if (!state.nome) {
