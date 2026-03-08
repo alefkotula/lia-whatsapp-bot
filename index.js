@@ -1,29 +1,25 @@
 /**
- * INDEX V12.3 — LIA (pré-API ProDoctor) — Conversão reforçada + UX humana
+ * INDEX V12.2 — LIA (pré-API ProDoctor) — Conversão reforçada
  *
  * Mantém:
  * - Tom humano + empatia
+ * - Premium intro
+ * - Prova social 87% no plano 1
  * - Anti-alucinação (IA não solta preço/link)
  * - Link real Mercado Pago + webhook
  * - Agenda temporária real + smart scheduling
  * - Reserva temporária + double booking no Postgres
- * - Evidence Engine
- * - Objection Engine
- * - Troca inteligente de horário
+ *
+ * Adiciona:
+ * - Evidence Engine (argumentos científicos por condição)
+ * - Objection Engine (caro / vou pensar / funciona mesmo / não tenho certeza)
+ * - Coleta inicial: primeiro nome + o que quer tratar
+ * - Troca inteligente de horário (sem travar em slot antigo)
  * - Prioridade real para pagamento
  * - Simulação de pagamento para TESTE no número admin
  * - Bloqueio de conversa paralela enquanto aguarda pagamento
  * - Anti-spam científico
  * - Anti-loop reforçado
- *
- * Melhora:
- * - Primeira resposta mais humana
- * - Rapport antes da oferta
- * - Se paciente já chega com doença/condição, valida antes e pede nome
- * - Coleta em fluxo natural: nome -> problema -> horários
- * - Pré-preço com maior percepção de valor
- * - Preço com framing melhor: "Funciona assim:"
- * - Pergunta final mais forte: "Qual dessas opções faz mais sentido para você agora?"
  *
  * ENV:
  * OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, DATABASE_URL
@@ -81,19 +77,19 @@ const ADMIN_RESET_PHONE_DIGITS = "556581422637";
 const PLANS = {
   full: {
     key: "full",
-    label: "Acompanhamento Médico Especializado",
+    label: "Acompanhamento Médico Especializado (Consulta + Retorno ~30 dias)",
     price: 447,
     short: "1",
   },
   basic: {
     key: "basic",
-    label: "Avaliação Médica Especializada",
+    label: "Avaliação Médica Especializada (45 min)",
     price: 347,
     short: "2",
   },
   retorno: {
     key: "retorno",
-    label: "Consulta de Ajuste",
+    label: "Consulta de Ajuste (Retorno avulso)",
     price: 200,
     short: "3",
   },
@@ -118,15 +114,15 @@ const pool = new Pool({
 pool.on("error", (err) => console.error("❌ Postgres pool error:", err));
 
 async function initDB() {
-  await pool.query(`
+  await pool.query(
     CREATE TABLE IF NOT EXISTS wa_users (
       phone TEXT PRIMARY KEY,
       state JSONB NOT NULL DEFAULT '{}'::jsonb,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-  `);
+  );
 
-  await pool.query(`
+  await pool.query(
     CREATE TABLE IF NOT EXISTS wa_slot_locks (
       slot_key TEXT PRIMARY KEY,
       phone TEXT NOT NULL,
@@ -136,7 +132,7 @@ async function initDB() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       paid_at TIMESTAMPTZ
     );
-  `);
+  );
 
   console.log("✅ Tabelas prontas.");
 }
@@ -156,10 +152,10 @@ async function getUserState(phone) {
 
 async function saveUserState(phone, newState) {
   await pool.query(
-    `INSERT INTO wa_users (phone, state, updated_at)
+    INSERT INTO wa_users (phone, state, updated_at)
      VALUES ($1, $2::jsonb, NOW())
      ON CONFLICT (phone)
-     DO UPDATE SET state=$2::jsonb, updated_at=NOW()`,
+     DO UPDATE SET state=$2::jsonb, updated_at=NOW(),
     [phone, JSON.stringify(newState)]
   );
 }
@@ -216,7 +212,7 @@ function currentYear() {
 }
 
 function makeDateKey(day, month = 3) {
-  return `${pad2(day)}-${pad2(month)}`;
+  return ${pad2(day)}-${pad2(month)};
 }
 
 function parseDateKeyToDate(dateKey) {
@@ -227,15 +223,15 @@ function parseDateKeyToDate(dateKey) {
 function formatDatePt(dateKey) {
   const dt = parseDateKeyToDate(dateKey);
   const wd = WEEKDAY_PT[dt.getDay()];
-  return `${wd} (${dateKey.replace("-", "/")})`;
+  return ${wd} (${dateKey.replace("-", "/")});
 }
 
 function slotKey(dateKey, time) {
-  return `${dateKey}|${time}`;
+  return ${dateKey}|${time};
 }
 
 function prettySlot(dateKey, time) {
-  return `${formatDatePt(dateKey)} às ${time}`;
+  return ${formatDatePt(dateKey)} às ${time};
 }
 
 function removeDuplicates(arr) {
@@ -304,7 +300,7 @@ function extractBirthDate(text) {
   if (yy < 100) yy += 1900;
   if (dd < 1 || dd > 31 || mm < 1 || mm > 12) return null;
 
-  return `${pad2(dd)}/${pad2(mm)}/${yy}`;
+  return ${pad2(dd)}/${pad2(mm)}/${yy};
 }
 
 function extractEmail(text) {
@@ -451,15 +447,15 @@ function buildEvidenceMessage(condition, state = {}) {
 
   const empathy = pickRandom(ev.empathy);
   const endings = [
-    `Agora me diz… como seria sua vida com cerca de ${ev.percent}% menos sintomas?`,
-    `Imagina como seria seu dia a dia com uma melhora assim.`,
-    `Se isso ajudou outras pessoas, também pode fazer sentido avaliar se pode ajudar você.`,
+    Agora me diz… como seria sua vida com cerca de ${ev.percent}% menos sintomas?,
+    Imagina como seria seu dia a dia com uma melhora assim.,
+    Se isso ajudou outras pessoas, também pode fazer sentido avaliar se pode ajudar você.,
   ];
 
   return (
-    `${empathy}\n\n` +
-    `${ev.text}\n\n` +
-    `${pickRandom(endings)}`
+    ${empathy}\n\n +
+    ${ev.text}\n\n +
+    ${pickRandom(endings)}
   );
 }
 
@@ -493,7 +489,7 @@ function buildThinkingReply(state) {
     return (
       "Claro 🙂\n\n" +
       "Só te aviso que os horários costumam preencher rápido.\n\n" +
-      `Se quiser, posso manter *${prettySlot(state.date_key, state.slot_time)}* pré-reservado por alguns minutos enquanto você decide.`
+      Se quiser, posso manter *${prettySlot(state.date_key, state.slot_time)}* pré-reservado por alguns minutos enquanto você decide.
     );
   }
 
@@ -514,7 +510,7 @@ function buildUnsureReply(state, incomingText) {
 
   if (ev && Number(state.evidence_used_count || 0) < 2) {
     state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
-    return `${base}\n\n${ev}`;
+    return ${base}\n\n${ev};
   }
 
   return base;
@@ -527,8 +523,8 @@ function buildWorksReply(state, incomingText) {
   if (ev) {
     state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
     return (
-      `Sim, existem evidências interessantes 🙂\n\n` +
-      `${ev}\n\n` +
+      Sim, existem evidências interessantes 🙂\n\n +
+      ${ev}\n\n +
       "A avaliação médica serve justamente para entender se isso pode fazer sentido para o seu caso."
     );
   }
@@ -572,8 +568,8 @@ function sortSlotsSmart(slots) {
 
 async function cleanupExpiredLocks() {
   await pool.query(
-    `DELETE FROM wa_slot_locks
-     WHERE status='held' AND expires_at IS NOT NULL AND expires_at < NOW()`
+    DELETE FROM wa_slot_locks
+     WHERE status='held' AND expires_at IS NOT NULL AND expires_at < NOW()
   );
 }
 
@@ -581,11 +577,11 @@ async function getBlockedSlotKeysForDate(dateKey) {
   await cleanupExpiredLocks();
 
   const { rows } = await pool.query(
-    `SELECT slot_key
+    SELECT slot_key
      FROM wa_slot_locks
      WHERE slot_key LIKE $1
-       AND (status='paid' OR (status='held' AND expires_at > NOW()))`,
-    [`${dateKey}|%`]
+       AND (status='paid' OR (status='held' AND expires_at > NOW())),
+    [${dateKey}|%]
   );
 
   return new Set(rows.map((r) => r.slot_key));
@@ -608,16 +604,16 @@ async function acquireSlotHold(dateKey, time, phone, minutes = HOLD_MINUTES) {
   const key = slotKey(dateKey, time);
 
   const existing = await pool.query(
-    `SELECT *
+    SELECT *
      FROM wa_slot_locks
-     WHERE slot_key=$1`,
+     WHERE slot_key=$1,
     [key]
   );
 
   if (!existing.rows.length) {
     await pool.query(
-      `INSERT INTO wa_slot_locks (slot_key, phone, status, expires_at, created_at, updated_at)
-       VALUES ($1, $2, 'held', NOW() + ($3 || ' minutes')::interval, NOW(), NOW())`,
+      INSERT INTO wa_slot_locks (slot_key, phone, status, expires_at, created_at, updated_at)
+       VALUES ($1, $2, 'held', NOW() + ($3 || ' minutes')::interval, NOW(), NOW()),
       [key, phone, String(minutes)]
     );
     return { ok: true, held: true, slot_key: key };
@@ -629,10 +625,10 @@ async function acquireSlotHold(dateKey, time, phone, minutes = HOLD_MINUTES) {
 
   if (row.status === "held" && row.phone === phone) {
     await pool.query(
-      `UPDATE wa_slot_locks
+      UPDATE wa_slot_locks
        SET expires_at = NOW() + ($2 || ' minutes')::interval,
            updated_at = NOW()
-       WHERE slot_key=$1`,
+       WHERE slot_key=$1,
       [key, String(minutes)]
     );
     return { ok: true, held: true, slot_key: key };
@@ -643,13 +639,13 @@ async function acquireSlotHold(dateKey, time, phone, minutes = HOLD_MINUTES) {
   }
 
   await pool.query(
-    `UPDATE wa_slot_locks
+    UPDATE wa_slot_locks
      SET phone=$2,
          status='held',
          expires_at = NOW() + ($3 || ' minutes')::interval,
          updated_at = NOW(),
          paid_at = NULL
-     WHERE slot_key=$1`,
+     WHERE slot_key=$1,
     [key, phone, String(minutes)]
   );
 
@@ -659,12 +655,12 @@ async function acquireSlotHold(dateKey, time, phone, minutes = HOLD_MINUTES) {
 async function markSlotPaid(key, phone) {
   if (!key) return;
   await pool.query(
-    `UPDATE wa_slot_locks
+    UPDATE wa_slot_locks
      SET status='paid',
          expires_at = NULL,
          paid_at = NOW(),
          updated_at = NOW()
-     WHERE slot_key=$1 AND phone=$2`,
+     WHERE slot_key=$1 AND phone=$2,
     [key, phone]
   );
 }
@@ -674,14 +670,14 @@ async function releaseOldHeldSlotsForPhone(phone, keepSlotKey = null) {
 
   if (keepSlotKey) {
     await pool.query(
-      `DELETE FROM wa_slot_locks
-       WHERE phone=$1 AND status='held' AND slot_key <> $2`,
+      DELETE FROM wa_slot_locks
+       WHERE phone=$1 AND status='held' AND slot_key <> $2,
       [phone, keepSlotKey]
     );
   } else {
     await pool.query(
-      `DELETE FROM wa_slot_locks
-       WHERE phone=$1 AND status='held'`,
+      DELETE FROM wa_slot_locks
+       WHERE phone=$1 AND status='held',
       [phone]
     );
   }
@@ -712,12 +708,12 @@ function extractHourOnly(text) {
   if (m) {
     const hh = Number(m[1]);
     const mm = Number(m[2]);
-    if (mm === 0) return `${hh}h`;
-    return `${pad2(hh)}:${pad2(mm)}`;
+    if (mm === 0) return ${hh}h;
+    return ${pad2(hh)}:${pad2(mm)};
   }
 
   let m2 = low.match(/\b([01]?\d|2[0-3])\s?h\b/);
-  if (m2) return `${Number(m2[1])}h`;
+  if (m2) return ${Number(m2[1])}h;
 
   return null;
 }
@@ -761,7 +757,7 @@ function wantsReschedule(text) {
 }
 
 function formatDayOptions(dayKeys) {
-  return dayKeys.map((d, i) => `${i + 1}) *${formatDatePt(d)}*`).join("\n");
+  return dayKeys.map((d, i) => ${i + 1}) *${formatDatePt(d)}*).join("\n");
 }
 
 function urgencyAgendaPrefix() {
@@ -778,43 +774,13 @@ async function getSuggestedDayKeys() {
   return out.slice(0, 3);
 }
 
-// ====== TEXTO PREMIUM / VALOR PERCEBIDO ======
-function premiumIntroReply(problemText = "", state = {}) {
-  const cond = detectCondition(problemText || state.problem_text || "") || state.condition || null;
-
-  let opener =
-    "Entendi 🙂\n\n" +
-    "Muitas pessoas que chegam aqui já tentaram vários tratamentos e ainda convivem com sintomas que impactam muito a rotina.\n\n";
-
-  if (cond === "fibromialgia") {
-    opener =
-      "Entendi 🙂\n\n" +
-      "Fibromialgia realmente pode impactar muito a rotina, o sono, o humor e a qualidade de vida.\n\n";
-  } else if (cond === "insonia") {
-    opener =
-      "Entendi 🙂\n\n" +
-      "Dormir mal por muito tempo desgasta energia, humor, foco e qualidade de vida.\n\n";
-  } else if (cond === "ansiedade") {
-    opener =
-      "Entendi 🙂\n\n" +
-      "Ansiedade constante realmente pode desgastar muito a mente e o corpo ao longo do tempo.\n\n";
-  } else if (cond === "dor" || cond === "dor_neuropatica" || cond === "coluna" || cond === "artrose" || cond === "artrite") {
-    opener =
-      "Entendi 🙂\n\n" +
-      "Conviver com dor por muito tempo realmente desgasta a rotina, o sono e a qualidade de vida.\n\n";
-  }
-
+// ====== TEXTO PREMIUM ======
+function premiumIntroReply() {
   return (
-    opener +
-    "A consulta com o Dr. Alef é *100% online, segura e individualizada*, com duração média de *45 minutos*.\n\n" +
-    "Com base na experiência da formação médica na Rússia, ele estruturou um método de avaliação clínica que busca entender o quadro com profundidade.\n\n" +
-    "Durante a consulta ele:\n\n" +
-    "1 - Revisa todo o seu histórico de saúde\n" +
-    "2 - Entende como os sintomas impactam sua rotina\n" +
-    "3 - Analisa tratamentos que você já tentou\n" +
-    "4 - Verifica medicações em uso e possíveis interações\n" +
-    "5 - Define objetivos claros de melhora, alinhados ao seu caso\n\n" +
-    "A maioria dos pacientes prefere iniciar já com acompanhamento, porque assim conseguimos ajustar o plano com mais segurança."
+    "A consulta é *100% online, segura e individualizada*, com duração média de *45 minutos*.\n\n" +
+    "O Dr. Alef analisa seu caso com bastante profundidade — com base na experiência clínica e na formação médica na Rússia.\n" +
+    "Ele revisa todo seu histórico, entende como os sintomas impactam sua rotina, analisa o que você já tentou, confere medicações em uso e define objetivos claros de melhora — tudo alinhado ao seu caso.\n\n" +
+    "A maioria dos pacientes prefere já iniciar com acompanhamento, porque assim conseguimos ajustar o plano com mais segurança."
   );
 }
 
@@ -877,79 +843,43 @@ function safetyDoseReply() {
   return "Entendi sua vontade de começar. Por segurança, eu não consigo orientar dose/como tomar por aqui 🙏 Isso depende do seu caso e das medicações. Se quiser, eu te explico como funciona a avaliação e já te ajudo a confirmar. Seu foco hoje é mais dor, sono ou ansiedade?";
 }
 
-function priceReply(state = {}) {
+function priceReply() {
   return (
-    premiumIntroReply(state.problem_text, state) + "\n\n" +
-    "Funciona assim:\n\n" +
-    `1️⃣ *${PLANS.full.label}*\n` +
-    `Consulta + retorno (~30 dias) — *R$${PLANS.full.price}* ➡️\n` +
-    `⭐ opção escolhida por *87% dos pacientes*\n\n` +
-    `2️⃣ *${PLANS.basic.label}*\n` +
-    `Consulta única (45 min) — *R$${PLANS.basic.price}*\n\n` +
-    `3️⃣ *${PLANS.retorno.label}*\n` +
-    `Retorno avulso — *R$${PLANS.retorno.price}*\n\n` +
-    "Qual dessas opções faz mais sentido para você agora?"
+    premiumIntroReply() + "\n\n" +
+    "O investimento é:\n" +
+    1) *${PLANS.full.label}* — R$${PLANS.full.price} *(87% das pessoas escolhem essa opção)* ⭐\n +
+    2) *${PLANS.basic.label}* — R$${PLANS.basic.price}\n +
+    3) *${PLANS.retorno.label}* — R$${PLANS.retorno.price}\n\n +
+    "Qual você prefere? Me responda com *1*, *2* ou *3*."
   );
 }
 
-function askPlanReply(state = {}) {
+function askPlanReply() {
   return (
-    premiumIntroReply(state.problem_text, state) + "\n\n" +
-    "Funciona assim:\n\n" +
-    `1️⃣ *${PLANS.full.label}*\n` +
-    `Consulta + retorno (~30 dias) — *R$${PLANS.full.price}* ➡️\n` +
-    `⭐ opção escolhida por *87% dos pacientes*\n\n` +
-    `2️⃣ *${PLANS.basic.label}*\n` +
-    `Consulta única (45 min) — *R$${PLANS.basic.price}*\n\n` +
-    `3️⃣ *${PLANS.retorno.label}*\n` +
-    `Retorno avulso — *R$${PLANS.retorno.price}*\n\n` +
-    "Qual dessas opções faz mais sentido para você agora?"
+    premiumIntroReply() + "\n\n" +
+    "O investimento é:\n" +
+    1) *${PLANS.full.label}* — R$${PLANS.full.price} *(87% das pessoas escolhem essa opção)* ⭐\n +
+    2) *${PLANS.basic.label}* — R$${PLANS.basic.price}\n +
+    3) *${PLANS.retorno.label}* — R$${PLANS.retorno.price}\n\n +
+    "Qual você prefere? Me responda com *1*, *2* ou *3*."
   );
 }
 
 function askNameAndProblemReply() {
   return (
-    "Oi 🙂\n" +
-    "Eu sou a Lia, da equipe do Dr. Alef Kotula.\n\n" +
-    "Posso te ajudar por aqui.\n\n" +
-    "Qual é o seu *primeiro nome*?"
+    premiumIntroReply() +
+    "\n\nPra eu te ajudar melhor, me diz *duas coisas rápidas*:\n" +
+    "1) seu *primeiro nome*\n" +
+    "2) o que você quer tratar hoje? *(dor, sono, ansiedade ou outro)*"
   );
 }
 
 function askOnlyNameReply() {
-  return (
-    "Oi 🙂\n" +
-    "Eu sou a Lia, da equipe do Dr. Alef Kotula.\n\n" +
-    "Posso te ajudar por aqui.\n\n" +
-    "Qual é o seu *primeiro nome*?"
-  );
+  return "Perfeito 🙂 Agora me diz só seu *primeiro nome*.";
 }
 
-function askOnlyProblemReply(state = {}) {
-  const nome = state?.nome || "você";
-  return (
-    `Prazer, ${nome} 🙂\n\n` +
-    "Me conta uma coisa rápida:\n\n" +
-    "O que você gostaria de tratar hoje?\n" +
-    "*Dor, sono, ansiedade ou outro problema?*"
-  );
-}
-
-function askNameAfterDirectConditionReply(problemText = "", state = {}) {
-  const cond = detectCondition(problemText || state.problem_text || "") || state.condition || null;
-
-  let intro = "Entendi.\n\nIsso realmente pode impactar bastante a qualidade de vida.\n\n";
-  if (cond === "fibromialgia") {
-    intro = "Entendi.\n\nFibromialgia realmente pode impactar muito a qualidade de vida.\n\n";
-  } else if (cond === "insonia") {
-    intro = "Entendi.\n\nDormir mal por muito tempo realmente desgasta várias áreas da vida.\n\n";
-  } else if (cond === "ansiedade") {
-    intro = "Entendi.\n\nAnsiedade realmente pode desgastar muito o dia a dia.\n\n";
-  } else if (cond === "dor" || cond === "dor_neuropatica" || cond === "coluna" || cond === "artrose" || cond === "artrite") {
-    intro = "Entendi.\n\nConviver com dor por muito tempo realmente desgasta muito a rotina.\n\n";
-  }
-
-  return intro + "Antes de te explicar como funciona, posso saber seu *primeiro nome*?";
+function askOnlyProblemReply() {
+  return "Perfeito 🙂 E o que você quer tratar hoje? *(dor, sono, ansiedade ou outro)*";
 }
 
 async function askDayReply() {
@@ -962,7 +892,7 @@ async function askDayReply() {
     "Perfeito 🙂\n\n" +
     urgencyAgendaPrefix() +
     "Nos próximos dias tenho agenda em:\n" +
-    `${formatDayOptions(dayKeys)}\n\n` +
+    ${formatDayOptions(dayKeys)}\n\n +
     "Qual você prefere?"
   );
 }
@@ -980,19 +910,19 @@ async function offerSlotsReply(state) {
   return (
     "Claro 🙂\n" +
     urgencyAgendaPrefix() +
-    `Para *${formatDatePt(dateKey)}* tenho:\n\n` +
-    best.map((s, i) => `${i + 1}) *${s}*`).join("\n") +
+    Para *${formatDatePt(dateKey)}* tenho:\n\n +
+    best.map((s, i) => ${i + 1}) *${s}*).join("\n") +
     "\n\nQual fica melhor para você?"
   );
 }
 
 function askPreferredTimeReply(state) {
-  return `Sem problema 🙂 Que horário em *${formatDatePt(state.date_key)}* funciona melhor para você?`;
+  return Sem problema 🙂 Que horário em *${formatDatePt(state.date_key)}* funciona melhor para você?;
 }
 
 function askFullNameReply(state) {
   return (
-    `Perfeito. Vou reservar provisoriamente *${prettySlot(state.date_key, state.slot_time)}* para você por alguns minutos.\n\n` +
+    Perfeito. Vou reservar provisoriamente *${prettySlot(state.date_key, state.slot_time)}* para você por alguns minutos.\n\n +
     "A consulta é *100% online* e dura cerca de *45 minutos*.\n\n" +
     "Só preciso confirmar alguns dados rápidos.\n\n" +
     "Qual seu *nome completo*?"
@@ -1000,7 +930,7 @@ function askFullNameReply(state) {
 }
 
 function askBirthdateReply(state) {
-  return `Obrigado, ${state.nome_completo.split(" ")[0]} 🙂\n\nQual sua *data de nascimento*?`;
+  return Obrigado, ${state.nome_completo.split(" ")[0]} 🙂\n\nQual sua *data de nascimento*?;
 }
 
 function askEmailReply() {
@@ -1009,21 +939,21 @@ function askEmailReply() {
 
 function paymentSentReply(plan, link, state) {
   return (
-    `Perfeito, finalizei sua pré-reserva ✅\n\n` +
-    `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
-    `Plano escolhido:\n` +
-    `*${plan.label}* — R$${plan.price}\n\n` +
-    `Esse horário fica reservado no sistema por alguns minutos enquanto você finaliza.\n\n` +
-    `Para confirmar sua consulta, é só concluir aqui:\n${link}\n\n` +
-    `Assim que o pagamento entrar, eu confirmo sua consulta aqui imediatamente 🙂\n\n` +
-    `Se tiver qualquer dificuldade com o pagamento, me avise que eu te ajudo rapidinho.`
+    Perfeito, finalizei sua pré-reserva ✅\n\n +
+    📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n +
+    Plano escolhido:\n +
+    *${plan.label}* — R$${plan.price}\n\n +
+    Esse horário fica reservado no sistema por alguns minutos enquanto você finaliza.\n\n +
+    Para confirmar sua consulta, é só concluir aqui:\n${link}\n\n +
+    Assim que o pagamento entrar, eu confirmo sua consulta aqui imediatamente 🙂\n\n +
+    Se tiver qualquer dificuldade com o pagamento, me avise que eu te ajudo rapidinho.
   );
 }
 
 function afterPaidReply(state) {
   return (
     "Pagamento confirmado ✅\n\n" +
-    `Sua consulta online ficou confirmada para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
+    Sua consulta online ficou confirmada para *${prettySlot(state.date_key, state.slot_time)}*.\n\n +
     "Mais perto do horário eu envio as orientações da consulta 🙂"
   );
 }
@@ -1033,7 +963,7 @@ function willSeeReply(state) {
     return (
       "Claro 🙂\n\n" +
       "Só te aviso que os horários costumam preencher rápido.\n\n" +
-      `Se quiser, posso manter *${prettySlot(state.date_key, state.slot_time)}* pré-reservado por alguns minutos enquanto você decide.`
+      Se quiser, posso manter *${prettySlot(state.date_key, state.slot_time)}* pré-reservado por alguns minutos enquanto você decide.
     );
   }
 
@@ -1046,17 +976,17 @@ function willSeeReply(state) {
 
 function indecisiveReply(state) {
   if (state?.date_key) {
-    return `Os horários que os pacientes costumam preferir são no início da noite.\n\nTenho *18h* ou *19h* disponíveis em *${formatDatePt(state.date_key)}*.\n\nQual fica melhor para você?`;
+    return Os horários que os pacientes costumam preferir são no início da noite.\n\nTenho *18h* ou *19h* disponíveis em *${formatDatePt(state.date_key)}*.\n\nQual fica melhor para você?;
   }
   return "Os horários que os pacientes costumam preferir são no início da noite.\n\nTenho *18h* ou *19h* disponíveis.\n\nQual fica melhor para você?";
 }
 
 function pendingPaymentReply(state) {
   return (
-    `Seu horário ainda está reservado 🙂\n\n` +
-    `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
-    `Para confirmar a consulta, só falta finalizar o pagamento aqui:\n${state.payment.link}\n\n` +
-    `Assim que o pagamento for confirmado, eu libero a confirmação da consulta para você.`
+    Seu horário ainda está reservado 🙂\n\n +
+    📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n +
+    Para confirmar a consulta, só falta finalizar o pagamento aqui:\n${state.payment.link}\n\n +
+    Assim que o pagamento for confirmado, eu libero a confirmação da consulta para você.
   );
 }
 
@@ -1069,9 +999,9 @@ function pendingPaymentWithEvidenceReply(state, incomingText) {
   if (ev) {
     state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
     return (
-      `${ev}\n\n` +
-      `Seu horário segue pré-reservado em *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
-      `Se quiser confirmar agora, é só finalizar por aqui:\n${state.payment.link}`
+      ${ev}\n\n +
+      Seu horário segue pré-reservado em *${prettySlot(state.date_key, state.slot_time)}*.\n\n +
+      Se quiser confirmar agora, é só finalizar por aqui:\n${state.payment.link}
     );
   }
 
@@ -1122,7 +1052,7 @@ function compactMemory(state) {
 }
 
 function buildSystemPrompt() {
-  return `
+  return 
 Você é "Lia", secretária premium do Dr. Alef Kotula (consulta 100% online).
 
 REGRAS ABSOLUTAS:
@@ -1139,11 +1069,11 @@ Se pedirem agendar: responda "PRECISA_AGENDAR".
 
 FORMATO:
 { "reply": "...", "updates": { ... } }
-`;
+;
 }
 
 function buildUserPrompt({ incomingText, state, flags }) {
-  return `
+  return 
 MEMÓRIA:
 ${JSON.stringify(compactMemory(state))}
 
@@ -1158,7 +1088,7 @@ TAREFA:
 - 1 pergunta no final, quando fizer sentido.
 - Se detectar nome do usuário, salvar em updates.nome.
 - Se detectar problema/condição, salvar em updates.problem_text.
-`;
+;
 }
 
 function violatesNoPriceNoLink(text) {
@@ -1217,23 +1147,23 @@ async function mpCreatePreference({ phone, planKey }) {
   const plan = PLANS[planKey];
   if (!plan) throw new Error("Plano inválido");
 
-  const external_reference = `lia_${phone}_${planKey}_${Date.now()}`;
+  const external_reference = lia_${phone}_${planKey}_${Date.now()};
 
   const body = {
     items: [
       {
-        title: `Dr. Alef Kotula — ${plan.label}`,
+        title: Dr. Alef Kotula — ${plan.label},
         quantity: 1,
         unit_price: plan.price,
         currency_id: "BRL",
       },
     ],
     external_reference,
-    notification_url: `${BASE_URL}/mp/webhook`,
+    notification_url: ${BASE_URL}/mp/webhook,
     back_urls: {
-      success: `${BASE_URL}/mp/thanks?status=success`,
-      failure: `${BASE_URL}/mp/thanks?status=failure`,
-      pending: `${BASE_URL}/mp/thanks?status=pending`,
+      success: ${BASE_URL}/mp/thanks?status=success,
+      failure: ${BASE_URL}/mp/thanks?status=failure,
+      pending: ${BASE_URL}/mp/thanks?status=pending,
     },
     auto_return: "approved",
     statement_descriptor: "CONSULTA ONLINE",
@@ -1247,7 +1177,7 @@ async function mpCreatePreference({ phone, planKey }) {
   const r = await fetch("https://api.mercadopago.com/checkout/preferences", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+      Authorization: Bearer ${MP_ACCESS_TOKEN},
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
@@ -1255,7 +1185,7 @@ async function mpCreatePreference({ phone, planKey }) {
 
   if (!r.ok) {
     const t = await r.text().catch(() => "");
-    throw new Error(`MP preference erro: ${r.status} ${t}`);
+    throw new Error(MP preference erro: ${r.status} ${t});
   }
 
   const data = await r.json();
@@ -1270,13 +1200,13 @@ async function mpCreatePreference({ phone, planKey }) {
 }
 
 async function mpGetPayment(paymentId) {
-  const r = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
-    headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+  const r = await fetch(https://api.mercadopago.com/v1/payments/${paymentId}, {
+    headers: { Authorization: Bearer ${MP_ACCESS_TOKEN} },
   });
 
   if (!r.ok) {
     const t = await r.text().catch(() => "");
-    throw new Error(`MP payment fetch erro: ${r.status} ${t}`);
+    throw new Error(MP payment fetch erro: ${r.status} ${t});
   }
 
   return await r.json();
@@ -1329,7 +1259,7 @@ app.post("/mp/webhook", async (req, res) => {
         if (botFrom) {
           try {
             await twilioClient.messages.create({
-              to: `whatsapp:${phone}`,
+              to: whatsapp:${phone},
               from: botFrom,
               body: afterPaidReply(state),
             });
@@ -1360,13 +1290,13 @@ app.post("/whatsapp", async (req, res) => {
       // ===== reset admin =====
       if (finalText.trim().toLowerCase() === "reset" && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
         await pool.query(
-          `UPDATE wa_users
+          UPDATE wa_users
            SET state = '{}'::jsonb, updated_at = NOW()
-           WHERE regexp_replace(phone, '\\D', '', 'g') = $1`,
+           WHERE regexp_replace(phone, '\\D', '', 'g') = $1,
           [phoneDigits]
         );
-        await pool.query(`DELETE FROM wa_slot_locks WHERE phone = $1 AND status='held'`, [phone]);
-        await sendWhatsApp(`whatsapp:+${phoneDigits}`, bot, "🔁 Memória resetada. Pode testar do zero agora.", 0);
+        await pool.query(DELETE FROM wa_slot_locks WHERE phone = $1 AND status='held', [phone]);
+        await sendWhatsApp(whatsapp:+${phoneDigits}, bot, "🔁 Memória resetada. Pode testar do zero agora.", 0);
         return;
       }
 
@@ -1446,7 +1376,7 @@ app.post("/whatsapp", async (req, res) => {
         const available = await getAvailableSlotsForDate(state.date_key);
 
         if (!requestedTime) {
-          reply = `Sem problema 🙂 Me diz o horário exato em *${formatDatePt(state.date_key)}*, por exemplo *16h*.`;
+          reply = Sem problema 🙂 Me diz o horário exato em *${formatDatePt(state.date_key)}*, por exemplo *16h*.;
         } else if (available.includes(requestedTime)) {
           const hold = await acquireSlotHold(state.date_key, requestedTime, phone);
           if (!hold.ok) {
@@ -1462,20 +1392,20 @@ app.post("/whatsapp", async (req, res) => {
 
             if (state.payment?.status === "pending" && state.payment?.link) {
               reply =
-                `Perfeito 🙂 Ajustei para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
-                `Seu link continua o mesmo:\n${state.payment.link}`;
+                Perfeito 🙂 Ajustei para *${prettySlot(state.date_key, state.slot_time)}*.\n\n +
+                Seu link continua o mesmo:\n${state.payment.link};
               state.stage = "WAIT_PAYMENT";
             } else {
               reply =
-                `Perfeito 🙂 Vou alterar para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
+                Perfeito 🙂 Vou alterar para *${prettySlot(state.date_key, state.slot_time)}*.\n\n +
                 "Agora seguimos de onde paramos.";
             }
           }
         } else {
           const best2 = await chooseBestSlotsForDate(state.date_key, 3);
           reply =
-            `Esse horário específico não está disponível em *${formatDatePt(state.date_key)}*.\n\n` +
-            `O mais próximo que tenho é:\n${best2.map((s, i) => `${i + 1}) *${s}*`).join("\n")}\n\nQual fica melhor para você?`;
+            Esse horário específico não está disponível em *${formatDatePt(state.date_key)}*.\n\n +
+            O mais próximo que tenho é:\n${best2.map((s, i) => ${i + 1}) *${s}*).join("\n")}\n\nQual fica melhor para você?;
           state.stage = "OFFER_SLOTS";
         }
       }
@@ -1491,12 +1421,12 @@ app.post("/whatsapp", async (req, res) => {
         } else if (flags.saysExpensive) {
           reply =
             buildExpensiveReply() +
-            `\n\nSe quiser confirmar agora, seu link continua ativo:\n${state.payment.link}`;
+            \n\nSe quiser confirmar agora, seu link continua ativo:\n${state.payment.link};
           state.stage = "WAIT_PAYMENT";
         } else if (flags.saysWillSee || flags.saysUnsure) {
           reply =
             buildThinkingReply(state) +
-            `\n\nSe quiser finalizar agora, seu link continua aqui:\n${state.payment.link}`;
+            \n\nSe quiser finalizar agora, seu link continua aqui:\n${state.payment.link};
           state.stage = "WAIT_PAYMENT";
         } else {
           reply = pendingPaymentReply(state);
@@ -1504,7 +1434,7 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // 5) coleta inicial nome + problema (agora mais natural)
+      // 5) coleta inicial nome + problema
       else if (state.stage === "ASK_NAME_AND_PROBLEM") {
         const nm = extractFirstName(finalText);
         const pb = extractProblemText(finalText);
@@ -1514,20 +1444,20 @@ app.post("/whatsapp", async (req, res) => {
         if (!state.condition && pb) state.condition = detectCondition(pb);
 
         if (!state.nome && !state.problem_text) {
+          reply = "Perfeito 🙂 Me diz *duas coisas rápidas*: seu *primeiro nome* e o que você quer tratar hoje.";
+        } else if (!state.nome) {
           reply = askOnlyNameReply();
-        } else if (!state.nome && state.problem_text) {
-          reply = askNameAfterDirectConditionReply(state.problem_text, state);
-        } else if (state.nome && !state.problem_text) {
-          reply = askOnlyProblemReply(state);
+        } else if (!state.problem_text) {
+          reply = askOnlyProblemReply();
         } else {
           if (shouldUseEvidence(flags, state, state.problem_text)) {
             const ev = buildEvidenceMessage(state.condition || detectCondition(state.problem_text), state);
             if (ev) {
               state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
               reply =
-                `Prazer, ${state.nome} 🙂\n\n` +
-                `${ev}\n\n` +
-                "Se fizer sentido para você, eu já posso te mostrar os próximos horários disponíveis.";
+                Muito prazer, ${state.nome} 🙂\n\n +
+                ${ev}\n\n +
+                "Agora, se quiser, eu já posso te mostrar os próximos horários disponíveis.";
               state.stage = "ASK_DAY";
             } else {
               state.stage = "ASK_DAY";
@@ -1544,7 +1474,7 @@ app.post("/whatsapp", async (req, res) => {
       else if (flags.intentPay) {
         if (!state.nome) {
           state.stage = "ASK_NAME_AND_PROBLEM";
-          reply = askOnlyNameReply();
+          reply = askNameAndProblemReply();
         } else if (!state.date_key) {
           state.stage = "ASK_DAY";
           reply = "Perfeito 🙂 Antes do pagamento, vou te mostrar os horários disponíveis para reservar seu atendimento.";
@@ -1591,7 +1521,7 @@ app.post("/whatsapp", async (req, res) => {
           }
         } else {
           state.stage = "ASK_PLAN";
-          reply = askPlanReply(state);
+          reply = askPlanReply();
         }
       }
 
@@ -1599,9 +1529,9 @@ app.post("/whatsapp", async (req, res) => {
       else if (flags.wantsPrice) {
         if (!state.nome) {
           state.stage = "ASK_NAME_AND_PROBLEM";
-          reply = askOnlyNameReply();
+          reply = askNameAndProblemReply();
         } else {
-          reply = priceReply(state);
+          reply = priceReply();
           state.stage = "ASK_PLAN";
         }
       }
@@ -1635,24 +1565,10 @@ app.post("/whatsapp", async (req, res) => {
         reply = buildWorksReply(state, finalText);
       }
 
-      // 10) entrada de agendamento mais humana
+      // 10) entrada de agendamento
       else if (flags.wantsBook || flags.asksHours) {
-        if (!state.nome && !state.problem_text) {
-          if (detectedProblem || detectedCondition) {
-            if (!state.problem_text && detectedProblem) state.problem_text = detectedProblem;
-            if (!state.condition && detectedCondition) state.condition = detectedCondition;
-
-            reply = askNameAfterDirectConditionReply(state.problem_text, state);
-            state.stage = "ASK_NAME_AND_PROBLEM";
-          } else {
-            reply = askOnlyNameReply();
-            state.stage = "ASK_NAME_AND_PROBLEM";
-          }
-        } else if (!state.nome) {
-          reply = askNameAfterDirectConditionReply(state.problem_text, state);
-          state.stage = "ASK_NAME_AND_PROBLEM";
-        } else if (!state.problem_text) {
-          reply = askOnlyProblemReply(state);
+        if (!state.nome || !state.problem_text) {
+          reply = askNameAndProblemReply();
           state.stage = "ASK_NAME_AND_PROBLEM";
         } else if (!state.date_key) {
           state.stage = "ASK_DAY";
@@ -1671,7 +1587,7 @@ app.post("/whatsapp", async (req, res) => {
           reply = askEmailReply();
         } else {
           state.stage = "ASK_PLAN";
-          reply = askPlanReply(state);
+          reply = askPlanReply();
         }
       }
 
@@ -1737,8 +1653,8 @@ app.post("/whatsapp", async (req, res) => {
           } else {
             const best2 = await chooseBestSlotsForDate(state.date_key, 3);
             reply =
-              `Esse horário específico não está disponível em *${formatDatePt(state.date_key)}*.\n\n` +
-              `O mais próximo que tenho é:\n${best2.map((s, i) => `${i + 1}) *${s}*`).join("\n")}\n\nQual fica melhor para você?`;
+              Esse horário específico não está disponível em *${formatDatePt(state.date_key)}*.\n\n +
+              O mais próximo que tenho é:\n${best2.map((s, i) => ${i + 1}) *${s}*).join("\n")}\n\nQual fica melhor para você?;
           }
         } else if (isWantsDifferentTime(finalText)) {
           state.stage = "ASK_SPECIFIC_TIME";
@@ -1753,7 +1669,7 @@ app.post("/whatsapp", async (req, res) => {
         const requestedTime = extractHourOnly(finalText);
 
         if (!requestedTime) {
-          reply = `Me diz o horário exato em *${formatDatePt(state.date_key)}*, por exemplo *16h* 🙂`;
+          reply = Me diz o horário exato em *${formatDatePt(state.date_key)}*, por exemplo *16h* 🙂;
         } else {
           const available = await getAvailableSlotsForDate(state.date_key);
 
@@ -1771,7 +1687,7 @@ app.post("/whatsapp", async (req, res) => {
               reply = askFullNameReply(state);
             }
           } else {
-            reply = `Esse horário não está disponível em *${formatDatePt(state.date_key)}*.\n\nQuer que eu te mostre as melhores opções desse dia?`;
+            reply = Esse horário não está disponível em *${formatDatePt(state.date_key)}*.\n\nQuer que eu te mostre as melhores opções desse dia?;
             state.stage = "OFFER_SLOTS";
           }
         }
@@ -1809,8 +1725,8 @@ app.post("/whatsapp", async (req, res) => {
           state.stage = "ASK_PLAN";
           reply =
             "Obrigado 🙂\n\n" +
-            `Horário provisoriamente reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
-            askPlanReply(state);
+            Horário provisoriamente reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\n +
+            askPlanReply();
         } else {
           reply = "Perfeito 🙂 Me manda seu *e-mail* certinho, por favor.";
         }
@@ -1832,10 +1748,10 @@ app.post("/whatsapp", async (req, res) => {
         } else if (flags.asksIfWorks) {
           reply = buildWorksReply(state, finalText);
         } else if (!planKey) {
-          reply = askPlanReply(state);
+          reply = askPlanReply();
         } else if (!state.nome) {
           state.stage = "ASK_NAME_AND_PROBLEM";
-          reply = askOnlyNameReply();
+          reply = askNameAndProblemReply();
         } else if (!state.date_key || !state.slot_time || !state.slot_key) {
           state.stage = "ASK_DAY";
           reply = "Antes de finalizar, vou te ajudar a escolher o melhor horário 🙂";
@@ -1917,20 +1833,14 @@ app.post("/whatsapp", async (req, res) => {
         if (ai.reply === "__NEED_PRICE__") {
           if (!state.nome) {
             state.stage = "ASK_NAME_AND_PROBLEM";
-            reply = askOnlyNameReply();
+            reply = askNameAndProblemReply();
           } else {
-            reply = priceReply(state);
+            reply = priceReply();
             state.stage = "ASK_PLAN";
           }
         } else if (ai.reply === "__NEED_BOOK__") {
           if (!state.nome || !state.problem_text) {
-            if (detectedProblem || detectedCondition) {
-              if (!state.problem_text && detectedProblem) state.problem_text = detectedProblem;
-              if (!state.condition && detectedCondition) state.condition = detectedCondition;
-              reply = askNameAfterDirectConditionReply(state.problem_text, state);
-            } else {
-              reply = askOnlyNameReply();
-            }
+            reply = askNameAndProblemReply();
             state.stage = "ASK_NAME_AND_PROBLEM";
           } else {
             state.stage = "ASK_DAY";
@@ -1948,8 +1858,7 @@ app.post("/whatsapp", async (req, res) => {
 
       // ===== anti-loop final =====
       if (similar(reply, state.last_bot_reply)) {
-        if (!state.nome) reply = askOnlyNameReply();
-        else if (!state.problem_text) reply = askOnlyProblemReply(state);
+        if (!state.nome || !state.problem_text) reply = askNameAndProblemReply();
         else if (!state.date_key) reply = await askDayReply();
         else if (!state.slot_time) reply = await offerSlotsReply(state);
         else if (!state.nome_completo) reply = askFullNameReply(state);
@@ -2003,12 +1912,12 @@ app.post("/create-payment", async (req, res) => {
     const response = await fetch("https://api.mercadopago.com/checkout/preferences", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+        Authorization: Bearer ${MP_ACCESS_TOKEN},
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         items: [{ title: description, quantity: 1, currency_id: "BRL", unit_price: amount }],
-        notification_url: `${BASE_URL}/mp/webhook`,
+        notification_url: ${BASE_URL}/mp/webhook,
         metadata: { phone: phone || null },
       }),
     });
@@ -2044,4 +1953,4 @@ app.post("/simulate-payment", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(Servidor rodando na porta ${PORT}));
