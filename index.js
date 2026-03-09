@@ -34,44 +34,6 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(express.json());
 app.use("/mp", express.json({ type: ["application/json", "text/json", "*/*"] }));
-function rememberPatientContext(state, message) {
-
-  if (!state.memory) {
-    state.memory = {}
-  }
-
-  const text = (message || "").toLowerCase()
-
-  if (text.includes("fibromialgia")) {
-    state.memory.condition = "fibromialgia"
-  }
-
-  if (text.includes("coluna") || text.includes("lombar")) {
-    state.memory.condition = "dor lombar"
-  }
-
-  if (text.includes("artrose")) {
-    state.memory.condition = "artrose"
-  }
-
-  if (text.includes("artrite")) {
-    state.memory.condition = "artrite"
-  }
-
-  if (text.includes("ansiedade")) {
-    state.memory.condition = "ansiedade"
-  }
-
-  if (text.includes("insônia") || text.includes("insonia")) {
-    state.memory.condition = "insônia"
-  }
-
-  if (text.includes("dor")) {
-    state.memory.symptom = "dor"
-  }
-
-  return state
-}
 
 const {
   OPENAI_API_KEY,
@@ -130,7 +92,6 @@ const FIXED_SCHEDULE = {
   "11-03": { dayName: "quarta-feira", slots: ["9h", "10h", "11h", "12h", "13h", "14h", "15h", "16h", "17h", "18h", "19h", "20h", "21h"] },
   "12-03": { dayName: "quinta-feira", slots: ["9h", "10h", "11h", "12h", "13h", "14h", "15h", "16h", "17h", "18h", "19h", "20h", "21h"] },
   "13-03": { dayName: "sexta-feira", slots: ["9h", "10h", "11h", "12h", "13h", "14h", "15h", "16h", "17h", "18h", "19h", "20h", "21h"] },
-  "14-03": { dayName: "sábado", slots: ["9h", "10h", "11h", "12h"] },
 };
 
 const PREMIUM_SLOT_PRIORITY = ["19h", "18h", "20h", "17h", "21h", "16h", "15h", "14h", "13h", "12h", "11h", "10h", "9h"];
@@ -1085,7 +1046,6 @@ app.post("/mp/webhook", async (req, res) => {
       state.payment.plan_key = payment?.metadata?.plan_key || state.payment.plan_key || null;
 
       if (status === "approved" && state.slot_key) await markSlotPaid(state.slot_key, phone);
-      state = rememberPatientContext(state, finalText);
       await saveUserState(phone, state);
 
       if (status === "approved") {
@@ -1132,7 +1092,6 @@ function initializeState(state, bot) {
   state.diagnostic_step = Number(state.diagnostic_step || 0);
   state.diagnostic_answers = state.diagnostic_answers || {};
   state.awaiting_operational_permission = !!state.awaiting_operational_permission;
-  state.memory = state.memory || {};
   state.last_bot_from = bot;
   return state;
 }
@@ -1219,27 +1178,8 @@ app.post("/whatsapp", async (req, res) => {
         if (nm) {
           state.nome = nm;
           state.rapport_done = true;
-          state.memory.nome = nm;
-          if (hasPriorityQuestion(flags)) {
-            const priority = buildPriorityReply(flags, state, finalText);
-            if (priority) {
-              reply = `Perfeito, ${nm} 🙂
-
-${priority}`;
-            } else {
-              state.stage = "ASK_PROBLEM";
-              reply = askProblemAfterNameReply(state);
-            }
-          } else if (detectedProblem) {
-            state.problem_text = detectedProblem;
-            if (!state.condition) state.condition = detectedCondition || detectCondition(detectedProblem);
-            state.stage = "DIAG_Q1";
-            state.diagnostic_step = 1;
-            reply = q1Reply(state);
-          } else {
-            state.stage = "ASK_PROBLEM";
-            reply = askProblemAfterNameReply(state);
-          }
+          state.stage = "ASK_PROBLEM";
+          reply = askProblemAfterNameReply(state);
         } else {
           const ai = await runLia({ incomingText: finalText, state, flags, mode: "rapport" });
           if (ai.reply === "__NEED_PRICE__" || ai.reply === "__NEED_BOOK__" || ai.reply === "__NEED_PAY__") {
@@ -1675,12 +1615,11 @@ ${priority}`;
 
       if (state.nome && reply.includes(state.nome)) state.name_used_count = Number(state.name_used_count || 0) + 1;
 
-      const delaySec = computeHumanDelay(flags, state, reply);
+      const delaySec = computeHumanDelay(flags, state);
       state.last_bot_reply = reply;
       state.last_user_message = finalText;
       state.last_sent_at = Date.now();
 
-      state = rememberPatientContext(state, finalText);
       await saveUserState(phone, state);
       await sendWhatsApp(lead, bot, reply, delaySec);
     } catch (err) {
