@@ -20,7 +20,7 @@
  * ENV:
  * OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, DATABASE_URL
  * MP_ACCESS_TOKEN, PUBLIC_BASE_URL
- * MODEL_CHAT (opcional, padrão gpt-5.2)
+ * MODEL_CHAT (opcional, padrão gpt-4.1)
  * MIN_DELAY_SEC / MAX_DELAY_SEC (opcional)
  */
 
@@ -56,7 +56,7 @@ if (!PUBLIC_BASE_URL) console.warn("⚠️ PUBLIC_BASE_URL não definido.");
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-const CHAT_MODEL = MODEL_CHAT || "gpt-5.2";
+const CHAT_MODEL = MODEL_CHAT || "gpt-4.1";
 const MIN_DELAY = Number(MIN_DELAY_SEC || 1);
 const MAX_DELAY = Number(MAX_DELAY_SEC || 4);
 const BASE_URL = (PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") || "http://localhost:10000";
