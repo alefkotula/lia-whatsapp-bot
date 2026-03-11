@@ -621,7 +621,7 @@ function onlineReply() {
 }
 
 function whoReply() {
-  return "O Dr. Alef Kotula é o médico responsável pelos atendimentos. A consulta é individualizada e focada em entender com profundidade se esse tratamento pode fazer sentido para o seu caso.";
+  return "O Dr. Alef Kotula é o médico responsável pelos atendimentos. A consulta já é direto com o Dr. Alef, sem triagem prévia com outra pessoa da equipe. É um atendimento individualizado, com cerca de 45 minutos, focado em avaliar seu caso com segurança.";
 }
 
 function prePriceValueReply() {
@@ -811,6 +811,7 @@ function detectIntent(text) {
   const asksIfOnline = /\b(e online|é online|online mesmo|presencial|precisa ir|tem que ir|ir em algum lugar|precisa ir na clinica|precisa ir na clínica)\b/.test(t);
   const asksLegal = /\b(legal no brasil|e legal|é legal|precisa de receita|receita|pode comprar|comprar sem receita|anvisa)\b/.test(t);
   const asksChapado = /\b(chapado|chapar|maconha mesmo|isso e maconha|isso é maconha|droga)\b/.test(t);
+  const asksConsultStructure = /\b(direto com o dr|direto com dr|direto com o doutor|direto com doutor|direto com ele|e direto com o dr|é direto com o dr|e com o dr|é com o dr|tem triagem|triagem antes|passa por triagem|passa com outra pessoa|outra pessoa da equipe|alguem da equipe antes|alguém da equipe antes|primeiro com outra pessoa)\b/.test(t);
 
   const focus =
     (/\b(insonia|insônia|dormir|sono|acordar)\b/.test(t) && "insonia") ||
@@ -843,6 +844,7 @@ function detectIntent(text) {
     asksIfOnline,
     asksLegal,
     asksChapado,
+    asksConsultStructure,
     focus,
   };
 }
@@ -944,6 +946,7 @@ function extractExplicitQuestionType(text, flags) {
   if (flags.asksChapado) return "effects";
   if (flags.asksIfOnline) return "online";
   if (flags.asksHowConsultWorks) return "how_consult_works";
+  if (flags.asksConsultStructure) return "consult_structure";
   if (flags.asksWho) return "doctor_identity";
   if (/(golpe|fraude|curso|suplemento|produto|isca|confiar|confiavel|confiável|legitimo|legítimo)/.test(t)) return "scam";
   if (/(inclui|incluido|incluído|o que vem|o que tem|o que contempla).*(447|acompanhamento|plano 1|opcao 1|opção 1)/.test(t)) return "plan_includes";
@@ -995,7 +998,7 @@ function detectLeadSignals(text, state) {
 
   const complianceRisk = flags.asksStartNow
     || /(dose|dosagem|quantas gotas|qual marca|onde comprar|qual produto|como comprar)/.test(t);
-  const shouldInterruptFlow = !!(explicitQuestionType || futureCostResistance || dominantObjection);
+  const shouldInterruptFlow = !!(explicitQuestion || explicitQuestionType || futureCostResistance || dominantObjection);
 
   return {
     explicitQuestion,
@@ -1070,6 +1073,8 @@ function answerLiteralQuestion(signals, state) {
       return consultationExplanationReply();
     case "doctor_identity":
       return whoReply();
+    case "consult_structure":
+      return "A consulta já é direto com o Dr. Alef 🙂 Não existe triagem antes com outra pessoa da equipe. É um atendimento individual, com cerca de 45 minutos. Se quiser, eu te mostro os horários.";
     default:
       return "Perfeito 🙂 Me conta só o que você quer entender primeiro, que eu te respondo de forma direta.";
   }
@@ -1765,6 +1770,15 @@ app.post("/whatsapp", async (req, res) => {
           reply = ai.reply;
           state = mergeState(state, ai.updates);
         }
+      }
+
+      // 7.5) trava anti-loop: estrutura da consulta antes de agenda/slots/pagamento
+      else if (
+        signals.explicitQuestionType === "consult_structure"
+        && ["ASK_DAY", "OFFER_SLOTS", "ASK_SPECIFIC_TIME", "WAIT_PAYMENT"].includes(state.stage)
+      ) {
+        reply = answerLiteralQuestion(signals, state);
+        if (state.stage === "WAIT_PAYMENT") markLinkGuard(state);
       }
 
       // 8) intenção de pagar / pagamento pendente
