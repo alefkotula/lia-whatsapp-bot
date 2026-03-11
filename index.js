@@ -429,6 +429,43 @@ async function acquireSlotHold(dateKey, time, phone, minutes = HOLD_MINUTES) {
 
   if (row.status === "held" && row.expires_at && new Date(row.expires_at) > new Date()) {
     return { ok: false, reason: "held" };
+        if (finalText.trim().toLowerCase() === "reset" && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
+        await pool.query(
+          `UPDATE wa_users
+           SET state = '{}'::jsonb, updated_at = NOW()
+           WHERE regexp_replace(phone, '\\D', '', 'g') = $1`,
+          [phoneDigits]
+        );
+        await pool.query(`DELETE FROM wa_slot_locks WHERE phone = $1 AND status='held'`, [phone]);
+        await sendWhatsApp(`whatsapp:+${phoneDigits}`, bot, "🔁 Memória resetada. Pode testar do zero agora.", 0);
+        return;
+      }
+
+      if (["simular pagamento", "paguei_teste", "simular_pagamento", "aprovar_teste"].includes(norm(finalText)) && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
+        const st = await getUserState(phone);
+        st.payment = st.payment || {};
+        st.payment.status = "approved";
+        st.payment.simulated = true;
+        if (st.slot_key) await markSlotPaid(st.slot_key, phone);
+        await saveUserState(phone, st);
+        await sendWhatsApp(lead, bot, afterPaidReply(st), 0);
+        return;
+      }
+
+      let state = initializeState(await getUserState(phone), bot);
+      const flags = detectIntent(finalText);
+      if (flags.focus && !state.focus) state.focus = flags.focus;
+      const detectedCondition = detectCondition(finalText);
+      if (detectedCondition && !state.condition) state.condition = detectedCondition;
+      const detectedProblem = extractProblemText(finalText);
+      if (detectedProblem && !state.problem_text) state.problem_text = detectedProblem;
+
+      let reply = "";
+
+      // 0) confirmado
+      if (state.payment?.status === "approved") {
+        reply = afterPaidReply(state);
+      
   }
 
   await pool.query(
