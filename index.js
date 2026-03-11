@@ -1,7 +1,4 @@
 /**
-try {
-  require('dotenv').config();
-} catch (e) {}
  * INDEX V13 — LIA CONVERSACIONAL OTIMIZADA
  *
  * Base: INDEX 4 híbrida + Conversational Funnel + Diagnostic Script + Question Priority Engine.
@@ -25,7 +22,8 @@ try {
  * MP_ACCESS_TOKEN, PUBLIC_BASE_URL
  * MODEL_CHAT (opcional, padrão gpt-4.1)
  * MIN_DELAY_SEC / MAX_DELAY_SEC (opcional)
- */require('dotenv').config();
+ */
+try { require('dotenv').config(); } catch (e) {}
 
 const express = require("express");
 const bodyParser = require("body-parser");
@@ -770,45 +768,45 @@ function buildWorksReply(state, incomingText) {
 
 function detectIntent(text) {
   const t = norm(text);
-  const wantsPrice = /(preco|preço|valor|quanto custa|investimento|custa|valores)/.test(t);
+  const wantsPrice = /\b(preco|preço|valor|quanto custa|investimento|custa|valores)\b/.test(t);
   const asksPriceDirect = wantsPrice;
-  const intentPay = /(como (pagar|fa[cç]o para pagar)|pagar|pagamento|pix|cartao|cartão|credito|crédito|debito|débito|boleto|link|parcel|parcela|quero pagar)/.test(t);
-  const wantsBook = /(quero marcar|quero agendar|agendar|marcar|confirmar consulta|quero consulta|gostaria de agendar|tem horario|tem horário|agenda)/.test(t);
-  const asksHours = /(horarios|horário|horario|que horas|vagas|disponibilidade)/.test(t);
-  const confirms = /(sim|ok|beleza|pode|confirmo|fechado|vamos|pode ser|serve|confirmar)/.test(t);
-  const refuses = /(nao quero|não quero|pare|para|chega|rude|grosso|nao gostei|não gostei)/.test(t);
-  const asksStartNow = /(como tomar|dose|dosagem|quantas gotas|comecar agora|começar agora)/.test(t);
-  const urgency = /(dor no peito|falta de ar|desmaio|avc|convuls|paralisia|confusao|confusão)/.test(t);
-  const asksWho = /(quem e|quem eh|quem é|quem e o dr|quem é o dr|quem e o doutor|quem é o doutor)/.test(t);
-  const asksIfWorks = /(funciona|serve|ajuda|melhora|tem resultado)/.test(t);
-  const asksWorthConsult = /(vale a pena|por que essa consulta vale a pena|essa consulta vale a pena|compensa fazer a consulta|vale mesmo)/.test(t);
-  const asksTrustedProduct = /(produto confiavel|produto confiável|como saber qual produto|qual produto e confiavel|qual produto é confiável|como sei que o produto e confiavel|como sei que o produto é confiável|produto seguro)/.test(t);
-  const asksServeCondition = /(serve para minha condicao|serve para a minha condicao|serve pra minha condicao|serve para meu caso|serve pro meu caso|isso serve para a minha condicao|isso serve para meu caso|funciona pro meu caso)/.test(t);
-  const asksMonthlyCost = /(custo por mes|custo por mês|quanto custa por mes|quanto custa por mês|tratamento por mes|tratamento por mês|gasto por mes|gasto por mês)/.test(t);
-  const asksRecipe = /(precisa de receita|precisa receita|tem receita|receita medica|receita médica)/.test(t);
-  const asksPharmacy = /(comprar em farmacia|comprar em farmácia|consigo comprar em farmacia|consigo comprar em farmácia|farmacia|farmácia)/.test(t);
-  const asksSideEffects = /(efeitos colaterais|efeito colateral|faz mal|risco|e seguro|é seguro|efeitos ruins)/.test(t);
-  const asksTimeToEffect = /(demora para fazer efeito|quanto tempo para fazer efeito|em quanto tempo faz efeito|quando comeca a fazer efeito|quando começa a fazer efeito)/.test(t);
-  const asksScam = /(golpe|confiavel mesmo|confiável mesmo|como sei que e serio|como sei que é serio|telemedicina e segura|telemedicina é segura|serio mesmo|sério mesmo)/.test(t);
-  const asksDependence = /(vicia|dependencia|dependência)/.test(t);
-  const saysWillSee = /(vou ver|depois te falo|vou confirmar|vou pensar|te aviso|depois vejo)/.test(t);
-  const saysIndecisive = /(tanto faz|qual voce acha melhor|qual você acha melhor)/.test(t);
-  const saysExpensive = /(caro|caríssima|carissimo|caríssimo|achei caro|muito caro|pesado)/.test(t);
-  const saysUnsure = /(nao tenho certeza|não tenho certeza|nao sei|não sei|sera|será|to na duvida|tô na dúvida|duvida|dúvida|medo de gastar dinheiro a toa|gastar dinheiro a toa|medo de me frustrar)/.test(t);
-  const asksHowConsultWorks = /(como funciona a consulta|como funciona essa consulta|como funciona essa avaliacao|como funciona essa avaliação|como funciona a avaliacao|como funciona a avaliação)/.test(t);
-  const asksIfOnline = /(e online|é online|online mesmo|presencial|precisa ir|tem que ir|ir em algum lugar|precisa ir na clinica|precisa ir na clínica)/.test(t);
-  const asksLegal = /(legal no brasil|e legal|é legal|isso e legal|isso é legal|regular no brasil|regular no brasil hoje|anvisa|legalmente regular)/.test(t);
-  const asksChapado = /(chapado|chapar|maconha mesmo|isso e maconha|isso é maconha|droga)/.test(t);
+  const intentPay = /\b(como (pagar|fa[cç]o para pagar)|pagar|pagamento|pix|cartao|cartão|credito|crédito|debito|débito|boleto|link|parcel|parcela|quero pagar)\b/.test(t);
+  const wantsBook = /\b(quero marcar|quero agendar|agendar|marcar|confirmar consulta|quero consulta|gostaria de agendar|tem horario|tem horário|agenda)\b/.test(t);
+  const asksHours = /\b(horarios|horário|horario|que horas|vagas|disponibilidade)\b/.test(t);
+  const confirms = /\b(sim|ok|beleza|pode|confirmo|fechado|vamos|pode ser|serve|confirmar)\b/.test(t);
+  const refuses = /\b(nao quero|não quero|pare|para|chega|rude|grosso|nao gostei|não gostei)\b/.test(t);
+  const asksStartNow = /\b(como tomar|dose|dosagem|quantas gotas|comecar agora|começar agora)\b/.test(t);
+  const urgency = /\b(dor no peito|falta de ar|desmaio|avc|convuls|paralisia|confusao|confusão)\b/.test(t);
+  const asksWho = /\b(quem e|quem eh|quem é|quem e o dr|quem é o dr|quem e o doutor|quem é o doutor)\b/.test(t);
+  const asksIfWorks = /\b(funciona|serve|ajuda|melhora|tem resultado)\b/.test(t);
+  const asksWorthConsult = /\b(vale a pena|por que essa consulta vale a pena|essa consulta vale a pena|compensa fazer a consulta|vale mesmo)\b/.test(t);
+  const asksTrustedProduct = /\b(produto confiavel|produto confiável|como saber qual produto|qual produto e confiavel|qual produto é confiável|como sei que o produto e confiavel|como sei que o produto é confiável|produto seguro)\b/.test(t);
+  const asksServeCondition = /\b(serve para minha condicao|serve para a minha condicao|serve pra minha condicao|serve para meu caso|serve pro meu caso|isso serve para a minha condicao|isso serve para meu caso|funciona pro meu caso)\b/.test(t);
+  const asksMonthlyCost = /\b(custo por mes|custo por mês|quanto custa por mes|quanto custa por mês|tratamento por mes|tratamento por mês|gasto por mes|gasto por mês)\b/.test(t);
+  const asksRecipe = /\b(precisa de receita|precisa receita|tem receita|receita medica|receita médica)\b/.test(t);
+  const asksPharmacy = /\b(comprar em farmacia|comprar em farmácia|consigo comprar em farmacia|consigo comprar em farmácia|farmacia|farmácia)\b/.test(t);
+  const asksSideEffects = /\b(efeitos colaterais|efeito colateral|faz mal|risco|e seguro|é seguro|efeitos ruins)\b/.test(t);
+  const asksTimeToEffect = /\b(demora para fazer efeito|quanto tempo para fazer efeito|em quanto tempo faz efeito|quando comeca a fazer efeito|quando começa a fazer efeito)\b/.test(t);
+  const asksScam = /\b(golpe|confiavel mesmo|confiável mesmo|como sei que e serio|como sei que é serio|telemedicina e segura|telemedicina é segura|serio mesmo|sério mesmo)\b/.test(t);
+  const asksDependence = /\b(vicia|dependencia|dependência)\b/.test(t);
+  const saysWillSee = /\b(vou ver|depois te falo|vou confirmar|vou pensar|te aviso|depois vejo)\b/.test(t);
+  const saysIndecisive = /\b(tanto faz|qual voce acha melhor|qual você acha melhor)\b/.test(t);
+  const saysExpensive = /\b(caro|caríssima|carissimo|caríssimo|achei caro|muito caro|pesado)\b/.test(t);
+  const saysUnsure = /\b(nao tenho certeza|não tenho certeza|nao sei|não sei|sera|será|to na duvida|tô na dúvida|duvida|dúvida|medo de gastar dinheiro a toa|gastar dinheiro a toa|medo de me frustrar)\b/.test(t);
+  const asksHowConsultWorks = /\b(como funciona a consulta|como funciona essa consulta|como funciona essa avaliacao|como funciona essa avaliação|como funciona a avaliacao|como funciona a avaliação)\b/.test(t);
+  const asksIfOnline = /\b(e online|é online|online mesmo|presencial|precisa ir|tem que ir|ir em algum lugar|precisa ir na clinica|precisa ir na clínica)\b/.test(t);
+  const asksLegal = /\b(legal no brasil|e legal|é legal|isso e legal|isso é legal|regular no brasil|regular no brasil hoje|anvisa|legalmente regular)\b/.test(t);
+  const asksChapado = /\b(chapado|chapar|maconha mesmo|isso e maconha|isso é maconha|droga)\b/.test(t);
 
   const focus =
-    (/(insonia|insônia|dormir|sono|acordar)/.test(t) && "insonia") ||
-    (/(ansiedade|panico|pânico|crise)/.test(t) && "ansiedade") ||
-    (/(fibromialgia)/.test(t) && "fibromialgia") ||
-    (/(neuropat)/.test(t) && "dor_neuropatica") ||
-    (/(artrose)/.test(t) && "artrose") ||
-    (/(artrite)/.test(t) && "artrite") ||
-    (/(coluna|lombar)/.test(t) && "dor_lombar") ||
-    (/(dor)/.test(t) && "dor_cronica") ||
+    (/\b(insonia|insônia|dormir|sono|acordar)\b/.test(t) && "insonia") ||
+    (/\b(ansiedade|panico|pânico|crise)\b/.test(t) && "ansiedade") ||
+    (/\b(fibromialgia)\b/.test(t) && "fibromialgia") ||
+    (/\b(neuropat)\b/.test(t) && "dor_neuropatica") ||
+    (/\b(artrose)\b/.test(t) && "artrose") ||
+    (/\b(artrite)\b/.test(t) && "artrite") ||
+    (/\b(coluna|lombar)\b/.test(t) && "dor_lombar") ||
+    (/\b(dor)\b/.test(t) && "dor_cronica") ||
     null;
 
   const hasDirectQuestion =
@@ -1744,4 +1742,4 @@ app.post("/simulator", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 LIA V13 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 LIA V14 rodando na porta ${PORT}`));
