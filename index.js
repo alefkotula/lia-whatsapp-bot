@@ -45,6 +45,7 @@ const {
   MAX_DELAY_SEC,
   MP_ACCESS_TOKEN,
   PUBLIC_BASE_URL,
+  CRON_SECRET,
 } = process.env;
 
 if (!OPENAI_API_KEY) console.error("❌ Falta OPENAI_API_KEY");
@@ -62,6 +63,11 @@ const MAX_DELAY = Number(MAX_DELAY_SEC || 4);
 const BASE_URL = (PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") || "http://localhost:10000";
 const HOLD_MINUTES = 15;
 const ADMIN_RESET_PHONE_DIGITS = "556581422637";
+const FOLLOWUP_STAGE_WINDOWS = [
+  { minMs: 30 * 60 * 1000, maxMs: 90 * 60 * 1000 },
+  { minMs: 2 * 60 * 60 * 1000, maxMs: 6 * 60 * 60 * 1000 },
+  { minMs: 24 * 60 * 60 * 1000, maxMs: 24 * 60 * 60 * 1000 },
+];
 
 const PLANS = {
   full: {
@@ -161,8 +167,10 @@ function mergeState(oldState, updates) {
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function randMs(minMs, maxMs) { return randInt(minMs, maxMs); }
 function pad2(n) { return String(n).padStart(2, "0"); }
 function currentYear() { return new Date().getFullYear(); }
+function nowMs() { return Date.now(); }
 function removeDuplicates(arr) { return [...new Set(arr)]; }
 function pickRandom(arr) { return Array.isArray(arr) && arr.length ? arr[Math.floor(Math.random() * arr.length)] : ""; }
 
@@ -225,12 +233,14 @@ function extractNameFromText(text) {
   const cleaned = t.replace(/[^\p{L}\p{N}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
   if (!cleaned) return null;
 
-  const m = cleaned.match(/(?:me chamo|sou|nome e|nome é)\s+(.+)$/i);
-  const candidate = (m?.[1] || cleaned).trim();
+  const mCall = cleaned.match(/(?:pode me chamar de|pode chamar de|me chama de)\s+(.+)$/iu);
+  const m = cleaned.match(/(?:me chamo|sou|nome e|nome é)\s+(.+)$/iu);
+  const candidate = (mCall?.[1] || m?.[1] || cleaned).trim();
   const parts = candidate.split(" ").filter(Boolean);
 
   if (parts.length < 1 || parts.length > 5) return null;
   if (/^\d+$/.test(candidate)) return null;
+  if (/^(pode|sim|nao|não|ok|beleza|claro)$/i.test(parts[0]) && parts.length === 1) return null;
   if (/(dor|sono|ansiedade|fibromialgia|artrose|artrite|enxaqueca|coluna|insônia|insonia)/i.test(candidate) && parts.length <= 2) return null;
 
   return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
@@ -329,12 +339,27 @@ function extractNumericChoice(text) {
 
 function extractPlanChoice(text) {
   const t = norm(text);
-  if (/^(1|opcao 1|opção 1)$/.test(t)) return "full";
-  if (/^(2|opcao 2|opção 2)$/.test(t)) return "basic";
-  if (/^(3|opcao 3|opção 3)$/.test(t)) return "retorno";
-  if (/\b(acompanhamento|consulta com retorno|com retorno|pacote|retorno em 30|acompanhamento medico|acompanhamento médico)\b/.test(t)) return "full";
-  if (/\b(avaliacao especializada|avaliação especializada|avaliacao|avaliação|so a consulta|só a consulta|opcao 2|opção 2)\b/.test(t)) return "basic";
-  if (/\b(retorno avulso|consulta de ajuste|apenas retorno)\b/.test(t)) return "retorno";
+  if (!t) return null;
+  if (/^\s*(1|opcao 1|opção 1|primeira|primeiro)\s*$/.test(t)) return "full";
+  if (/^\s*(2|opcao 2|opção 2|segunda|segundo)\s*$/.test(t)) return "basic";
+  if (/^\s*(3|opcao 3|opção 3|terceira|terceiro)\s*$/.test(t)) return "retorno";
+
+  const choose1 = /\b(quero|prefiro|vou|fecho|pode ser|acho melhor|faz mais sentido)\b.*\b(opcao|opção|plano)?\s*1\b/.test(t);
+  const choose2 = /\b(quero|prefiro|vou|fecho|pode ser|acho melhor|faz mais sentido)\b.*\b(opcao|opção|plano)?\s*2\b/.test(t)
+    || /\b(a|opcao|opção)\s*2\b.*\b(faz mais sentido|pra mim|para mim)\b/.test(t);
+  const choose3 = /\b(quero|prefiro|vou|fecho|pode ser|acho melhor|faz mais sentido)\b.*\b(opcao|opção|plano)?\s*3\b/.test(t);
+  if (choose1) return "full";
+  if (choose2) return "basic";
+  if (choose3) return "retorno";
+
+  if (/\b(447|consulta com retorno|com retorno|acompanhamento|mais completa|mais completo|plano completo)\b/.test(t)) return "full";
+  if (/\b(347|avaliacao|avaliação|consulta inicial|primeira consulta|mais simples|so a consulta|só a consulta)\b/.test(t)) return "basic";
+  if (/\b(200|retorno avulso|consulta de ajuste|so retorno|só retorno|apenas retorno|a de retorno|de retorno)\b/.test(t)) return "retorno";
+
+  if (/\b(link)\b.*\b(opcao|opção)\s*1\b/.test(t)) return "full";
+  if (/\b(link)\b.*\b(opcao|opção)\s*2\b/.test(t)) return "basic";
+  if (/\b(link)\b.*\b(opcao|opção)\s*3\b/.test(t)) return "retorno";
+
   return null;
 }
 
@@ -822,6 +847,423 @@ function detectIntent(text) {
   };
 }
 
+function getOrInitObjectionMemory(state) {
+  state.objection_memory = state.objection_memory || {};
+  const m = state.objection_memory;
+  if (typeof m.legalidade_answered !== "boolean") m.legalidade_answered = false;
+  if (typeof m.price_answered !== "boolean") m.price_answered = false;
+  if (typeof m.future_cost_answered !== "boolean") m.future_cost_answered = false;
+  if (typeof m.plan_explained !== "boolean") m.plan_explained = false;
+  if (typeof m.scam_answered !== "boolean") m.scam_answered = false;
+  if (typeof m.effects_answered !== "boolean") m.effects_answered = false;
+  return m;
+}
+
+function summarizeLastContext(state) {
+  const chunks = [];
+  if (state?.problem_text) chunks.push(`foco: ${state.problem_text}`);
+  else if (state?.focus) chunks.push(`foco: ${state.focus}`);
+  if (state?.stage) chunks.push(`etapa: ${state.stage}`);
+  if (state?.date_key && state?.slot_time) chunks.push(`slot: ${prettySlot(state.date_key, state.slot_time)}`);
+  if (state?.selected_plan_key) chunks.push(`plano: ${state.selected_plan_key}`);
+  if (state?.payment?.status) chunks.push(`pagamento: ${state.payment.status}`);
+  return clip(chunks.join(" | "), 280) || "conversa iniciada";
+}
+
+function deriveConversationStage(state, signals) {
+  if (state?.payment?.status === "approved" || state?.stage === "CONFIRMED") return "PAYMENT_DECISION";
+  if (state?.payment?.status === "pending" || state?.stage === "WAIT_PAYMENT") return "PAYMENT_DECISION";
+  if (state?.stage === "ASK_PLAN") return "PLAN_DECISION";
+  if (["ASK_DAY", "OFFER_SLOTS", "ASK_SPECIFIC_TIME"].includes(state?.stage)) return "SCHEDULING";
+  if (["DIAG_Q1", "DIAG_Q2", "DIAG_Q3", "ASK_PROBLEM"].includes(state?.stage)) return "QUALIFYING";
+  if (signals?.dominantObjection || signals?.explicitQuestion) return "TRUST_BUILDING";
+  if (state?.stage === "AFTER_DIAGNOSTIC") return "VALUE_BUILDING";
+  if (!state?.nome || state?.stage === "ASK_NAME") return "OPEN";
+  return "TRUST_BUILDING";
+}
+
+function ensureFollowupState(state) {
+  state.followup = state.followup || {};
+  const f = state.followup;
+  if (typeof f.enabled !== "boolean") f.enabled = true;
+  f.stage_when_paused = f.stage_when_paused || state.stage || null;
+  f.last_context = f.last_context || summarizeLastContext(state);
+  f.last_user_message_at = Number(f.last_user_message_at || 0);
+  f.sent_count = Number(f.sent_count || 0);
+  f.next_at = Number(f.next_at || 0);
+  f.last_sent_at = Number(f.last_sent_at || 0);
+  f.completed = !!f.completed;
+  return f;
+}
+
+function scheduleNextFollowupTimestamp(sentCount, baseTs) {
+  const window = FOLLOWUP_STAGE_WINDOWS[Math.min(sentCount, FOLLOWUP_STAGE_WINDOWS.length - 1)];
+  return Number(baseTs) + randMs(window.minMs, window.maxMs);
+}
+
+function touchFollowupOnInbound(state, incomingText) {
+  const f = ensureFollowupState(state);
+  if (state?.payment?.status === "approved") {
+    f.enabled = false;
+    f.completed = true;
+    f.next_at = 0;
+    return;
+  }
+  const now = nowMs();
+  f.enabled = true;
+  f.completed = false;
+  f.stage_when_paused = state.stage || f.stage_when_paused || null;
+  f.last_context = clip(`${summarizeLastContext(state)} | user: ${(incomingText || "").trim()}`, 300);
+  f.last_user_message_at = now;
+  f.sent_count = 0;
+  f.last_sent_at = 0;
+  f.next_at = scheduleNextFollowupTimestamp(0, now);
+  state.awaiting_followup = false;
+}
+
+function buildReengagementReply(state, attempt = null) {
+  const f = ensureFollowupState(state);
+  const step = Number(attempt || f.sent_count + 1);
+  const firstName = state?.nome || "";
+  const greeting = firstName ? `Oi, ${firstName} 🙂` : "Oi 🙂";
+
+  if (step <= 1) {
+    return `${greeting}\nFiquei pensando no que você comentou.\nSe quiser, eu sigo daqui com você.`;
+  }
+  if (step === 2) {
+    return `${greeting}\nVi que nossa conversa ficou pausada.\nSe ainda fizer sentido entender melhor seu caso, eu sigo aqui com você.`;
+  }
+  return `${greeting}\nPassando para não te deixar sem resposta.\nSe quiser, eu retomo daqui com você quando for um bom momento.`;
+}
+
+function extractExplicitQuestionType(text, flags) {
+  const t = norm(text);
+  if (!t) return null;
+  if (flags.asksPriceDirect) return "price";
+  if (flags.asksLegal) return "legality";
+  if (flags.asksChapado) return "effects";
+  if (flags.asksIfOnline) return "online";
+  if (flags.asksHowConsultWorks) return "how_consult_works";
+  if (flags.asksWho) return "doctor_identity";
+  if (/(golpe|fraude|curso|suplemento|produto|isca|confiar|confiavel|confiável|legitimo|legítimo)/.test(t)) return "scam";
+  if (/(inclui|incluido|incluído|o que vem|o que tem|o que contempla).*(447|acompanhamento|plano 1|opcao 1|opção 1)/.test(t)) return "plan_includes";
+  if (/(diferenca|diferença|qual muda|muda entre).*(447|347|plano|opcao|opção|acompanhamento|avaliacao|avaliação)/.test(t)) return "plan_difference";
+  if (/(custo|valor|preco|preço).*(tratamento|medicamento).*(mes|mês|mensal|futuro)|medicamento.*caro/.test(t)) return "future_cost";
+  if (/(serve pro meu caso|serve para meu caso|funciona pra mim|funciona para mim|isso serve pra|isso serve para)/.test(t)) return "fit";
+  if (/(funciona|resultado|melhora de verdade|vale a pena)/.test(t)) return "efficacy";
+  if (/(diferencial|diferenca do dr|diferença do dr|por que com voces|por que com vocês|o que muda|comparando)/.test(t)) return "differential";
+  if (/(sai com receita|receita|prescricao|prescrição|proximos passos|próximos passos)/.test(t)) return "prescription";
+  return null;
+}
+
+function detectLeadSignals(text, state) {
+  const flags = detectIntent(text);
+  const t = norm(text);
+  const explicitQuestionType = extractExplicitQuestionType(text, flags);
+  const explicitQuestion = explicitQuestionType
+    ? (text || "").trim()
+    : ((/\?/.test(text || "") || /^(qual|quais|quanto|como|onde|isso|serve|funciona|tem|pode|é|e)\b/.test(t)) ? (text || "").trim() : null);
+
+  const planSignal = extractPlanChoice(text);
+  const buyingSignal = !!planSignal
+    || flags.intentPay
+    || /\b(fecho|quero fechar|vamos fechar|quero confirmar|pode confirmar|manda o link|me manda o link|quero essa opcao|quero essa opção|vou nessa|vou nessa opcao|vou nessa opção)\b/.test(t);
+  const paymentResistance = flags.saysExpensive
+    || flags.saysWillSee
+    || /\b(vou pensar|depois|agora nao|agora não|nao consigo agora|não consigo agora|mais pra frente)\b/.test(t);
+  const futureCostResistance = /(custo|valor|preco|preço).*(futuro|mensal|mes|mês)|medicamento.*caro|continuar o tratamento/.test(t);
+
+  let dominantObjection = null;
+  if (explicitQuestionType) dominantObjection = explicitQuestionType;
+  else if (futureCostResistance) dominantObjection = "future_cost";
+  else if (flags.saysExpensive) dominantObjection = "price";
+
+  let leadProfile = "morno";
+  if (dominantObjection === "scam" || dominantObjection === "legality") leadProfile = "desconfiado";
+  else if (dominantObjection === "differential") leadProfile = "comparador";
+  else if (dominantObjection === "price" || dominantObjection === "future_cost") leadProfile = "travado_por_preco";
+  else if (buyingSignal) leadProfile = "quente";
+  else if (flags.asksIfWorks) leadProfile = "cetico";
+
+  let dominantIntent = "conversation";
+  if (state?.payment?.status === "pending" && buyingSignal) dominantIntent = "payment";
+  else if (buyingSignal) dominantIntent = "close";
+  else if (flags.wantsBook || flags.asksHours) dominantIntent = "schedule";
+  else if (flags.wantsPrice) dominantIntent = "price";
+  else if (dominantObjection) dominantIntent = "objection";
+  else if (explicitQuestion) dominantIntent = "question";
+
+  const complianceRisk = flags.asksStartNow
+    || /(dose|dosagem|quantas gotas|qual marca|onde comprar|qual produto|como comprar)/.test(t);
+  const shouldInterruptFlow = !!(explicitQuestionType || futureCostResistance || dominantObjection);
+
+  return {
+    explicitQuestion,
+    explicitQuestionType,
+    dominantIntent,
+    dominantObjection,
+    leadProfile,
+    buyingSignal,
+    planSignal,
+    paymentResistance,
+    futureCostResistance,
+    shouldInterruptFlow,
+    isUrgent: !!flags.urgency,
+    complianceRisk,
+    flags,
+  };
+}
+
+function getConversationPriority(signals, state) {
+  if (signals.isUrgent) return "URGENT";
+  if (signals.complianceRisk) return "COMPLIANCE";
+  if (signals.explicitQuestion && signals.shouldInterruptFlow) return "ANSWER_FIRST";
+  if (signals.dominantObjection && signals.shouldInterruptFlow) return "HANDLE_OBJECTION";
+  if ((signals.planSignal || signals.buyingSignal) && state.stage === "ASK_PLAN") return "PLAN_CLOSE";
+  if (signals.buyingSignal && state.payment?.status === "pending") return "PAYMENT_CLOSE";
+  if (state.followup?.enabled && state.awaiting_followup) return "REENGAGE";
+  return "FLOW_NEXT";
+}
+
+function markObjectionMemory(state, key) {
+  const m = getOrInitObjectionMemory(state);
+  if (key && Object.prototype.hasOwnProperty.call(m, key)) m[key] = true;
+}
+
+function answerLiteralQuestion(signals, state) {
+  const qType = signals.explicitQuestionType;
+  if (!qType) return "Perfeito 🙂 Me conta sua principal dúvida para eu te responder de forma objetiva.";
+
+  switch (qType) {
+    case "price":
+      markObjectionMemory(state, "price_answered");
+      return priceReply();
+    case "plan_includes":
+      markObjectionMemory(state, "plan_explained");
+      return "Claro 🙂 Nesse acompanhamento de R$447 você faz a consulta inicial com o Dr. Alef e já fica com um retorno em torno de 30 dias. Esse retorno serve para revisar como você ficou e ajustar a conduta, se necessário.";
+    case "plan_difference":
+      markObjectionMemory(state, "plan_explained");
+      return "Resumo rápido 🙂 A opção de R$447 inclui consulta + retorno em torno de 30 dias. A de R$347 é a avaliação inicial de 45 minutos, sem retorno incluso.";
+    case "future_cost":
+      markObjectionMemory(state, "future_cost_answered");
+      return "Essa é uma dúvida importante 🙂 O valor pode variar conforme produto e dose, então não existe um número único para todo mundo. O Dr. Alef orienta de forma realista, pensando no que faz sentido para o caso e no que é viável para o paciente.";
+    case "prescription":
+      return "Sim 🙂 Se o Dr. Alef entender que faz sentido para o seu caso, ele orienta os próximos passos com segurança e emite a prescrição quando houver indicação.";
+    case "legality":
+      markObjectionMemory(state, "legalidade_answered");
+      return "Sim 🙂 O uso medicinal de canabinoides é legal no Brasil quando existe avaliação e prescrição médica, seguindo as regras da Anvisa.";
+    case "scam":
+      markObjectionMemory(state, "scam_answered");
+      return "Você faz muito bem em perguntar 🙂 É consulta médica de verdade, individualizada, por telemedicina. Não é curso nem venda de produto.";
+    case "effects":
+      markObjectionMemory(state, "effects_answered");
+      return "Essa preocupação é comum 🙂 Dependendo da formulação e da dose, pode haver sonolência em alguns casos. Por isso o Dr. Alef avalia com cautela para ajustar com segurança à sua rotina.";
+    case "differential":
+      return "O principal diferencial costuma ser a individualização do caso, com cuidado em segurança e ajustes, sem protocolo pronto. O Dr. Alef revisa histórico, medicações e objetivos para decidir o que realmente faz sentido para você.";
+    case "fit":
+      return "Pode fazer sentido sim, dependendo do seu caso 🙂 A consulta existe justamente para avaliar com segurança se esse caminho é indicado para você.";
+    case "efficacy":
+      return "Na prática, muitos pacientes relatam melhora, mas depende bastante do caso. A consulta serve para avaliar com honestidade se faz sentido para você, sem promessa de milagre.";
+    case "online":
+      return onlineReply();
+    case "how_consult_works":
+      return consultationExplanationReply();
+    case "doctor_identity":
+      return whoReply();
+    default:
+      return "Perfeito 🙂 Me conta só o que você quer entender primeiro, que eu te respondo de forma direta.";
+  }
+}
+
+function handleDominantObjection(signals, state) {
+  if (!signals.dominantObjection) return "Perfeito 🙂 Me conta sua principal dúvida que eu te respondo de forma objetiva.";
+  return answerLiteralQuestion({ ...signals, explicitQuestionType: signals.dominantObjection }, state);
+}
+
+function appendSmartTransition(reply, signals, state) {
+  if (!reply) return reply;
+  if (/Me responda com \*1, 2 ou 3\*/.test(reply)) return reply;
+  let transition = "";
+
+  if (state?.payment?.status === "pending") {
+    transition = "Se fizer sentido, eu sigo com você no próximo passo com calma.";
+  } else if (state?.stage === "ASK_PLAN" && !state?.selected_plan_key) {
+    transition = "Se fizer sentido, você pode me responder com 1, 2 ou 3 que eu sigo daqui com você.";
+  } else if (["legality", "scam", "effects", "differential"].includes(signals?.dominantObjection)) {
+    transition = "Se quiser, eu te explico rapidinho como funciona e te mostro os horários.";
+  } else if (["price", "future_cost", "plan_includes", "plan_difference"].includes(signals?.dominantObjection)) {
+    transition = "Se quiser, eu te explico qual opção tende a fazer mais sentido no seu caso.";
+  } else {
+    transition = "Se quiser, eu te mostro os próximos horários.";
+  }
+
+  if (!transition) return reply;
+  return `${reply}\n\n${transition}`;
+}
+
+function urgentReply() {
+  return "Entendi. Pela sua mensagem, isso pode precisar de avaliação urgente. Procure um pronto atendimento agora (ou SAMU 192). Assim que estiver seguro(a), me chama aqui.";
+}
+
+function complianceSafeReply() {
+  return "Entendi sua vontade de começar. Por segurança, eu não consigo orientar dose, marca ou compra por aqui 🙏 Isso depende de avaliação médica individual. Se quiser, eu te explico como funciona a avaliação.";
+}
+
+function shouldSuppressPendingLink(signals, state) {
+  if (!state?.payment?.link || state?.payment?.status !== "pending") return false;
+  if (signals?.explicitQuestion || signals?.dominantObjection) return true;
+  const lastBlocked = Number(state?.link_guard?.last_blocked_at || 0);
+  if (lastBlocked && nowMs() - lastBlocked < 10 * 60 * 1000 && !signals?.buyingSignal) return true;
+  return false;
+}
+
+function markLinkGuard(state) {
+  state.link_guard = state.link_guard || {};
+  state.link_guard.last_blocked_at = nowMs();
+  state.link_guard.blocked_count = Number(state.link_guard.blocked_count || 0) + 1;
+}
+
+function objectionResolvedEnough(signals, state) {
+  const m = getOrInitObjectionMemory(state);
+  if (!signals?.dominantObjection) return true;
+  if (signals.dominantObjection === "legality") return m.legalidade_answered;
+  if (signals.dominantObjection === "price") return m.price_answered;
+  if (signals.dominantObjection === "future_cost") return m.future_cost_answered;
+  if (signals.dominantObjection === "plan_includes" || signals.dominantObjection === "plan_difference") return m.plan_explained;
+  if (signals.dominantObjection === "scam") return m.scam_answered;
+  if (signals.dominantObjection === "effects") return m.effects_answered;
+  return false;
+}
+
+function moveToValueOrAgenda(state) {
+  if (state?.date_key) {
+    state.stage = state.slot_time ? "ASK_FULLNAME" : "OFFER_SLOTS";
+    return;
+  }
+  state.stage = "AFTER_DIAGNOSTIC";
+}
+
+async function resolvePlanSelection({ signals, state, phone }) {
+  const planKey = signals.planSignal || state.selected_plan_key;
+  if (!planKey) return "Qual dessas opções faz mais sentido para você? Me responde com 1, 2 ou 3 🙂";
+
+  if (!state.date_key || !state.slot_time) {
+    state.stage = "ASK_DAY";
+    return "Perfeito 🙂 Antes de confirmar o plano, eu te mostro os horários para deixar sua consulta reservada.";
+  }
+
+  state.selected_plan_key = planKey;
+  const holdCheck = await acquireSlotHold(state.date_key, state.slot_time, phone);
+  if (!holdCheck.ok) {
+    state.slot_time = null;
+    state.slot_key = null;
+    state.stage = "OFFER_SLOTS";
+    return "Esse horário acabou de ser preenchido antes da confirmação 🙏 Vou te mostrar as próximas melhores opções.\n\n" + (await offerSlotsReply(state));
+  }
+
+  state.slot_key = holdCheck.slot_key;
+  const already = state.payment && state.payment.preference_id && state.payment.plan_key === planKey && state.payment.status === "pending";
+  if (already && state.payment.link) {
+    state.stage = "WAIT_PAYMENT";
+    return paymentSentReply(PLANS[planKey], state.payment.link, state);
+  }
+
+  const pref = await mpCreatePreference({ phone, planKey });
+  state.payment = {
+    status: "pending",
+    plan_key: planKey,
+    preference_id: pref.preference_id,
+    link: pref.link,
+    external_reference: pref.external_reference,
+    created_at: nowMs(),
+  };
+  state.stage = "WAIT_PAYMENT";
+  return paymentSentReply(pref.plan, pref.link, state);
+}
+
+function resolvePaymentStep(state) {
+  if (state?.payment?.status === "pending" && state?.payment?.link) {
+    state.stage = "WAIT_PAYMENT";
+    return pendingPaymentReply(state);
+  }
+  return "Perfeito 🙂 Para pagamento, eu primeiro reservo seu horário e confirmo os dados essenciais.";
+}
+
+async function runFollowupScheduler() {
+  const now = nowMs();
+  const counters = { scanned: 0, sent: 0, skipped: 0, updated: 0, errors: 0 };
+  const { rows } = await pool.query(`SELECT phone, state FROM wa_users WHERE state ? 'followup'`);
+
+  for (const row of rows) {
+    counters.scanned += 1;
+    const phone = row.phone;
+    const state = row.state || {};
+    const f = ensureFollowupState(state);
+
+    if (!f.enabled || f.completed) {
+      counters.skipped += 1;
+      continue;
+    }
+    if (state?.payment?.status === "approved") {
+      f.enabled = false;
+      f.completed = true;
+      f.next_at = 0;
+      await saveUserState(phone, state);
+      counters.updated += 1;
+      continue;
+    }
+    if (!state.last_bot_from) {
+      counters.skipped += 1;
+      continue;
+    }
+    if (f.sent_count >= 3) {
+      f.enabled = false;
+      f.completed = true;
+      f.next_at = 0;
+      await saveUserState(phone, state);
+      counters.updated += 1;
+      continue;
+    }
+    if (!f.next_at || now < f.next_at) {
+      counters.skipped += 1;
+      continue;
+    }
+    if (f.last_sent_at && now - f.last_sent_at < 90 * 1000) {
+      counters.skipped += 1;
+      continue;
+    }
+
+    const attempt = f.sent_count + 1;
+    const followReply = buildReengagementReply(state, attempt);
+    try {
+      await twilioClient.messages.create({
+        to: `whatsapp:${phone}`,
+        from: state.last_bot_from,
+        body: followReply,
+      });
+      f.sent_count = attempt;
+      f.last_sent_at = now;
+      state.awaiting_followup = true;
+      state.last_bot_reply = followReply;
+      state.last_sent_at = now;
+
+      if (attempt >= 3) {
+        f.enabled = false;
+        f.completed = true;
+        f.next_at = 0;
+      } else {
+        f.next_at = scheduleNextFollowupTimestamp(attempt, now);
+      }
+      await saveUserState(phone, state);
+      counters.sent += 1;
+    } catch (err) {
+      counters.errors += 1;
+      console.error(`❌ Follow-up erro para ${phone}:`, err?.message || err);
+    }
+  }
+  return counters;
+}
+
 function compactMemory(state) {
   const s = state || {};
   return {
@@ -830,6 +1272,7 @@ function compactMemory(state) {
     condition: s.condition || null,
     problem_text: s.problem_text || null,
     stage: s.stage || null,
+    conversation_stage: s.conversation_stage || null,
     date_key: s.date_key || null,
     slot_time: s.slot_time || null,
     nome_completo: s.nome_completo || null,
@@ -839,9 +1282,13 @@ function compactMemory(state) {
     payment_status: s.payment?.status || null,
     evidence_used_count: s.evidence_used_count || 0,
     objection_used_count: s.objection_used_count || 0,
+    diag_questions_asked: s.diag_questions_asked || 0,
     rapport_done: !!s.rapport_done,
     diagnostic_step: s.diagnostic_step || 0,
     price_ask_count: s.price_ask_count || 0,
+    objection_memory: s.objection_memory || null,
+    followup: s.followup || null,
+    link_guard: s.link_guard || null,
     last_user_message: s.last_user_message || "",
     last_bot_reply: s.last_bot_reply || "",
   };
@@ -1023,6 +1470,28 @@ async function sendWhatsApp(to, from, body, delaySec) {
 app.get("/", (req, res) => res.send("OK"));
 app.get("/mp/thanks", (req, res) => res.send("OK"));
 
+function hasValidCronSecret(req) {
+  if (!CRON_SECRET) return true;
+  const headerSecret = req.headers["x-cron-secret"];
+  const auth = String(req.headers.authorization || "");
+  const bearer = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : "";
+  const querySecret = req.query?.secret ? String(req.query.secret) : "";
+  return headerSecret === CRON_SECRET || bearer === CRON_SECRET || querySecret === CRON_SECRET;
+}
+
+app.post("/cron/followup", async (req, res) => {
+  if (!hasValidCronSecret(req)) {
+    return res.status(401).json({ ok: false, error: "unauthorized" });
+  }
+  try {
+    const result = await runFollowupScheduler();
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error("❌ followup scheduler erro:", err);
+    return res.status(500).json({ ok: false, error: "followup_scheduler_error" });
+  }
+});
+
 app.post("/mp/webhook", async (req, res) => {
   res.status(200).send("OK");
   try {
@@ -1046,6 +1515,13 @@ app.post("/mp/webhook", async (req, res) => {
       state.payment.plan_key = payment?.metadata?.plan_key || state.payment.plan_key || null;
 
       if (status === "approved" && state.slot_key) await markSlotPaid(state.slot_key, phone);
+      if (status === "approved") {
+        const f = ensureFollowupState(state);
+        f.enabled = false;
+        f.completed = true;
+        f.next_at = 0;
+        state.awaiting_followup = false;
+      }
       await saveUserState(phone, state);
 
       if (status === "approved") {
@@ -1076,6 +1552,7 @@ function initializeState(state, bot) {
   state.problem_text = state.problem_text || null;
   state.payment = state.payment || null;
   state.stage = state.stage || null;
+  state.conversation_stage = state.conversation_stage || null;
   state.selected_plan_key = state.selected_plan_key || null;
   state.rapport_done = !!state.rapport_done;
   state.name_used_count = Number(state.name_used_count || 0);
@@ -1090,8 +1567,13 @@ function initializeState(state, bot) {
   state.email = state.email || null;
   state.price_ask_count = Number(state.price_ask_count || 0);
   state.diagnostic_step = Number(state.diagnostic_step || 0);
+  state.diag_questions_asked = Number(state.diag_questions_asked || 0);
   state.diagnostic_answers = state.diagnostic_answers || {};
   state.awaiting_operational_permission = !!state.awaiting_operational_permission;
+  state.awaiting_followup = !!state.awaiting_followup;
+  getOrInitObjectionMemory(state);
+  ensureFollowupState(state);
+  state.link_guard = state.link_guard || {};
   state.last_bot_from = bot;
   return state;
 }
@@ -1126,6 +1608,10 @@ app.post("/whatsapp", async (req, res) => {
         st.payment = st.payment || {};
         st.payment.status = "approved";
         st.payment.simulated = true;
+        const sf = ensureFollowupState(st);
+        sf.enabled = false;
+        sf.completed = true;
+        sf.next_at = 0;
         if (st.slot_key) await markSlotPaid(st.slot_key, phone);
         await saveUserState(phone, st);
         await sendWhatsApp(lead, bot, afterPaidReply(st), 0);
@@ -1133,43 +1619,67 @@ app.post("/whatsapp", async (req, res) => {
       }
 
       let state = initializeState(await getUserState(phone), bot);
-      const flags = detectIntent(finalText);
+      const signals = detectLeadSignals(finalText, state);
+      const flags = signals.flags;
+      const priority = getConversationPriority(signals, state);
       if (flags.focus && !state.focus) state.focus = flags.focus;
       const detectedCondition = detectCondition(finalText);
       if (detectedCondition && !state.condition) state.condition = detectedCondition;
       const detectedProblem = extractProblemText(finalText);
       if (detectedProblem && !state.problem_text) state.problem_text = detectedProblem;
+      touchFollowupOnInbound(state, finalText);
+      state.conversation_stage = deriveConversationStage(state, signals);
 
       let reply = "";
 
       // 0) confirmado
       if (state.payment?.status === "approved") {
+        const f = ensureFollowupState(state);
+        f.enabled = false;
+        f.completed = true;
+        f.next_at = 0;
+        state.awaiting_followup = false;
         reply = afterPaidReply(state);
       }
 
-      // 1) urgência
-      else if (flags.urgency) {
-        reply = "Entendi. Pela sua mensagem, isso pode precisar de avaliação urgente. Procure um pronto atendimento agora (ou SAMU 192). Assim que estiver seguro(a), me chama aqui.";
+      // 1) orquestrador principal por prioridade
+      else if (priority === "URGENT") {
+        reply = urgentReply();
+      }
+      else if (priority === "COMPLIANCE") {
+        reply = complianceSafeReply(signals, state);
+      }
+      else if (priority === "PAYMENT_CLOSE") {
+        reply = resolvePaymentStep(state);
+      }
+      else if (priority === "PLAN_CLOSE") {
+        reply = await resolvePlanSelection({ signals, state, phone });
+      }
+      else if (priority === "ANSWER_FIRST") {
+        reply = appendSmartTransition(answerLiteralQuestion(signals, state), signals, state);
+        if (state.payment?.status === "pending") markLinkGuard(state);
+        if (!state.nome && !state.stage) {
+          state.stage = "ASK_NAME";
+          reply += "\n\nAntes de seguir, me diz só seu primeiro nome?";
+        }
+      }
+      else if (priority === "HANDLE_OBJECTION") {
+        reply = appendSmartTransition(handleDominantObjection(signals, state), signals, state);
+        if (state.payment?.status === "pending") markLinkGuard(state);
+        if (!state.nome && !state.stage) {
+          state.stage = "ASK_NAME";
+          reply += "\n\nAntes de seguir, me diz só seu primeiro nome?";
+        }
+      }
+      else if (priority === "REENGAGE") {
+        reply = buildReengagementReply(state);
+        state.awaiting_followup = false;
       }
 
       // 2) abertura
       else if (!state.stage && !state.nome) {
         state.stage = "ASK_NAME";
         reply = askNameIntroReply();
-      }
-
-      // 3) pergunta prioritária sempre primeiro
-      else if (flags.asksWho) {
-        reply = whoReply() + "\n\nSe você quiser, eu posso te explicar rapidamente como funciona a avaliação.";
-      }
-      else if (flags.asksIfOnline || flags.asksHowConsultWorks) {
-        reply = `${consultationExplanationReply()}\n\n${flags.asksIfOnline ? onlineReply() + "\n\n" : ""}Se você quiser, eu posso te mostrar os próximos horários disponíveis 🙂`;
-      }
-      else if (flags.asksLegal) {
-        reply = legalReply() + "\n\nSe quiser, eu também posso te explicar rapidamente como funciona a avaliação.";
-      }
-      else if (flags.asksChapado) {
-        reply = chapadoReply() + "\n\nSe você quiser, eu posso te explicar como funciona a avaliação médica com o Dr. Alef.";
       }
 
       // 4) captura do nome
@@ -1198,6 +1708,7 @@ app.post("/whatsapp", async (req, res) => {
           state.condition = state.condition || detectCondition(pb) || state.focus || null;
           state.stage = "DIAG_Q1";
           state.diagnostic_step = 1;
+          state.diag_questions_asked = 0;
           reply = q1Reply(state);
         } else {
           const ai = await runLia({ incomingText: finalText, state, flags, mode: "qualify_problem" });
@@ -1209,18 +1720,27 @@ app.post("/whatsapp", async (req, res) => {
       // 6) script diagnóstico
       else if (state.stage === "DIAG_Q1") {
         state.diagnostic_answers.q1 = finalText;
+        state.diag_questions_asked = Number(state.diag_questions_asked || 0) + 1;
         state.diagnostic_step = 2;
         state.stage = "DIAG_Q2";
         reply = q2Reply(state);
       }
       else if (state.stage === "DIAG_Q2") {
         state.diagnostic_answers.q2 = finalText;
-        state.diagnostic_step = 3;
-        state.stage = "DIAG_Q3";
-        reply = q3Reply();
+        state.diag_questions_asked = Number(state.diag_questions_asked || 0) + 1;
+        if (Number(state.diag_questions_asked || 0) >= 2 && objectionResolvedEnough(signals, state)) {
+          state.diagnostic_step = 3;
+          moveToValueOrAgenda(state);
+          reply = bridgeToConsultReply(state);
+        } else {
+          state.diagnostic_step = 3;
+          state.stage = "DIAG_Q3";
+          reply = q3Reply();
+        }
       }
       else if (state.stage === "DIAG_Q3") {
         state.diagnostic_answers.q3 = finalText;
+        state.diag_questions_asked = Number(state.diag_questions_asked || 0) + 1;
         state.diagnostic_step = 3;
         state.stage = "AFTER_DIAGNOSTIC";
         reply = bridgeToConsultReply(state);
@@ -1239,6 +1759,7 @@ app.post("/whatsapp", async (req, res) => {
         } else if (ai.reply === "__NEED_PRICE__") {
           state.price_ask_count += 1;
           reply = state.price_ask_count >= 2 ? priceReply() : prePriceValueReply();
+          if (state.price_ask_count >= 2) markObjectionMemory(state, "price_answered");
           if (state.price_ask_count >= 2) state.stage = "ASK_PLAN";
         } else {
           reply = ai.reply;
@@ -1248,17 +1769,33 @@ app.post("/whatsapp", async (req, res) => {
 
       // 8) intenção de pagar / pagamento pendente
       else if (state.payment?.status === "pending" && state.payment?.link) {
-        if (flags.intentPay) {
+        if (flags.intentPay || signals.buyingSignal) {
           reply = pendingPaymentReply(state);
+          state.stage = "WAIT_PAYMENT";
+        } else if (shouldSuppressPendingLink(signals, state)) {
+          const core = signals.explicitQuestion ? answerLiteralQuestion(signals, state) : handleDominantObjection(signals, state);
+          reply = appendSmartTransition(core, signals, state);
+          markLinkGuard(state);
           state.stage = "WAIT_PAYMENT";
         } else if (flags.saysExpensive) {
-          reply = buildExpensiveReply() + `\n\nSe quiser confirmar agora, seu link continua ativo:\n${state.payment.link}`;
+          markObjectionMemory(state, "price_answered");
+          reply = appendSmartTransition(buildExpensiveReply(), signals, state);
+          state.stage = "WAIT_PAYMENT";
+        } else if (signals.futureCostResistance) {
+          markObjectionMemory(state, "future_cost_answered");
+          reply = appendSmartTransition(
+            "Essa é uma dúvida importante 🙂 O valor pode variar conforme produto e dose, então não existe um número único para todo mundo. O Dr. Alef orienta com realismo para o que é viável no seu caso.",
+            signals,
+            state
+          );
+          markLinkGuard(state);
           state.stage = "WAIT_PAYMENT";
         } else if (flags.saysWillSee || flags.saysUnsure) {
-          reply = buildThinkingReply(state) + `\n\nSe quiser finalizar agora, seu link continua aqui:\n${state.payment.link}`;
+          reply = buildThinkingReply(state);
           state.stage = "WAIT_PAYMENT";
         } else {
-          reply = pendingPaymentReply(state);
+          const blockedRecently = Number(state?.link_guard?.last_blocked_at || 0) && nowMs() - Number(state.link_guard.last_blocked_at) < 10 * 60 * 1000;
+          reply = blockedRecently ? buildThinkingReply(state) : pendingPaymentReply(state);
           state.stage = "WAIT_PAYMENT";
         }
       }
@@ -1318,12 +1855,14 @@ app.post("/whatsapp", async (req, res) => {
         if (!state.nome) {
           state.stage = "ASK_NAME";
           reply = state.price_ask_count >= 2 ? `${prePriceValueReply()}\n\n${priceReply()}` : "Claro 🙂 Antes de te passar as opções, eu quero entender rapidinho seu caso para te orientar melhor.\n\nQual é o seu *primeiro nome*?";
+          if (state.price_ask_count >= 2) markObjectionMemory(state, "price_answered");
           if (state.price_ask_count >= 2) state.stage = "ASK_PLAN";
         } else if (!state.problem_text && state.price_ask_count < 2) {
           state.stage = "ASK_PROBLEM";
           reply = prePriceValueReply() + "\n\nMe conta rapidinho o que você gostaria de tratar hoje.";
         } else {
           reply = priceReply();
+          markObjectionMemory(state, "price_answered");
           state.stage = "ASK_PLAN";
         }
       }
@@ -1508,36 +2047,18 @@ app.post("/whatsapp", async (req, res) => {
       // 16) plano
       else if (state.stage === "ASK_PLAN") {
         const planKey = extractPlanChoice(finalText);
-        if (flags.saysExpensive) reply = buildExpensiveReply();
+        if (flags.saysExpensive) {
+          markObjectionMemory(state, "price_answered");
+          reply = buildExpensiveReply();
+        }
+        else if (signals.futureCostResistance) {
+          markObjectionMemory(state, "future_cost_answered");
+          reply = "Essa é uma dúvida importante 🙂 O valor pode variar conforme produto e dose, então não existe um número único para todo mundo. O Dr. Alef orienta com realismo para o que é viável no seu caso.";
+        }
         else if (flags.saysWillSee) reply = buildThinkingReply(state);
         else if (flags.saysUnsure) reply = buildUnsureReply(state, finalText);
         else if (planKey) {
-          state.selected_plan_key = planKey;
-          const holdCheck = await acquireSlotHold(state.date_key, state.slot_time, phone);
-          if (!holdCheck.ok) {
-            state.slot_time = null;
-            state.slot_key = null;
-            state.stage = "OFFER_SLOTS";
-            reply = "Esse horário acabou de ser preenchido antes da confirmação 🙏 Vou te mostrar as próximas melhores opções.\n\n" + (await offerSlotsReply(state));
-          } else {
-            state.slot_key = holdCheck.slot_key;
-            const already = state.payment && state.payment.preference_id && state.payment.plan_key === planKey && state.payment.status === "pending";
-            if (already && state.payment.link) {
-              reply = paymentSentReply(PLANS[planKey], state.payment.link, state);
-            } else {
-              const pref = await mpCreatePreference({ phone, planKey });
-              state.payment = {
-                status: "pending",
-                plan_key: planKey,
-                preference_id: pref.preference_id,
-                link: pref.link,
-                external_reference: pref.external_reference,
-                created_at: Date.now(),
-              };
-              reply = paymentSentReply(pref.plan, pref.link, state);
-            }
-            state.stage = "WAIT_PAYMENT";
-          }
+          reply = await resolvePlanSelection({ signals: { ...signals, planSignal: planKey }, state, phone });
         } else {
           reply = "Qual dessas opções faz mais sentido para você? Me responde com *1, 2 ou 3* 🙂";
         }
@@ -1568,6 +2089,7 @@ app.post("/whatsapp", async (req, res) => {
         if (ai.reply === "__NEED_PRICE__") {
           state.price_ask_count += 1;
           reply = state.price_ask_count >= 2 ? priceReply() : prePriceValueReply();
+          if (state.price_ask_count >= 2) markObjectionMemory(state, "price_answered");
           if (state.price_ask_count >= 2) state.stage = "ASK_PLAN";
         } else if (ai.reply === "__NEED_BOOK__") {
           if (!state.nome) {
@@ -1609,11 +2131,23 @@ app.post("/whatsapp", async (req, res) => {
         else if (!state.nome_completo) reply = askFullNameReply(state);
         else if (!state.birthdate) reply = askBirthdateReply(state);
         else if (!state.email) reply = askEmailReply();
-        else if (state.payment?.status === "pending" && state.payment?.link) reply = pendingPaymentReply(state);
+        else if (state.payment?.status === "pending" && state.payment?.link) {
+          const blockedRecently = Number(state?.link_guard?.last_blocked_at || 0) && nowMs() - Number(state.link_guard.last_blocked_at) < 10 * 60 * 1000;
+          reply = blockedRecently ? buildThinkingReply(state) : pendingPaymentReply(state);
+        }
         else reply = "Entendi 🙂 Me diz só: seu foco hoje é mais dor, sono, ansiedade ou outra questão?";
       }
 
       if (state.nome && reply.includes(state.nome)) state.name_used_count = Number(state.name_used_count || 0) + 1;
+
+      state.conversation_stage = deriveConversationStage(state, signals);
+      state.followup.last_context = summarizeLastContext(state);
+      if (state.payment?.status === "approved") {
+        state.followup.enabled = false;
+        state.followup.completed = true;
+        state.followup.next_at = 0;
+        state.awaiting_followup = false;
+      }
 
       const delaySec = computeHumanDelay(flags, state);
       state.last_bot_reply = reply;
@@ -1638,4 +2172,4 @@ app.post("/whatsapp", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 LIA V13 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 LIA V14 rodando na porta ${PORT}`));
