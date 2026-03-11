@@ -268,14 +268,17 @@ function extractFirstName(text) {
   if (/^(sim|ok|beleza|pode|claro|show|tanto faz|nao|não)$/.test(low)) return null;
   if (/^(dor|sono|ansiedade|fibromialgia|insônia|insonia|artrose|artrite|coluna)$/.test(low)) return null;
 
+  // Se a mensagem parece pergunta ou frase longa, não é nome
+  if ((t.includes("?") || low.split(" ").length > 6)) return null;
+  if (/\b(quanto|como|qual|onde|quando|porque|por que|isso|esse|essa|vocês|voces)\b/.test(low)) return null;
+
   // Padrões de introdução de nome — ORDEM IMPORTA
   const patterns = [
     /(?:pode\s+(?:me\s+)?chamar?\s+(?:de\s+)?)\s*(.+)/i,
     /(?:me\s+cham(?:a|o|e)\s+(?:de\s+)?)\s*(.+)/i,
-    /(?:(?:eu\s+)?sou\s+(?:o|a)?\s*)\s*(.+)/i,
-    /(?:(?:meu\s+)?nome\s+(?:e|é)\s*)\s*(.+)/i,
-    /(?:é\s+)\s*(.+)/i,
-    /(.+?)(?:\s+aqui)$/i,
+    /(?:(?:eu\s+)?sou\s+(?:o|a)\s+)\s*(.+)/i,           // "sou o Carlos" (exige artigo)
+    /(?:(?:meu\s+)?nome\s+(?:e|é)\s+)\s*(.+)/i,
+    /^(.+?)(?:\s+aqui)$/i,                                // "Paulo aqui" (exige início de frase)
   ];
 
   let candidate = null;
@@ -303,8 +306,8 @@ function extractFirstName(text) {
   if (condWords.test(parts[0]) && parts.length <= 2) return null;
 
   // Rejeitar palavras comuns que não são nomes
-  const notNames = /^(oi|ola|olá|bom|boa|dia|tarde|noite|tudo|bem|obrigad|brigad|quero|preciso|gostaria|tenho|sim|nao|não)$/i;
-  if (notNames.test(parts[0]) && parts.length === 1) return null;
+  const notNames = /^(oi|ola|olá|bom|boa|dia|tarde|noite|tudo|bem|obrigad|brigad|quero|preciso|gostaria|tenho|sim|nao|não|legal|caro|certo|entendi|entendo|sera|será|claro|ok|verdade|seria|acho|pode|pois|tipo|vou|vai|meu|minha)$/i;
+  if (notNames.test(parts[0])) return null;
 
   // Retornar primeiro nome capitalizado
   return parts[0].charAt(0).toUpperCase() + parts[0].slice(1).toLowerCase();
@@ -387,9 +390,9 @@ function extractPlanChoice(text) {
   if (/(avaliacao|avaliação|so a consulta|só a consulta|consulta inicial|segunda opcao|segunda opção|opcao 2|opção 2)/.test(t)) return "basic";
   if (/(retorno avulso|consulta de ajuste|ajuste|terceira opcao|terceira opção|opcao 3|opção 3|apenas retorno)/.test(t)) return "retorno";
 
-  // Match por contexto ("prefiro a avaliação primeiro", "quero começar com a avaliação")
-  if (/(avalia|conhecer|primeiro|comecar|começar|entender)/.test(t) && !/(acompanhamento|retorno)/.test(t)) return "basic";
-  if (/(completo|completa|pacote|acompanhar)/.test(t)) return "full";
+  // Match por contexto (exige mais palavras juntas para evitar falso positivo)
+  if (/(prefiro a avaliacao|prefiro a avaliação|quero a avaliacao|quero a avaliação|so a avaliacao|só a avaliação|comecar com a avaliacao|começar com a avaliação)/.test(t)) return "basic";
+  if (/(quero o acompanhamento|prefiro o acompanhamento|quero o pacote|pacote completo)/.test(t)) return "full";
 
   return null;
 }
@@ -442,7 +445,7 @@ function detectIntent(text) {
     asksHours:        /\b(horarios|horário|horario|que horas|vagas|disponibilidade)\b/.test(t),
 
     // Confirmação / Recusa
-    confirms:         /\b(sim|ok|beleza|pode|confirmo|fechado|vamos|pode ser|serve|confirmar|bora|quero|vamos la|vamos lá)\b/.test(t),
+    confirms:         /\b(sim|ok|beleza|confirmo|fechado|vamos|pode ser|confirmar|bora|vamos la|vamos lá|com certeza|claro que sim)\b/.test(t),
     refuses:          /\b(nao quero|não quero|pare|para|chega|desisto|cancela)\b/.test(t),
 
     // Perguntas diretas (Question Priority Engine)
@@ -769,7 +772,12 @@ function askNameIntroReply() {
 
 function askProblemReply(state) {
   const nome = maybeUseName(state);
-  return `${nome ? `Prazer, ${nome} 😊\n\n` : ""}Me conta: o que tem te incomodado mais hoje?`;
+  const variations = [
+    `${nome ? `Prazer, ${nome} 😊\n\n` : ""}Me conta: o que tem te incomodado mais ultimamente?`,
+    `${nome ? `Prazer, ${nome} 😊\n\n` : ""}Me conta um pouquinho: qual a sua principal queixa hoje?`,
+    `${nome ? `Prazer, ${nome} 😊\n\n` : ""}Para eu te direcionar melhor, me diz: o que tem te incomodado mais?`,
+  ];
+  return pickRandom(variations);
 }
 
 // ▸ V14: perguntas diagnósticas separadas, para uso condicional
@@ -795,18 +803,29 @@ function diagQ_tratamento() {
 }
 
 /**
- * ▸ MUDANÇA ESTRATÉGICA: bridgeReply agora usa testimony + hope.
- *   É o momento mais persuasivo da conversa. Gera desejo de ação.
+ * ▸ Bridge: momento mais persuasivo da conversa.
+ *   VERSÃO CONDENSADA para WhatsApp: testimony + dado + consult + CTA.
+ *   Sem empathy (já foi expressada), sem future (reservado para objeções).
  */
 function bridgeReply(state) {
   const cond = state.condition || detectCondition(state.problem_text || "") || "dor_cronica";
-  const ev = buildEvidenceMessage(cond, { includeFuture: true });
+  const ev = EVIDENCE_DB[cond];
 
-  const intro = "Faz todo sentido. Muita gente chega aqui exatamente com esse tipo de histórico.";
-  const consult = "A avaliação com o Dr. Alef é *100% online*, dura em média *45 minutos* e é totalmente individualizada para o seu caso.";
+  const nome = maybeUseName(state);
+  const intro = `Faz todo sentido${nome ? `, ${nome}` : ""}. Muita gente chega aqui com esse mesmo tipo de histórico.`;
+
+  let testimony = "O que eu posso te dizer é que acompanho o consultório do Dr. Alef todos os dias e vejo com frequência pacientes que percebem melhora real.";
+  let study = "";
+  if (ev) {
+    testimony = pickRandom(ev.testimony);
+    study = `\n\n${ev.study}`;
+    state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
+  }
+
+  const consult = "A avaliação é *100% online*, dura em média *45 minutos* e é individualizada para o seu caso.";
   const cta = "Se quiser, eu posso te mostrar os horários disponíveis 😊";
 
-  return `${intro}\n\n${ev ? ev + "\n\n" : ""}${consult}\n\n${cta}`;
+  return `${intro}\n\n${testimony}${study}\n\n${consult}\n\n${cta}`;
 }
 
 async function askDayReply() {
@@ -829,11 +848,11 @@ function askFullNameReply(state) {
 }
 
 function askBirthdateReply(state) {
-  return `Obrigada, ${state.nome_completo.split(" ")[0]} 😊\nQual sua *data de nascimento*?`;
+  return `Obrigada, ${state.nome_completo.split(" ")[0]}.\nQual sua *data de nascimento*?`;
 }
 
 function askEmailReply() {
-  return "E qual *e-mail* você prefere para receber as orientações? 😊";
+  return "E qual *e-mail* você prefere para receber as orientações?";
 }
 
 function priceReply() {
@@ -919,7 +938,10 @@ const QUESTION_ANSWERS = {
    ═══════════════════════════════════════════════════════════════════ */
 
 function handleExpensive(state) {
-  return "Entendo você pensar nisso 😊\n\nMas aqui não é uma consulta rápida. O Dr. Alef dedica em média *45 minutos* ao seu caso, revisa tudo o que você já tentou e monta um plano individualizado. A maioria dos pacientes me diz que foi a consulta mais completa que já fizeram.\n\nSe quiser, eu te explico a diferença entre as opções.";
+  const cond = state.condition || "dor_cronica";
+  const ev = EVIDENCE_DB[cond];
+  const future = ev?.future ? `\n\n${pickRandom(ev.future)}` : "";
+  return `Entendo você pensar nisso.\n\nMas aqui não é uma consulta rápida. O Dr. Alef dedica em média *45 minutos* ao seu caso, revisa tudo o que você já tentou e monta um plano individualizado. A maioria dos pacientes me diz que foi a consulta mais completa que já fizeram.${future}\n\nSe quiser, eu te explico a diferença entre as opções.`;
 }
 
 function handleWillSee(state) {
@@ -1185,6 +1207,16 @@ function handleObjection(flags, state, text) {
   if (flags.saysUnsure) return handleUnsure(state, text);
   if (flags.saysCheaperElsewhere) return handleCheaperElsewhere();
   if (flags.saysCheckSpouse) return handleCheckSpouse();
+  if (flags.saysIndecisive) {
+    // ▸ Recomendar a opção mais popular com justificativa
+    if (state.stage === "ASK_PLAN") {
+      return `A maioria dos pacientes escolhe o *Acompanhamento* (opção 1) porque já inclui o retorno em ~30 dias — dá mais segurança para acompanhar o início do tratamento 😊\n\nMas se preferir começar só com a avaliação inicial, a opção 2 também funciona bem. Quer seguir com a 1 ou a 2?`;
+    }
+    if (state.stage === "OFFER_SLOTS" || state.stage === "ASK_DAY") {
+      return `Os horários que os pacientes costumam preferir são no final da tarde/início da noite 😊 Se quiser, eu sugiro o melhor disponível.`;
+    }
+    return "Sem problema 😊 Me diz o que te deixa em dúvida que eu te ajudo a decidir.";
+  }
   return null;
 }
 
@@ -1351,6 +1383,20 @@ app.post("/whatsapp", async (req, res) => {
 
       // ── Load state ──
       let state = initializeState(await getUserState(phone), bot);
+
+      // ▸ FIX: Tratar mensagens sem texto (áudio, imagem, sticker, figurinha)
+      const hasMedia = Number(req.body.NumMedia || 0) > 0;
+      if ((!incomingText || incomingText.length < 2) && hasMedia) {
+        const mediaReply = state.nome
+          ? `${state.nome}, por enquanto eu só consigo ler mensagens de texto 😊 Me manda sua dúvida digitando que eu te ajudo.`
+          : "Por enquanto eu só consigo ler mensagens de texto 😊 Me manda sua dúvida digitando que eu te ajudo.";
+        state.last_bot_reply = mediaReply;
+        state.last_sent_at = Date.now();
+        await saveUserState(phone, state);
+        await sendWhatsApp(lead, bot, mediaReply, randInt(1, 2));
+        return;
+      }
+
       const flags = detectIntent(incomingText);
 
       // Atualizar focus/condition passivamente
@@ -1386,7 +1432,21 @@ app.post("/whatsapp", async (req, res) => {
          ═══════════════════════════════════════════════════════════════ */
 
       else if (state.stage) { // Só ativa se já entrou no funil
-        const directAnswer = handleDirectQuestion(flags, state, incomingText);
+
+        // ▸ FIX: Durante DIAGNOSTIC e ASK_PROBLEM, Camada 1 só intercepta
+        //   perguntas inequívocas (contêm "?" ou são flags de alta confiança).
+        //   Evita que "melhora um pouco" seja interpretado como "funciona?".
+        const isDiagStage = (state.stage === "DIAGNOSTIC" || state.stage === "ASK_PROBLEM");
+        const hasQuestionMark = incomingText.includes("?");
+        const highConfidenceQuestion = flags.asksIsScam || flags.asksLegal || flags.asksChapado
+          || flags.asksWho || flags.asksHowConsultWorks || flags.asksIfOnline
+          || flags.asksRecipe || flags.asksMedCost || flags.asksCanReschedule
+          || flags.asksPrivacy || flags.asksStartNow || flags.asksPayMethod
+          || flags.asksWhatIncludes || flags.asksIfForMe || flags.asksDifferential;
+
+        const shouldRunCamada1 = !isDiagStage || hasQuestionMark || highConfidenceQuestion;
+
+        const directAnswer = shouldRunCamada1 ? handleDirectQuestion(flags, state, incomingText) : null;
         if (directAnswer) {
           reply = directAnswer;
           // Não muda stage — reconecta ao ponto atual
@@ -1403,8 +1463,8 @@ app.post("/whatsapp", async (req, res) => {
           }
         }
 
-        // AsksIfWorks: responder com testimony + CTA
-        else if (flags.asksIfWorks && !reply) {
+        // AsksIfWorks: responder com testimony + CTA (só fora de triagem)
+        else if (flags.asksIfWorks && !isDiagStage && !reply) {
           const cond = detectCondition(incomingText) || state.condition || "dor_cronica";
           const ev = EVIDENCE_DB[cond];
           if (ev) {
@@ -1457,10 +1517,11 @@ app.post("/whatsapp", async (req, res) => {
                 reply = `Prazer, ${nm} 😊 Vou te mostrar os horários disponíveis.`;
                 reply += "\n\n" + await askDayReply();
               }
-              // ▸ Lead pragmático: preço
+              // ▸ Lead pragmático: acknowledger rápido + preço
               else if (state.lead_profile === "pragmatico" || flags.wantsPrice) {
                 state.stage = "ASK_PLAN";
-                reply = `Prazer, ${nm} 😊\n\n${priceReply()}`;
+                const condLabel = state.condition ? { fibromialgia:"a fibromialgia", dor_cronica:"a dor", dor_lombar:"a dor na coluna", ansiedade:"a ansiedade", insonia:"o sono", artrose:"a artrose", artrite:"a artrite", enxaqueca:"a enxaqueca", dor_neuropatica:"a dor" }[state.condition] || "o que você mencionou" : "o que você mencionou";
+                reply = `Prazer, ${nm} 😊 Entendi sobre ${condLabel}.\n\n${priceReply()}`;
               }
               // ▸ Outros: triagem adaptativa
               else {
@@ -1619,7 +1680,7 @@ app.post("/whatsapp", async (req, res) => {
             state.stage = "ASK_BIRTHDATE";
             reply = askBirthdateReply(state);
           } else {
-            reply = "Me manda seu *nome completo* certinho, por favor 😊";
+            reply = "Me manda seu *nome completo* certinho, por favor.";
           }
         }
         else if (state.stage === "ASK_BIRTHDATE") {
@@ -1629,7 +1690,7 @@ app.post("/whatsapp", async (req, res) => {
             state.stage = "ASK_EMAIL";
             reply = askEmailReply();
           } else {
-            reply = "Me manda sua *data de nascimento* no formato *dd/mm/aaaa* 😊";
+            reply = "Me manda sua *data de nascimento* no formato *dd/mm/aaaa*.";
           }
         }
         else if (state.stage === "ASK_EMAIL") {
@@ -1640,7 +1701,7 @@ app.post("/whatsapp", async (req, res) => {
             // ▸ V14: NÃO repetir explicação da consulta aqui (paciente já ouviu no bridge)
             reply = `Obrigada 😊\n\nHorário reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\n${priceReply()}`;
           } else {
-            reply = "Me manda seu *e-mail* certinho, por favor 😊";
+            reply = "Me manda seu *e-mail* certinho, por favor.";
           }
         }
 
@@ -1689,20 +1750,35 @@ app.post("/whatsapp", async (req, res) => {
               }
             }
           }
-          // ▸ Se paciente fez pergunta (não é escolha de plano), já tratado pela Camada 1
+          // ▸ Se paciente não escolheu plano e Camada 1/2 não respondeu
           else if (!reply) {
-            reply = "Qual dessas opções faz mais sentido para você? Me responde com *1, 2 ou 3* 😊";
+            // Tentar GPT para entender o que o paciente disse
+            const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dessas opções faz mais sentido? Me responde com 1, 2 ou 3" });
+            if (ai.reply.startsWith("__")) {
+              reply = "Se quiser, eu posso te explicar a diferença entre as opções. Qual faz mais sentido: *1, 2 ou 3*?";
+            } else {
+              reply = ai.reply;
+              state = mergeState(state, ai.updates);
+            }
           }
         }
 
         // ── Aguardando pagamento ──
         else if (state.stage === "WAIT_PAYMENT") {
           if (state.payment?.status === "pending" && state.payment?.link) {
-            if (flags.intentPay) {
+            if (flags.intentPay || flags.confirms) {
               reply = pendingPaymentReply(state);
             } else {
-              // Pergunta ou objeção já tratada na Camada 1/2
-              reply = pendingPaymentReply(state);
+              // Pergunta ou objeção já tratada na Camada 1/2.
+              // Se chegou aqui, mensagem não é nem pergunta nem objeção.
+              // GPT responde com naturalidade + reconecta ao link.
+              const ai = await runLia({ incomingText, state, flags, stageCTA: `Seu horário continua reservado. Para confirmar é só finalizar aqui: ${state.payment.link}` });
+              if (ai.reply.startsWith("__")) {
+                reply = pendingPaymentReply(state);
+              } else {
+                reply = ai.reply;
+                state = mergeState(state, ai.updates);
+              }
             }
           } else {
             reply = "Me conta: como posso te ajudar agora? 😊";
