@@ -1,4 +1,7 @@
 /**
+try {
+  require('dotenv').config();
+} catch (e) {}
  * INDEX V13 — LIA CONVERSACIONAL OTIMIZADA
  *
  * Base: INDEX 4 híbrida + Conversational Funnel + Diagnostic Script + Question Priority Engine.
