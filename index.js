@@ -1,47 +1,13 @@
 /**
- * ═══════════════════════════════════════════════════════════════════
- * INDEX V14 — LIA CONVERSACIONAL SUPERIOR
- * ═══════════════════════════════════════════════════════════════════
+ * INDEX V13 – LIA CONVERSACIONAL OTIMIZADA (versão pós‑auditoria)
  *
- * MUDANÇAS FUNDAMENTAIS vs V13:
- *
- * 1. QUESTION PRIORITY ENGINE — toda pergunta direta é respondida
- *    ANTES de qualquer lógica de stage. Nunca mais ignora o paciente.
- *
- * 2. FUNIL ABERTO NO FECHAMENTO — perguntas durante agendamento/
- *    pagamento são respondidas + CTA do stage na mesma mensagem.
- *
- * 3. TRIAGEM ADAPTATIVA — 0 a 3 perguntas, pula o que o paciente
- *    já contou. Nunca mais formulário rígido.
- *
- * 4. PERSUASÃO COM ESPERANÇA — testimony da secretária que vê
- *    resultados todos os dias. Dados confirmam, não lideram.
- *
- * 5. LEAD CLASSIFIER — detecta perfil (quente, pragmático,
- *    desconfiado, cético, comparador, frio, emocional) e adapta rota.
- *
- * 6. FOLLOW-UP — 3 tentativas de reengajamento para leads silenciosos.
- *
- * 7. EXTRAÇÃO DE NOME CORRIGIDA — nunca mais chama de "Pode".
- *
- * 8. RECONHECIMENTO ROBUSTO DE PLANO — matching flexível.
- *
- * 9. SYSTEM PROMPT COM CONVICÇÃO — GPT age como secretária que
- *    acredita no tratamento porque vê resultado real.
- *
- * 10. EVIDENCE DATABASE EXPANDIDA — empatia + testimony + study +
- *     hope + bridge + future por condição.
- *
- * PRESERVADO DA V13:
- * - Express/Twilio/Postgres/MercadoPago setup
- * - Slot lock/hold system
- * - PLANS e FIXED_SCHEDULE
- * - Funções utilitárias (sleep, randInt, pad2, etc.)
- * - Funções de agenda (getAvailableSlots, chooseBestSlots, etc.)
- * - Webhook MP e payment flow
- * - Human delay system
- *
- * ═══════════════════════════════════════════════════════════════════
+ * Melhorias aplicadas com base na auditoria de 9 pacientes:
+ * – Resposta imediata a perguntas diretas (preço, legalidade, golpe, comparação, eficácia)
+ * – Follow‑up automático em 3 tempos para leads que abandonam
+ * – Limite de perguntas clínicas (máx 3 + 1 opcional)
+ * – Reconhecimento robusto da escolha de plano
+ * – Tratamento especial para objeção financeira (custo futuro)
+ * – Micro‑compromissos e tom mais adaptativo
  */
 
 const express = require("express");
@@ -54,10 +20,6 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(express.json());
 app.use("/mp", express.json({ type: ["application/json", "text/json", "*/*"] }));
-
-/* ═══════════════════════════════════════════════════════════════════
-   ENV + CLIENTS
-   ═══════════════════════════════════════════════════════════════════ */
 
 const {
   OPENAI_API_KEY,
@@ -87,10 +49,6 @@ const BASE_URL = (PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") || "http://l
 const HOLD_MINUTES = 15;
 const ADMIN_RESET_PHONE_DIGITS = "556581422637";
 
-/* ═══════════════════════════════════════════════════════════════════
-   PLANS + SCHEDULE (preservado da V13)
-   ═══════════════════════════════════════════════════════════════════ */
-
 const PLANS = {
   full: {
     key: "full",
@@ -98,7 +56,6 @@ const PLANS = {
     subtitle: "Consulta + Retorno ~30 dias",
     price: 447,
     short: "1",
-    description: "consulta com o Dr. Alef agora + retorno em ~30 dias para acompanhar evolução e ajustar tratamento",
   },
   basic: {
     key: "basic",
@@ -106,7 +63,6 @@ const PLANS = {
     subtitle: "45 min",
     price: 347,
     short: "2",
-    description: "avaliação inicial completa de 45 minutos para entender seu caso e definir os próximos passos",
   },
   retorno: {
     key: "retorno",
@@ -114,28 +70,23 @@ const PLANS = {
     subtitle: "Retorno avulso",
     price: 200,
     short: "3",
-    description: "retorno para quem já é paciente e precisa de ajuste",
   },
 };
 
-// ▸ COMENTÁRIO ESTRATÉGICO: Adicionei "description" a cada plano para que a LIA
-//   possa explicar o que inclui sem precisar de texto hardcoded. Resolve o erro
-//   do paciente 1 (Ana) que perguntou "o que inclui?" e não recebeu resposta.
-
+// Agenda inicial: quarta, quinta e sexta, 9h‑21h, horário de Brasília.
 const FIXED_SCHEDULE = {
-  "11-03": { dayName: "quarta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
-  "12-03": { dayName: "quinta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
-  "13-03": { dayName: "sexta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
+  "11-03": { dayName: "quarta-feira", slots: ["9h", "10h", "11h", "12h", "13h", "14h", "15h", "16h", "17h", "18h", "19h", "20h", "21h"] },
+  "12-03": { dayName: "quinta-feira", slots: ["9h", "10h", "11h", "12h", "13h", "14h", "15h", "16h", "17h", "18h", "19h", "20h", "21h"] },
+  "13-03": { dayName: "sexta-feira", slots: ["9h", "10h", "11h", "12h", "13h", "14h", "15h", "16h", "17h", "18h", "19h", "20h", "21h"] },
 };
 
-const PREMIUM_SLOT_PRIORITY = ["19h","18h","20h","17h","21h","16h","15h","14h","13h","12h","11h","10h","9h"];
-const WEEKDAY_PT = ["domingo","segunda-feira","terça-feira","quarta-feira","quinta-feira","sexta-feira","sábado"];
+const PREMIUM_SLOT_PRIORITY = ["19h", "18h", "20h", "17h", "21h", "16h", "15h", "14h", "13h", "12h", "11h", "10h", "9h"];
+const WEEKDAY_PT = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
 
-/* ═══════════════════════════════════════════════════════════════════
-   DATABASE (preservado da V13)
-   ═══════════════════════════════════════════════════════════════════ */
-
-const pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
 pool.on("error", (err) => console.error("❌ Postgres pool error:", err));
 
 async function initDB() {
@@ -146,6 +97,7 @@ async function initDB() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS wa_slot_locks (
       slot_key TEXT PRIMARY KEY,
@@ -157,6 +109,7 @@ async function initDB() {
       paid_at TIMESTAMPTZ
     );
   `);
+
   console.log("✅ Tabelas prontas.");
 }
 initDB().catch((e) => console.error("❌ initDB erro:", e));
@@ -175,7 +128,8 @@ async function saveUserState(phone, newState) {
   await pool.query(
     `INSERT INTO wa_users (phone, state, updated_at)
      VALUES ($1, $2::jsonb, NOW())
-     ON CONFLICT (phone) DO UPDATE SET state=$2::jsonb, updated_at=NOW()`,
+     ON CONFLICT (phone)
+     DO UPDATE SET state=$2::jsonb, updated_at=NOW()`,
     [phone, JSON.stringify(newState)]
   );
 }
@@ -190,10 +144,6 @@ function mergeState(oldState, updates) {
   return out;
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   UTILITÁRIOS (preservado da V13)
-   ═══════════════════════════════════════════════════════════════════ */
-
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 function pad2(n) { return String(n).padStart(2, "0"); }
@@ -202,11 +152,14 @@ function removeDuplicates(arr) { return [...new Set(arr)]; }
 function pickRandom(arr) { return Array.isArray(arr) && arr.length ? arr[Math.floor(Math.random() * arr.length)] : ""; }
 
 function norm(s) {
-  return (s || "").toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
+  return (s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim();
 }
 
-function clip(text, max = 900) {
-  // ▸ V14: reduzi de 1100 para 900 para forçar mensagens menores no WhatsApp
+function clip(text, max = 1100) {
   const t = (text || "").trim();
   if (t.length <= max) return t;
   return t.slice(0, max).trim();
@@ -222,11 +175,9 @@ function similar(a, b) {
   return false;
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   DATE/SCHEDULE UTILS (preservado da V13)
-   ═══════════════════════════════════════════════════════════════════ */
-
-function makeDateKey(day, month = 3) { return `${pad2(day)}-${pad2(month)}`; }
+function makeDateKey(day, month = 3) {
+  return `${pad2(day)}-${pad2(month)}`;
+}
 
 function parseDateKeyToDate(dateKey) {
   const [dd, mm] = dateKey.split("-").map(Number);
@@ -239,78 +190,40 @@ function formatDatePt(dateKey) {
   return `${wd} (${dateKey.replace("-", "/")})`;
 }
 
-function slotKey(dateKey, time) { return `${dateKey}|${time}`; }
+function slotKey(dateKey, time) {
+  return `${dateKey}|${time}`;
+}
 
 function prettySlot(dateKey, time) {
   return `${formatDatePt(dateKey)} às ${time} (horário de Brasília)`;
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   EXTRACTORS — REESCRITOS PARA V14
-   ═══════════════════════════════════════════════════════════════════ */
-
-/**
- * ▸ MUDANÇA CRÍTICA: extractFirstName agora parseia corretamente:
- *   - "Pode me chamar de Carlos" → Carlos
- *   - "Me chama de Ana" → Ana
- *   - "Sou o Ricardo" → Ricardo
- *   - "É Juliana" → Juliana
- *   - "Paulo aqui" → Paulo
- *   - "Ana" → Ana
- *   Isso resolve o bug #1 que apareceu em 8 de 9 pacientes simulados.
- */
-function extractFirstName(text) {
+function extractNameFromText(text) {
   const t = (text || "").trim();
   if (!t) return null;
   const low = norm(t);
 
-  // Rejeitar se for apenas confirmação/problema sem nome
-  if (/^(sim|ok|beleza|pode|claro|show|tanto faz|nao|não)$/.test(low)) return null;
-  if (/^(dor|sono|ansiedade|fibromialgia|insônia|insonia|artrose|artrite|coluna)$/.test(low)) return null;
-
-  // Se a mensagem parece pergunta ou frase longa, não é nome
-  if ((t.includes("?") || low.split(" ").length > 6)) return null;
-  if (/\b(quanto|como|qual|onde|quando|porque|por que|isso|esse|essa|vocês|voces)\b/.test(low)) return null;
-
-  // Padrões de introdução de nome — ORDEM IMPORTA
-  const patterns = [
-    /(?:pode\s+(?:me\s+)?chamar?\s+(?:de\s+)?)\s*(.+)/i,
-    /(?:me\s+cham(?:a|o|e)\s+(?:de\s+)?)\s*(.+)/i,
-    /(?:(?:eu\s+)?sou\s+(?:o|a)\s+)\s*(.+)/i,           // "sou o Carlos" (exige artigo)
-    /(?:(?:meu\s+)?nome\s+(?:e|é)\s+)\s*(.+)/i,
-    /^(.+?)(?:\s+aqui)$/i,                                // "Paulo aqui" (exige início de frase)
-  ];
-
-  let candidate = null;
-  for (const p of patterns) {
-    const m = t.match(p);
-    if (m && m[1]) {
-      candidate = m[1].trim();
-      break;
-    }
+  if (/(sim|ok|beleza|pode|claro|show|tanto faz|nao|não|dor|sono|ansiedade|fibromialgia|insônia|insonia)/.test(low) && t.split(" ").length <= 2) {
+    if (/(dor|sono|ansiedade|fibromialgia|insônia|insonia)/.test(low)) return null;
   }
 
-  // Se nenhum padrão casou, usar texto inteiro como candidato
-  if (!candidate) candidate = t;
+  const cleaned = t.replace(/[^\p{L}\p{N}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
+  if (!cleaned) return null;
 
-  // Limpar pontuação
-  candidate = candidate.replace(/[^\p{L}\p{N}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
-  if (!candidate) return null;
-
+  const m = cleaned.match(/(?:me chamo|sou|nome e|nome é)\s+(.+)$/i);
+  const candidate = (m?.[1] || cleaned).trim();
   const parts = candidate.split(" ").filter(Boolean);
+
   if (parts.length < 1 || parts.length > 5) return null;
   if (/^\d+$/.test(candidate)) return null;
+  if (/(dor|sono|ansiedade|fibromialgia|artrose|artrite|enxaqueca|coluna|insônia|insonia)/i.test(candidate) && parts.length <= 2) return null;
 
-  // Rejeitar se parecer nome de condição médica
-  const condWords = /^(dor|sono|ansiedade|fibromialgia|artrose|artrite|enxaqueca|coluna|insônia|insonia|lombar|neuropat)/i;
-  if (condWords.test(parts[0]) && parts.length <= 2) return null;
+  return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
+}
 
-  // Rejeitar palavras comuns que não são nomes
-  const notNames = /^(oi|ola|olá|bom|boa|dia|tarde|noite|tudo|bem|obrigad|brigad|quero|preciso|gostaria|tenho|sim|nao|não|legal|caro|certo|entendi|entendo|sera|será|claro|ok|verdade|seria|acho|pode|pois|tipo|vou|vai|meu|minha)$/i;
-  if (notNames.test(parts[0])) return null;
-
-  // Retornar primeiro nome capitalizado
-  return parts[0].charAt(0).toUpperCase() + parts[0].slice(1).toLowerCase();
+function extractFirstName(text) {
+  const n = extractNameFromText(text);
+  return n ? n.split(" ")[0] : null;
 }
 
 function extractFullName(text) {
@@ -318,14 +231,17 @@ function extractFullName(text) {
   if (!cleaned) return null;
   const parts = cleaned.split(" ").filter(Boolean);
   if (parts.length < 2) return null;
-  return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(" ");
+  return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
 }
 
 function extractBirthDate(text) {
   const t = (text || "").trim();
   const m = t.match(/\b(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})\b/);
   if (!m) return null;
-  let dd = Number(m[1]), mm = Number(m[2]), yy = Number(m[3]);
+
+  let dd = Number(m[1]);
+  let mm = Number(m[2]);
+  let yy = Number(m[3]);
   if (yy < 100) yy += 1900;
   if (dd < 1 || dd > 31 || mm < 1 || mm > 12) return null;
   return `${pad2(dd)}/${pad2(mm)}/${yy}`;
@@ -336,25 +252,42 @@ function extractEmail(text) {
   return m ? m[0].trim() : null;
 }
 
+function detectCondition(text) {
+  const t = norm(text);
+  if (t.includes("fibromialgia")) return "fibromialgia";
+  if (t.includes("dor neuropatica") || t.includes("dor neuropática") || t.includes("neuropat")) return "dor_neuropatica";
+  if (t.includes("artrose")) return "artrose";
+  if (t.includes("artrite")) return "artrite";
+  if (t.includes("lombar") || t.includes("coluna")) return "dor_lombar";
+  if (t.includes("insônia") || t.includes("insonia") || t.includes("sono") || t.includes("dormir")) return "insonia";
+  if (t.includes("ansiedade") || t.includes("panico") || t.includes("pânico")) return "ansiedade";
+  if (t.includes("enxaqueca")) return "enxaqueca";
+  if (t.includes("dor")) return "dor_cronica";
+  return null;
+}
+
+function extractProblemText(text) {
+  const t = (text || "").trim();
+  if (!t) return null;
+  const low = norm(t);
+  if (/(dor|fibromialgia|insônia|insonia|sono|ansiedade|panico|pânico|artrose|artrite|enxaqueca|coluna|lombar|neuropat)/.test(low)) return t;
+  const m = t.match(/(?:quero tratar|tratar|meu problema e|meu problema é|tenho|sofro com)\s+(.+)$/i);
+  if (m?.[1]) return m[1].trim();
+  return null;
+}
+
 function extractDateKey(text) {
   const t = String(text || "");
-  // ▸ V14 FIX: Derivar meses válidos do FIXED_SCHEDULE (em vez de hardcode mês 3)
-  const validMonths = new Set(Object.keys(FIXED_SCHEDULE).map(k => Number(k.split("-")[1])));
   const m = t.match(/\b(\d{1,2})[\/.-](\d{1,2})\b/);
   if (m) {
-    const dd = Number(m[1]), mm = Number(m[2]);
-    if (dd >= 1 && dd <= 31 && validMonths.has(mm)) return makeDateKey(dd, mm);
-  }
-  // ▸ V14 FIX: Gerar mapeamento de dia da semana dinâmico do FIXED_SCHEDULE
-  const dayNameMap = {};
-  for (const [key, val] of Object.entries(FIXED_SCHEDULE)) {
-    const dayNorm = norm(val.dayName);
-    dayNameMap[dayNorm] = key;
+    const dd = Number(m[1]);
+    const mm = Number(m[2]);
+    if (mm === 3 && dd >= 1 && dd <= 31) return makeDateKey(dd, mm);
   }
   const low = norm(t);
-  for (const [dayNorm, dateKey] of Object.entries(dayNameMap)) {
-    if (low.includes(dayNorm)) return dateKey;
-  }
+  if (/\bquarta\b/.test(low)) return "11-03";
+  if (/\bquinta\b/.test(low)) return "12-03";
+  if (/\bsexta\b/.test(low)) return "13-03";
   return null;
 }
 
@@ -362,7 +295,8 @@ function extractHourOnly(text) {
   const low = norm(text);
   const m = low.match(/\b([01]?\d|2[0-3])[:h]([0-5]\d)\b/);
   if (m) {
-    const hh = Number(m[1]), mm = Number(m[2]);
+    const hh = Number(m[1]);
+    const mm = Number(m[2]);
     return mm === 0 ? `${hh}h` : `${pad2(hh)}:${pad2(mm)}`;
   }
   const m2 = low.match(/\b([01]?\d|2[0-3])\s?h\b/);
@@ -378,155 +312,138 @@ function extractNumericChoice(text) {
   return null;
 }
 
-/**
- * ▸ MUDANÇA CRÍTICA: extractPlanChoice agora usa matching flexível.
- *   "acho que a opção 2 faz mais sentido pra mim" → basic (antes falhava)
- *   "prefiro a avaliação" → basic
- *   "quero o acompanhamento" → full
- *   Resolve o bug do paciente 2 (Carlos) onde a escolha não foi reconhecida.
- */
 function extractPlanChoice(text) {
   const t = norm(text);
-
-  // Match direto por número (flexível, não precisa ser exato)
-  if (/\b1\b/.test(t) && !/\b2\b/.test(t) && !/\b3\b/.test(t)) return "full";
-  if (/\b2\b/.test(t) && !/\b1\b/.test(t) && !/\b3\b/.test(t)) return "basic";
-  if (/\b3\b/.test(t) && !/\b1\b/.test(t) && !/\b2\b/.test(t)) return "retorno";
-
-  // Match por palavras-chave do plano
-  if (/(acompanhamento|com retorno|retorno em 30|retorno incluso|primeira opcao|primeira opção|opcao 1|opção 1)/.test(t)) return "full";
-  if (/(avaliacao|avaliação|so a consulta|só a consulta|consulta inicial|segunda opcao|segunda opção|opcao 2|opção 2)/.test(t)) return "basic";
-  if (/(retorno avulso|consulta de ajuste|ajuste|terceira opcao|terceira opção|opcao 3|opção 3|apenas retorno)/.test(t)) return "retorno";
-
-  // Match por contexto (exige mais palavras juntas para evitar falso positivo)
-  if (/(prefiro a avaliacao|prefiro a avaliação|quero a avaliacao|quero a avaliação|so a avaliacao|só a avaliação|comecar com a avaliacao|começar com a avaliação)/.test(t)) return "basic";
-  if (/(quero o acompanhamento|prefiro o acompanhamento|quero o pacote|pacote completo)/.test(t)) return "full";
-
+  // números e variações
+  if (/^(1|opcao 1|opção 1|opçao 1|opcao1|opção1)$/.test(t)) return "full";
+  if (/^(2|opcao 2|opção 2|opçao 2|opcao2|opção2)$/.test(t)) return "basic";
+  if (/^(3|opcao 3|opção 3|opçao 3|opcao3|opção3)$/.test(t)) return "retorno";
+  // frases comuns
+  if (/\b(acompanhamento|consulta com retorno|com retorno|pacote|retorno em 30|acompanhamento medico|acompanhamento médico)\b/.test(t)) return "full";
+  if (/\b(avaliacao especializada|avaliação especializada|avaliacao|avaliação|so a consulta|só a consulta|opcao 2|opção 2)\b/.test(t)) return "basic";
+  if (/\b(retorno avulso|consulta de ajuste|apenas retorno)\b/.test(t)) return "retorno";
+  // expressões como "acho que a 2", "prefiro a 2"
+  if (/acho que a (2|dois|segunda)/.test(t)) return "basic";
+  if (/acho que a (1|um|primeira)/.test(t)) return "full";
+  if (/acho que a (3|três|terceira)/.test(t)) return "retorno";
   return null;
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   CONDITION DETECTION (expandido na V14)
-   ═══════════════════════════════════════════════════════════════════ */
-
-function detectCondition(text) {
+function wantsReschedule(text) {
   const t = norm(text);
-  if (t.includes("fibromialgia")) return "fibromialgia";
-  if (t.includes("dor neuropatica") || t.includes("dor neuropática") || t.includes("neuropat")) return "dor_neuropatica";
-  if (t.includes("artrose")) return "artrose";
-  if (t.includes("artrite")) return "artrite";
-  if (t.includes("lombar") || t.includes("coluna") || t.includes("costas")) return "dor_lombar";
-  if (t.includes("insônia") || t.includes("insonia") || t.includes("dormir") || /\bsono\b/.test(t)) return "insonia";
-  if (t.includes("ansiedade") || t.includes("panico") || t.includes("pânico")) return "ansiedade";
-  if (t.includes("enxaqueca")) return "enxaqueca";
-  if (t.includes("ombro")) return "dor_cronica";
-  if (t.includes("dor")) return "dor_cronica";
-  return null;
+  return /(trocar|mudar|alterar|pode ser|prefiro|so posso|só posso|nao posso|não posso|melhor)/.test(t) && !!extractHourOnly(text);
 }
 
-function extractProblemText(text) {
-  const t = (text || "").trim();
-  if (!t) return null;
-  const low = norm(t);
-  if (/(dor|fibromialgia|insônia|insonia|sono|ansiedade|panico|pânico|artrose|artrite|enxaqueca|coluna|lombar|neuropat|ombro)/.test(low)) return t;
-  const m = t.match(/(?:quero tratar|tratar|meu problema e|meu problema é|tenho|sofro com|incomoda)\s+(.+)$/i);
-  if (m?.[1]) return m[1].trim();
-  return null;
+function maybeUseName(state) {
+  const nome = state?.nome;
+  if (!nome) return "";
+  const used = Number(state?.name_used_count || 0);
+  if (used < 2 || used % 6 === 0) return nome;
+  return "";
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   INTENT DETECTION — V14 EXPANDIDO
-   ═══════════════════════════════════════════════════════════════════
-   ▸ MUDANÇA: Adicionadas novas flags para detectar perguntas que
-   antes eram ignoradas: asksWhatIncludes, asksMedCost, asksIfForMe,
-   asksDifferential, asksCanReschedule, asksPrivacy, asksRecipe
-   ═══════════════════════════════════════════════════════════════════ */
+const EVIDENCE_DB = {
+  fibromialgia: {
+    empathy: [
+      "Entendo… fibromialgia realmente pode ser muito desgastante.",
+      "Fibromialgia costuma impactar muito a rotina, o sono e até o emocional.",
+      "Quem tem fibromialgia muitas vezes sente que o corpo nunca descansa.",
+    ],
+    study: "Um estudo publicado no *Pain Medicine* mostrou redução média de cerca de *60% na intensidade da dor* em pacientes com fibromialgia após algumas semanas de tratamento com canabinoides.",
+    bridge: "Claro que cada caso é diferente, e é justamente isso que o Dr. Alef avalia com precisão na consulta.",
+  },
+  dor_cronica: {
+    empathy: [
+      "Entendo… viver com dor constante desgasta muito a qualidade de vida.",
+      "Dor crônica realmente pode mexer com sono, humor e energia.",
+      "Muita gente com dor passa anos tentando melhorar sem encontrar algo que ajude de verdade.",
+    ],
+    study: "Estudos clínicos mostram redução relevante da intensidade da dor em muitos pacientes com dor crônica, e em alguns cenários a melhora observada ficou por volta de *50%*.",
+    bridge: "O ponto importante é avaliar se isso pode fazer sentido para o seu quadro, com segurança.",
+  },
+  dor_lombar: {
+    empathy: [
+      "Entendo… dor lombar pode limitar muito a rotina.",
+      "Quando a coluna dói todos os dias, isso vai desgastando bastante.",
+      "Dor lombar crônica costuma atrapalhar movimento, sono e produtividade.",
+    ],
+    study: "Estudos em dor lombar crônica mostram melhora relevante de sintomas em parte dos pacientes tratados com canabinoides, com resultados que podem se aproximar de *40% a 50%* em alguns desfechos clínicos.",
+    bridge: "Mas quem vai dizer se isso faz sentido para você é o Dr. Alef, avaliando seu histórico completo.",
+  },
+  dor_neuropatica: {
+    empathy: [
+      "Entendo… dor neuropática é uma das dores mais difíceis de tratar.",
+      "Dor neuropática costuma ser muito incômoda, principalmente quando vem como queimação, choque ou formigamento.",
+      "Muita gente com dor neuropática passa muito tempo buscando algo que realmente ajude.",
+    ],
+    study: "Em dor neuropática, estudos clínicos mostram melhora significativa em uma parcela dos pacientes, com reduções de sintomas que em alguns trabalhos ficaram na faixa de *30% a 50%*.",
+    bridge: "Isso pode indicar um quadro de dor neuropática, porém somente o Dr. Alef pode avaliar com precisão e te dizer o melhor caminho.",
+  },
+  ansiedade: {
+    empathy: [
+      "Entendo… ansiedade constante desgasta muito a mente e o corpo.",
+      "Ansiedade pode dominar o dia da pessoa e atrapalhar até o descanso.",
+      "Muita gente com ansiedade sente dificuldade até para relaxar de verdade.",
+    ],
+    study: "Um estudo publicado no *Neurotherapeutics* mostrou redução significativa dos sintomas de ansiedade em muitos pacientes, com respostas clinicamente relevantes.",
+    bridge: "Mas a consulta é justamente para entender se esse caminho pode fazer sentido para o seu caso, com segurança.",
+  },
+  insonia: {
+    empathy: [
+      "Entendo… dormir mal afeta absolutamente tudo.",
+      "Insônia realmente compromete energia, humor e concentração.",
+      "Quando a pessoa dorme mal por muito tempo, isso vai desgastando várias áreas da vida.",
+    ],
+    study: "Estudos clínicos mostram melhora significativa da qualidade do sono em muitos pacientes, e em alguns levantamentos o impacto percebido no sono foi um dos principais motivos de procura por cannabis medicinal.",
+    bridge: "A avaliação serve para entender o seu padrão de sono e se esse tratamento pode fazer sentido para você.",
+  },
+  artrose: {
+    empathy: [
+      "Entendo… artrose pode limitar muito movimento e qualidade de vida.",
+      "Artrose costuma gerar dor constante e rigidez nas articulações.",
+      "Muita gente com artrose sente dificuldade até nas tarefas simples.",
+    ],
+    study: "Em artrose, estudos indicam redução de dor e melhora funcional em parte dos pacientes, com respostas que em alguns cenários ficam na faixa de *30% a 50%*.",
+    bridge: "Mas isso precisa ser individualizado, principalmente considerando seu histórico e outras medicações.",
+  },
+  artrite: {
+    empathy: [
+      "Entendo… artrite realmente pode causar muita dor e inflamação.",
+      "A artrite costuma limitar bastante o dia a dia.",
+      "Muita gente com artrite sofre com dor articular constante e rigidez.",
+    ],
+    study: "Estudos sugerem melhora de dor e inflamação em parte dos pacientes com artrite, com resultados clínicos relevantes em alguns trabalhos.",
+    bridge: "Só que isso sempre precisa ser avaliado com critério pelo médico responsável.",
+  },
+  enxaqueca: {
+    empathy: [
+      "Entendo… enxaqueca pode ser extremamente incapacitante.",
+      "Quem sofre com enxaqueca sabe como isso pode parar o dia inteiro.",
+      "Enxaqueca recorrente realmente desgasta muito.",
+    ],
+    study: "Estudos clínicos indicam redução da frequência e da intensidade das crises em parte dos pacientes com enxaqueca.",
+    bridge: "O Dr. Alef avalia se isso pode fazer sentido para o seu caso específico.",
+  },
+};
 
-function detectIntent(text) {
-  const t = norm(text);
-
-  return {
-    // Intenções comerciais
-    wantsPrice:       /\b(preco|preço|valor|quanto custa|investimento|custa|valores|quanto e|quanto é)\b/.test(t),
-    intentPay:        /\b(como (pagar|fa[cç]o para pagar)|pagar|pagamento|pix|cartao|cartão|credito|crédito|debito|débito|boleto|link|parcel|parcela|quero pagar)\b/.test(t),
-    // ▸ V14 FIX: Removido "marcar", "agendar", "agenda" standalone (falso positivo: "antes de marcar consulta")
-    //   Agora exige verbo de intenção: quero/vou/posso/queria/gostaria/preciso + marcar/agendar
-    wantsBook:        /\b(quero marcar|quero agendar|vou marcar|vou agendar|queria marcar|queria agendar|gostaria de (marcar|agendar)|posso (marcar|agendar)|preciso (marcar|agendar)|bora (marcar|agendar)|confirmar consulta|quero consulta|quero uma vaga|me agenda|tem horario|tem horário)\b/.test(t),
-    asksHours:        /\b(horarios|horário|horario|que horas|vagas|disponibilidade)\b/.test(t),
-
-    // Confirmação / Recusa
-    confirms:         /\b(sim|ok|beleza|confirmo|fechado|vamos|pode ser|confirmar|bora|vamos la|vamos lá|com certeza|claro que sim)\b/.test(t),
-    refuses:          /\b(nao quero|não quero|pare|para|chega|desisto|cancela)\b/.test(t),
-
-    // Perguntas diretas (Question Priority Engine)
-    asksHowConsultWorks: /\b(como funciona|como e a consulta|como é a consulta|o que acontece na consulta)\b/.test(t),
-    asksIfOnline:     /\b(e online|é online|online mesmo|presencial|precisa ir|tem que ir|por video|por vídeo)\b/.test(t),
-    asksLegal:        /\b(legal no brasil|e legal|é legal|precisa de receita|receita|anvisa|legalizado|regularizado)\b/.test(t),
-    asksChapado:      /\b(chapado|chapar|maconha mesmo|isso e maconha|isso é maconha|droga|fico alterado|ficar alterado)\b/.test(t),
-    asksWho:          /\b(quem e|quem eh|quem é|quem e o dr|quem é o dr|quem e o doutor|quem é o doutor)\b/.test(t),
-    // ▸ V14 FIX: Expandido para cobrir "costuma ajudar", "realmente ajuda", "faz diferença", etc.
-    asksIfWorks:      /\b(funciona|vale a pena|ajuda mesmo|ajuda pra|ajuda para|costuma ajudar|costuma funcionar|costuma melhorar|realmente ajuda|realmente funciona|melhora mesmo|tem resultado|faz efeito|faz diferenca|faz diferença|resolve mesmo|e eficaz|é eficaz|tem eficacia|tem eficácia|da resultado|dá resultado|funciona mesmo|funciona de verdade)\b/.test(t),
-    // ▸ V14 FIX: Expandido para cobrir "casos como o meu", "no meu caso", "pra quem tem [cond]"
-    asksIfForMe:      /\b(serve pra mim|serve para mim|é só para|e so para|é pra caso grave|serve pra quem|funciona pra quem|ajuda quem tem|ajudar quem tem|precisa ter diagnostico|precisa ter diagnóstico|mesmo sem diagnostico|mesmo sem diagnóstico|no meu caso|meu caso|casos como o meu|como o meu|indicado pra|indicado para|pra quem tem)\b/.test(t),
-    asksDifferential: /\b(diferença|diferenca|diferencial|por que o dr|por que o doutor|o que muda|o que diferencia|comparando)\b/.test(t),
-    asksWhatIncludes: /\b(inclui o que|o que inclui|o que ta incluido|o que tá incluído|o que vem|o que tem dentro|explica o plano|explica a opcao|explica a opção)\b/.test(t),
-    asksMedCost:      /\b(medicamento.*cust|remedio.*cust|remedío.*cust|caro.*depois|custo.*mensal|quanto.*mes|quanto.*mês|gast.*por mes|gast.*por mês|tratamento.*cust)\b/.test(t),
-    asksRecipe:       /\b(saio com receita|recebo receita|ja sai com|já sai com|prescrição|prescricao)\b/.test(t),
-    asksCanReschedule:/\b(remarcar|reagendar|trocar.*horario|trocar.*horário|mudar.*data|cancelar.*consulta)\b/.test(t),
-    asksPrivacy:      /\b(sigilo|sigiloso|ninguem fica sabendo|ninguém fica sabendo|privacidade|discreto)\b/.test(t),
-    asksStartNow:     /\b(como tomar|dose|dosagem|quantas gotas|comecar agora|começar agora|comprar.*remedío|comprar.*remedio)\b/.test(t),
-    // ▸ V14 FIX: Removido "verdade" (falso positivo com "é verdade que funciona?"). Adicionado "e verdade" como frase
-    asksIsScam:       /\b(golpe|fraude|piramide|pirâmide|e serio|é sério|confiavel|confiável|consulta.*mesmo|e verdade isso|é verdade isso|isso e verdade|isso é verdade)\b/.test(t),
-    asksPayMethod:    /\b(parcela|parcelar|forma.*pagamento|aceita.*pix|aceita.*cartao|aceita.*cartão)\b/.test(t),
-
-    // Objeções
-    saysExpensive:    /\b(caro|caríssim|carissim|achei caro|muito caro|pesado|puxado)\b/.test(t),
-    saysWillSee:      /\b(vou ver|depois te falo|vou confirmar|vou pensar|te aviso|depois vejo|preciso pensar)\b/.test(t),
-    saysUnsure:       /\b(nao tenho certeza|não tenho certeza|nao sei|não sei|sera|será|to na duvida|tô na dúvida|duvida|dúvida)\b/.test(t),
-    saysCheaperElsewhere: /\b(mais barato|medico.*barato|médico.*barato|outro.*medico|outro.*médico|pesquisando)\b/.test(t),
-    // ▸ V14 FIX: Exigir contexto de 1ª pessoa para evitar falso positivo ("minha mulher tem fibro")
-    saysCheckSpouse:  /\b(minha?\s+(esposa|marido|mulher)|falar com\s+(esposa|marido|mulher)|vou ver com\s+(esposa|marido|mulher|familia|família)|conversar\s+(com\s+)?(esposa|marido|mulher|familia|família)\s+antes|combinar\s+com)\b/.test(t),
-    saysIndecisive:   /\b(tanto faz|qual voce acha|qual você acha|nao sei qual|não sei qual|me indica|me recomenda)\b/.test(t),
-
-    // Urgência
-    urgency:          /\b(dor no peito|falta de ar|desmaio|avc|convuls|paralisia|confusao|confusão)\b/.test(t),
-
-    // Emoção forte
-    strongPain:       /\b(nao aguento|não aguento|to sofrendo|tô sofrendo|muito ruim|muito dificil|muito difícil|desespero|nao consigo mais|não consigo mais|ajuda|socorro)\b/.test(t),
-
-    // Focus (condição detectada no texto)
-    focus: detectCondition(text),
-  };
+function buildEvidenceMessage(condition) {
+  const ev = EVIDENCE_DB[condition];
+  if (!ev) return null;
+  return `${pickRandom(ev.empathy)}\n\n${ev.study}\n\n${ev.bridge}`;
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   LEAD CLASSIFIER — NOVO NA V14
-   ═══════════════════════════════════════════════════════════════════
-   ▸ Detecta o perfil do lead logo nas primeiras interações para
-   adaptar a rota. Salvo no state como lead_profile.
-   ═══════════════════════════════════════════════════════════════════ */
-
-function classifyLead(flags, text, state) {
-  // Se já classificado, manter (pode ser reclassificado em casos fortes)
-  const t = norm(text);
-
-  if (flags.strongPain) return "emocional";
-  // ▸ V14 FIX: Removido "verdade" (falso positivo com "é verdade que funciona?")
-  if (flags.asksIsScam || /\b(golpe|fraude|serio|sério)\b/.test(t)) return "desconfiado";
-  // ▸ V14 FIX: Usa flags (já corrigido) em vez de regex extra com "quero marcar" (redundante)
-  if (flags.wantsBook || flags.asksHours) return "quente";
-  if (flags.wantsPrice && !state.problem_text) return "pragmatico";
-  if (flags.asksDifferential || flags.saysCheaperElsewhere || /\b(pesquisando|comparando)\b/.test(t)) return "comparador";
-  if (flags.asksIfForMe || /\b(serve pra mim|caso grave|sem diagnostico|sem diagnóstico)\b/.test(t)) return "frio";
-  if (flags.asksIfWorks && /\b(promessa|tentei tudo|nada funciona|cansado)\b/.test(t)) return "cetico";
-  if (flags.asksIfWorks) return "cetico";
-
-  return state.lead_profile || "padrao";
+function shouldUseEvidence(flags, state, incomingText) {
+  if (Number(state.evidence_used_count || 0) >= 2) return false;
+  if (flags.asksHowConsultWorks || flags.asksLegal || flags.asksIfOnline || flags.asksChapado || flags.asksPriceDirect) return false;
+  const cond = detectCondition(incomingText) || state.condition || null;
+  if (!cond) return false;
+  if (flags.asksIfWorks) return true;
+  if (flags.saysUnsure && !flags.asksHowConsultWorks) return true;
+  if (!state.problem_text && cond) return true;
+  const t = norm(incomingText);
+  if (/(nao aguento|não aguento|to sofrendo|tô sofrendo|muito ruim|muito dificil|muito difícil)/.test(t)) return true;
+  return false;
 }
-
-/* ═══════════════════════════════════════════════════════════════════
-   SLOT MANAGEMENT (preservado da V13)
-   ═══════════════════════════════════════════════════════════════════ */
 
 function getGenericSlotsForDate(dateKey) {
   return FIXED_SCHEDULE[dateKey] ? [...FIXED_SCHEDULE[dateKey].slots] : [];
@@ -547,7 +464,10 @@ async function cleanupExpiredLocks() {
 async function getBlockedSlotKeysForDate(dateKey) {
   await cleanupExpiredLocks();
   const { rows } = await pool.query(
-    `SELECT slot_key FROM wa_slot_locks WHERE slot_key LIKE $1 AND (status='paid' OR (status='held' AND expires_at > NOW()))`,
+    `SELECT slot_key
+     FROM wa_slot_locks
+     WHERE slot_key LIKE $1
+       AND (status='paid' OR (status='held' AND expires_at > NOW()))`,
     [`${dateKey}|%`]
   );
   return new Set(rows.map((r) => r.slot_key));
@@ -580,6 +500,7 @@ async function acquireSlotHold(dateKey, time, phone, minutes = HOLD_MINUTES) {
 
   const row = existing.rows[0];
   if (row.status === "paid") return { ok: false, reason: "paid" };
+
   if (row.status === "held" && row.phone === phone) {
     await pool.query(
       `UPDATE wa_slot_locks SET expires_at = NOW() + ($2 || ' minutes')::interval, updated_at = NOW() WHERE slot_key=$1`,
@@ -587,11 +508,15 @@ async function acquireSlotHold(dateKey, time, phone, minutes = HOLD_MINUTES) {
     );
     return { ok: true, slot_key: key };
   }
+
   if (row.status === "held" && row.expires_at && new Date(row.expires_at) > new Date()) {
     return { ok: false, reason: "held" };
   }
+
   await pool.query(
-    `UPDATE wa_slot_locks SET phone=$2, status='held', expires_at = NOW() + ($3 || ' minutes')::interval, updated_at = NOW(), paid_at = NULL WHERE slot_key=$1`,
+    `UPDATE wa_slot_locks
+     SET phone=$2, status='held', expires_at = NOW() + ($3 || ' minutes')::interval, updated_at = NOW(), paid_at = NULL
+     WHERE slot_key=$1`,
     [key, phone, String(minutes)]
   );
   return { ok: true, slot_key: key };
@@ -600,7 +525,9 @@ async function acquireSlotHold(dateKey, time, phone, minutes = HOLD_MINUTES) {
 async function markSlotPaid(key, phone) {
   if (!key) return;
   await pool.query(
-    `UPDATE wa_slot_locks SET status='paid', expires_at = NULL, paid_at = NOW(), updated_at = NOW() WHERE slot_key=$1 AND phone=$2`,
+    `UPDATE wa_slot_locks
+     SET status='paid', expires_at = NULL, paid_at = NOW(), updated_at = NOW()
+     WHERE slot_key=$1 AND phone=$2`,
     [key, phone]
   );
 }
@@ -624,440 +551,393 @@ async function getSuggestedDayKeys() {
   return out.slice(0, 3);
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   EVIDENCE DATABASE — V14 EXPANDIDA
-   ═══════════════════════════════════════════════════════════════════
-   ▸ Nova estrutura: empathy + testimony + study + hope + bridge + future
-   ▸ "testimony" é a perspectiva da secretária que vê resultados reais.
-   ▸ "future" é a visualização de futuro melhor que ajuda o paciente
-     a acreditar no tratamento (adesão terapêutica).
-   ═══════════════════════════════════════════════════════════════════ */
-
-const EVIDENCE_DB = {
-  fibromialgia: {
-    empathy: [
-      "Fibromialgia desgasta o corpo e a mente. Quem tem sabe que não é só dor — é exaustão, sono ruim, o corpo nunca descansa.",
-      "Fibromialgia é muito mais do que dor. É acordar cansada, é o corpo pesado, é a sensação de que nada resolve de verdade.",
-    ],
-    testimony: [
-      "O que eu vejo aqui no dia a dia é que muita gente com fibromialgia que começa o acompanhamento com o Dr. Alef volta no retorno relatando que a dor diminuiu bastante e que conseguiu dormir melhor pela primeira vez em anos.",
-      "Acompanho esse consultório todos os dias, e o que eu posso te dizer é que muita gente que chega com esse mesmo quadro percebe melhora real depois de algumas semanas.",
-    ],
-    study: "Estudos clínicos mostram redução de até *60% na intensidade da dor* em pacientes com fibromialgia.",
-    hope: "Não prometo nada porque cada caso é diferente, mas posso te dizer que existe um caminho real para quem está nessa situação.",
-    bridge: "A avaliação serve justamente para entender se esse caminho faz sentido para você.",
-    future: [
-      "Imagina voltar a dormir a noite inteira e acordar com menos dor. Muita gente aqui conseguiu isso.",
-      "Muita gente me diz que quando a dor diminui e o sono melhora, parece que a vida volta.",
-    ],
-  },
-  dor_cronica: {
-    empathy: [
-      "Dor que dura anos e resiste a tudo é muito desgastante. Mexe com sono, humor, trabalho, tudo.",
-      "Viver com dor constante desgasta muito. A pessoa vai perdendo qualidade de vida aos poucos.",
-    ],
-    testimony: [
-      "Muita gente que chega aqui com dor crônica, especialmente quem já tentou anti-inflamatório e fisioterapia sem resultado duradouro, volta relatando melhora real tanto na dor quanto na qualidade de vida.",
-      "O que eu vejo aqui com frequência é que pacientes que já tinham desistido de melhorar voltam no retorno com outra energia.",
-    ],
-    study: "Estudos mostram melhora de *40–50% na intensidade da dor* em parte dos pacientes com dor crônica.",
-    hope: "Existe um caminho real, mesmo para quem já tentou muita coisa.",
-    bridge: "É justamente esse tipo de análise que o Dr. Alef faz na consulta.",
-    future: [
-      "Muita gente me diz que a primeira semana que conseguiu trabalhar sem parar por causa da dor foi transformadora.",
-      "Quando a dor diminui e a pessoa consegue voltar a fazer as coisas do dia a dia, muda tudo.",
-    ],
-  },
-  dor_lombar: {
-    empathy: [
-      "Dor lombar constante atrapalha tudo — trabalho, sono, até ficar sentado fica difícil.",
-      "Quando a coluna dói todos os dias, isso vai desgastando bastante a qualidade de vida.",
-    ],
-    testimony: [
-      "Aqui no consultório, muita gente com dor lombar que já tentou anti-inflamatório e fisioterapia sem resultado duradouro percebe melhora real depois de algumas semanas acompanhando com o Dr. Alef.",
-      "O que eu vejo com frequência é que pacientes com dor na coluna voltam no retorno dizendo que conseguiram voltar a fazer coisas que tinham desistido.",
-    ],
-    study: "Estudos mostram melhora de *40–50%* nos sintomas de dor lombar crônica em parte dos pacientes.",
-    hope: "Para quem convive com dor na coluna há anos, existe uma possibilidade real de melhora.",
-    bridge: "Quem vai avaliar isso com profundidade no seu caso é o Dr. Alef.",
-    future: [
-      "Poder sentar, dirigir, trabalhar sem aquela dor travando tudo — muita gente aqui conseguiu.",
-    ],
-  },
-  dor_neuropatica: {
-    empathy: [
-      "Dor neuropática é uma das dores mais difíceis de tratar. Queimação, choque, formigamento — incomoda demais.",
-    ],
-    testimony: [
-      "Pacientes com dor neuropática que acompanham aqui costumam relatar melhora significativa, principalmente na intensidade das crises.",
-    ],
-    study: "Estudos mostram melhora de *30–50%* em parte dos pacientes com dor neuropática.",
-    hope: "Dor neuropática é difícil, mas não é sem saída.",
-    bridge: "O Dr. Alef avalia com cuidado o tipo de dor e o que faz sentido no seu caso.",
-    future: ["Muita gente relata que as crises ficam mais espaçadas e bem menos intensas."],
-  },
-  ansiedade: {
-    empathy: [
-      "Ansiedade constante desgasta demais. Mente acelerada, corpo tenso, sono ruim — fica difícil funcionar.",
-      "Quando a ansiedade domina o dia, tudo fica mais pesado. Até relaxar vira um desafio.",
-    ],
-    testimony: [
-      "O que eu vejo aqui é que muita gente com ansiedade que começa o acompanhamento percebe melhora significativa, principalmente no sono e naquela sensação de aceleração mental.",
-      "Muita gente que chega aqui com ansiedade volta dizendo que conseguiu dormir melhor e que a mente desacelerou.",
-    ],
-    study: "Estudos mostram redução significativa dos sintomas de ansiedade em muitos pacientes.",
-    hope: "Existe um caminho para quem está nessa situação, com segurança e acompanhamento.",
-    bridge: "A consulta serve para entender se isso faz sentido no seu caso específico.",
-    future: [
-      "Muita gente me diz que a sensação de conseguir relaxar de verdade pela primeira vez é indescritível.",
-    ],
-  },
-  insonia: {
-    empathy: [
-      "Dormir mal afeta absolutamente tudo — energia, humor, concentração, saúde.",
-      "Quando a pessoa dorme mal por muito tempo, isso vai consumindo a vida aos poucos.",
-    ],
-    testimony: [
-      "O que eu acompanho aqui é que o sono costuma ser uma das primeiras coisas que melhoram. Muita gente volta dizendo que está dormindo a noite inteira pela primeira vez em muito tempo.",
-    ],
-    study: "O sono é um dos principais motivos de procura por cannabis medicinal, e estudos mostram melhora significativa da qualidade do sono.",
-    hope: "Dormir bem muda tudo. E é possível.",
-    bridge: "O Dr. Alef avalia seu padrão de sono e entende se esse tratamento faz sentido para você.",
-    future: ["Imagina deitar e dormir tranquilo, sem acordar várias vezes. Muita gente aqui conseguiu."],
-  },
-  artrose: {
-    empathy: [
-      "Artrose limita movimento, causa dor constante e atrapalha até as tarefas mais simples.",
-    ],
-    testimony: [
-      "Muita gente com artrose que chega aqui, especialmente quem já fez infiltração sem resultado duradouro, volta relatando que conseguiu voltar a se movimentar com menos dor.",
-    ],
-    study: "Estudos indicam redução de dor e melhora funcional na faixa de *30–50%* em parte dos pacientes.",
-    hope: "Para quem está limitado pela artrose, existe uma possibilidade real de melhora.",
-    bridge: "A avaliação leva em conta seu histórico e a articulação afetada para definir o melhor caminho.",
-    future: ["Poder caminhar sem aquela dor constante — muita gente aqui conseguiu isso."],
-  },
-  artrite: {
-    empathy: ["Artrite causa dor, rigidez e inflamação que atrapalham bastante o dia a dia."],
-    testimony: ["Pacientes com artrite que acompanham aqui costumam relatar melhora na dor articular e na rigidez."],
-    study: "Estudos mostram melhora de dor e inflamação em parte dos pacientes com artrite.",
-    hope: "Existe caminho para aliviar esses sintomas com segurança.",
-    bridge: "Isso precisa ser avaliado considerando suas medicações e histórico.",
-    future: ["Menos dor e mais liberdade de movimento — é o que muita gente relata."],
-  },
-  enxaqueca: {
-    empathy: ["Enxaqueca pode ser extremamente incapacitante. Uma crise pode parar o dia inteiro."],
-    testimony: ["Muita gente com enxaqueca que acompanha aqui relata que as crises ficaram menos frequentes e menos intensas."],
-    study: "Estudos indicam redução da frequência e intensidade das crises em parte dos pacientes.",
-    hope: "Ter menos crises e crises mais leves — isso é possível.",
-    bridge: "A avaliação analisa frequência, gatilhos e histórico para definir a melhor abordagem.",
-    future: ["Ter semanas sem crise, e quando vem, ser mais leve — muita gente aqui relata isso."],
-  },
-};
-
-function buildEvidenceMessage(condition, options = {}) {
-  const ev = EVIDENCE_DB[condition];
-  if (!ev) return null;
-
-  const empathy = pickRandom(ev.empathy);
-  const testimony = pickRandom(ev.testimony);
-  const future = options.includeFuture ? `\n\n${pickRandom(ev.future)}` : "";
-
-  return `${empathy}\n\n${testimony}\n\n${ev.study}\n\n${ev.hope}${future}\n\n${ev.bridge}`;
+function urgencyAgendaPrefix() {
+  return "Essa semana ainda tenho alguns horários disponíveis em horário de Brasília.\n\n";
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   NAME USAGE HELPER
-   ═══════════════════════════════════════════════════════════════════ */
-
-function maybeUseName(state) {
-  const nome = state?.nome;
-  if (!nome) return "";
-  const used = Number(state?.name_used_count || 0);
-  if (used < 3 || used % 5 === 0) return nome;
-  return "";
+function formatDayOptions(dayKeys) {
+  return dayKeys.map((d, i) => `${i + 1}) *${formatDatePt(d)}*`).join("\n");
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   REPLY TEMPLATES — V14 REESCRITOS
-   ═══════════════════════════════════════════════════════════════════ */
-
-function askNameIntroReply() {
-  return "Oi 😊\nEu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nQual é o seu *primeiro nome*?";
+function consultationExplanationReply() {
+  return (
+    "A avaliação com o Dr. Alef é *100% online, segura e individualizada*, com duração média de *45 minutos*.\n\n" +
+    "Nela, ele analisa seu histórico, o que você já tentou, medicações em uso, como os sintomas impactam sua rotina e se esse tratamento pode fazer sentido para o seu caso.\n\n" +
+    "Se fizer sentido, ele orienta os próximos passos com segurança."
+  );
 }
 
-function askProblemReply(state) {
-  const nome = maybeUseName(state);
-  const variations = [
-    `${nome ? `Prazer, ${nome} 😊\n\n` : ""}Me conta: o que tem te incomodado mais ultimamente?`,
-    `${nome ? `Prazer, ${nome} 😊\n\n` : ""}Me conta um pouquinho: qual a sua principal queixa hoje?`,
-    `${nome ? `Prazer, ${nome} 😊\n\n` : ""}Para eu te direcionar melhor, me diz: o que tem te incomodado mais?`,
-  ];
-  return pickRandom(variations);
+function legalReply() {
+  return "Sim 😊 O uso medicinal de canabinoides é legal no Brasil, mas sempre com avaliação e prescrição médica quando indicado.";
 }
 
-// ▸ V14: perguntas diagnósticas separadas, para uso condicional
-
-function diagQ_tempo(state) {
-  const nome = maybeUseName(state);
-  return `${nome ? `${nome}, ` : ""}há quanto tempo isso acontece com você?`;
+function chapadoReply() {
+  return (
+    "Essa é uma dúvida muito comum 😊\n\n" +
+    "O tratamento medicinal não é a mesma coisa que uso recreativo. Tudo depende da avaliação médica, do tipo de formulação e da indicação correta."
+  );
 }
 
-function diagQ_impacto(state) {
-  const cond = state.condition || state.focus || "";
-  if (cond === "fibromialgia") return "E hoje o que pesa mais: a dor, o cansaço, o sono ou tudo junto?";
-  if (cond === "insonia") return "Você tem mais dificuldade para pegar no sono ou acorda várias vezes?";
-  if (cond === "ansiedade") return "No seu caso pesa mais a mente acelerada, o corpo tenso ou o sono ruim?";
-  if (cond === "artrose") return "Onde incomoda mais: joelho, quadril, mãos ou outra articulação?";
-  if (cond === "artrite") return "Hoje o que mais incomoda é a dor, a rigidez ou o inchaço?";
-  if (cond === "dor_neuropatica") return "A dor é mais como queimação, choque, formigamento ou dor contínua?";
-  return "E o que mais te incomoda nisso no dia a dia?";
+function neuroHintReply() {
+  return "Isso pode indicar um quadro de dor neuropática, porém somente o Dr. Alef, que é o médico responsável, pode avaliar com precisão e te dizer como tratar.";
 }
 
-function diagQ_tratamento() {
-  return "Você já tentou algum tratamento ou medicação para isso antes?";
+function onlineReply() {
+  return "Sim 😊 A consulta é *100% online* e não precisa ir presencialmente a nenhum lugar.";
 }
 
-/**
- * ▸ Bridge: momento mais persuasivo da conversa.
- *   VERSÃO CONDENSADA para WhatsApp: testimony + dado + consult + CTA.
- *   Sem empathy (já foi expressada), sem future (reservado para objeções).
- */
-function bridgeReply(state) {
-  const cond = state.condition || detectCondition(state.problem_text || "") || "dor_cronica";
-  const ev = EVIDENCE_DB[cond];
-
-  const nome = maybeUseName(state);
-  const intro = `Faz todo sentido${nome ? `, ${nome}` : ""}. Muita gente chega aqui com esse mesmo tipo de histórico.`;
-
-  let testimony = "O que eu posso te dizer é que acompanho o consultório do Dr. Alef todos os dias e vejo com frequência pacientes que percebem melhora real.";
-  let study = "";
-  if (ev) {
-    testimony = pickRandom(ev.testimony);
-    study = `\n\n${ev.study}`;
-    state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
-  }
-
-  // ▸ V14 FIX: Lead emocional recebe future no bridge (spec 6.2: "Testimony + future no bridge")
-  let future = "";
-  if (state.lead_profile === "emocional" && ev?.future) {
-    future = `\n\n${pickRandom(ev.future)}`;
-  }
-
-  const consult = "A avaliação é *100% online*, dura em média *45 minutos* e é individualizada para o seu caso.";
-  const cta = "Se quiser, eu posso te mostrar os horários disponíveis 😊";
-
-  return `${intro}\n\n${testimony}${study}${future}\n\n${consult}\n\n${cta}`;
+function whoReply() {
+  return "O Dr. Alef Kotula é o médico responsável pelos atendimentos. A consulta é individualizada e focada em entender com profundidade se esse tratamento pode fazer sentido para o seu caso.";
 }
 
-async function askDayReply() {
-  const dayKeys = await getSuggestedDayKeys();
-  if (!dayKeys.length) return "No momento os horários desta semana já estão completos. Quer que eu te coloque na lista de prioridade? 😊";
-  const opts = dayKeys.map((d, i) => `${i + 1}) *${formatDatePt(d)}*`).join("\n");
-  return `Perfeito 😊\n\nEssa semana ainda tenho horários disponíveis:\n\n${opts}\n\nQual fica melhor para você?`;
-}
-
-async function offerSlotsReply(state) {
-  const dateKey = state.date_key;
-  const best = await chooseBestSlotsForDate(dateKey, 3);
-  if (!best.length) return "Esse dia acabou de ficar sem vagas 😕 Quer que eu te mostre outra data?";
-  state.offered_slots = best;
-  return `Para *${formatDatePt(dateKey)}* tenho:\n\n${best.map((s, i) => `${i + 1}) *${s}*`).join("\n")}\n\nQual fica melhor para você?`;
-}
-
-function askFullNameReply(state) {
-  return `Perfeito. Vou reservar *${prettySlot(state.date_key, state.slot_time)}* para você 😊\n\nSó preciso de alguns dados rápidos.\n\nQual seu *nome completo*?`;
-}
-
-function askBirthdateReply(state) {
-  return `Obrigada, ${state.nome_completo.split(" ")[0]}.\nQual sua *data de nascimento*?`;
-}
-
-function askEmailReply() {
-  return "E qual *e-mail* você prefere para receber as orientações?";
+function prePriceValueReply() {
+  return (
+    "Claro 😊\n\n" +
+    "Antes de te passar as opções, eu te explico rapidamente o que está incluído, para o valor fazer sentido no contexto.\n\n" +
+    "O Dr. Alef faz uma avaliação médica aprofundada do seu caso, entende o que você já tentou, confere medicações em uso e define com mais clareza quais caminhos podem fazer sentido para você."
+  );
 }
 
 function priceReply() {
   return (
     "Hoje trabalhamos com estas opções:\n\n" +
-    `1️⃣ *${PLANS.full.label}* (${PLANS.full.subtitle}) — *R$${PLANS.full.price}* *(87% dos pacientes escolhem essa)* ⭐\n` +
-    `2️⃣ *${PLANS.basic.label}* (${PLANS.basic.subtitle}) — *R$${PLANS.basic.price}*\n` +
-    `3️⃣ *${PLANS.retorno.label}* (${PLANS.retorno.subtitle}) — *R$${PLANS.retorno.price}*\n\n` +
-    "Qual faz mais sentido para você? Me responde com *1, 2 ou 3* 😊"
+    `1) *${PLANS.full.label}* (${PLANS.full.subtitle}) – *R$${PLANS.full.price}* *(87% das pessoas escolhem essa opção)* ⭐\n` +
+    `2) *${PLANS.basic.label}* (${PLANS.basic.subtitle}) – *R$${PLANS.basic.price}*\n` +
+    `3) *${PLANS.retorno.label}* (${PLANS.retorno.subtitle}) – *R$${PLANS.retorno.price}*\n\n` +
+    "Qual dessas opções faz mais sentido para você agora? Me responda com *1, 2 ou 3*.");
+}
+
+function askNameIntroReply() {
+  return "Oi 😊\nEu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nQual é o seu *primeiro nome*?";
+}
+
+function askProblemAfterNameReply(state) {
+  const nome = maybeUseName(state) || state.nome || "";
+  return `${nome ? `Prazer, ${nome} 😊\n\n` : ""}Me conta uma coisa rápida: o que tem te incomodado mais hoje?\n\n*Dor, sono, ansiedade ou outro problema?*`;
+}
+
+function q1Reply(state) {
+  const nome = maybeUseName(state) || state.nome || "";
+  return `${nome ? `${nome}, ` : ""}só para eu entender melhor seu caso: isso já acontece há quanto tempo com você?`;
+}
+
+function q2Reply(state) {
+  const cond = state.condition || state.focus || "";
+  if (cond === "fibromialgia") return "Entendi. E hoje o que mais te incomoda nisso: a dor em si, o cansaço, o sono ou tudo isso junto?";
+  if (cond === "insonia") return "Entendi. Você tem mais dificuldade para pegar no sono, manter o sono ou acorda várias vezes durante a noite?";
+  if (cond === "ansiedade") return "Entendi. No seu caso pesa mais a mente acelerada, a insônia, a tensão no corpo ou as crises?";
+  if (cond === "dor_neuropatica") return "Entendi. No seu caso incomoda mais como ardência, choque, formigamento ou dor contínua?";
+  if (cond === "artrose") return "Entendi. No seu caso incomoda mais joelho, quadril, mãos, coluna ou outra articulação?";
+  if (cond === "artrite") return "Entendi. Hoje o que mais te incomoda é a dor, a rigidez ou o inchaço nas articulações?";
+  return "Entendi. E hoje o que mais te incomoda nisso: a dor em si, o sono, o cansaço ou o impacto na sua rotina?";
+}
+
+function q3Reply() {
+  return "Entendi. Você já tentou algum tratamento ou medicação para isso antes?";
+}
+
+function bridgeToConsultReply(state) {
+  const cond = state.condition || detectCondition(state.problem_text || "") || "dor_cronica";
+  const ev = buildEvidenceMessage(cond);
+  return (
+    "Faz sentido. Muitas pessoas chegam aqui depois de já terem tentado algumas opções e ainda assim continuarem sofrendo.\n\n" +
+    (ev ? `${ev}\n\n` : "") +
+    consultationExplanationReply() +
+    "\n\nSe você quiser, eu posso te mostrar os próximos horários disponíveis 😊 "
   );
+}
+
+async function askDayReply() {
+  const dayKeys = await getSuggestedDayKeys();
+  if (!dayKeys.length) return "No momento os horários desta semana já estão completos. Quer que eu te coloque na lista de prioridade assim que abrir uma vaga? 😊";
+  return (
+    "Perfeito 😊\n\n" +
+    urgencyAgendaPrefix() +
+    "Nos próximos dias tenho agenda em:\n" +
+    `${formatDayOptions(dayKeys)}\n\n` +
+    "Qual você prefere?"
+  );
+}
+
+async function offerSlotsReply(state) {
+  const dateKey = state.date_key;
+  const best = await chooseBestSlotsForDate(dateKey, 3);
+  if (!best.length) return "Esse dia acabou de ficar sem vagas 😕 Quer que eu te mostre outra data próxima?";
+  state.offered_slots = best;
+  return (
+    "Perfeito 😊\n\n" +
+    urgencyAgendaPrefix() +
+    `Para *${formatDatePt(dateKey)}* tenho:\n\n` +
+    best.map((s, i) => `${i + 1}) *${s}*`).join("\n") +
+    "\n\nQual fica melhor para você?"
+  );
+}
+
+function askPreferredTimeReply(state) {
+  return `Sem problema 😊 Que horário em *${formatDatePt(state.date_key)}* funciona melhor para você?`;
+}
+
+function askFullNameReply(state) {
+  return `Perfeito. Vou reservar provisoriamente *${prettySlot(state.date_key, state.slot_time)}* para você por alguns minutos.\n\nSó preciso confirmar alguns dados rápidos.\n\nQual seu *nome completo*?`;
+}
+function askBirthdateReply(state) {
+  return `Obrigado, ${state.nome_completo.split(" ")[0]} 😊\n\nQual sua *data de nascimento*?`;
+}
+function askEmailReply() {
+  return "Perfeito 😊\n\nE qual *e-mail* você prefere usar para receber as orientações da consulta?";
+}
+
+function askPlanReply() {
+  return consultationExplanationReply() + "\n\n" + priceReply();
 }
 
 function paymentSentReply(plan, link, state) {
   return (
-    `Perfeito, reserva confirmada ✅\n\n` +
+    `Perfeito, finalizei sua pré‑reserva ✅\n\n` +
     `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
-    `Plano: *${plan.label}* — R$${plan.price}\n\n` +
-    `Para confirmar sua consulta, é só finalizar aqui:\n${link}\n\n` +
-    `Assim que o pagamento entrar, eu confirmo tudo por aqui 😊\n\n` +
-    `Se tiver qualquer dificuldade, me avisa que eu te ajudo.`
+    `Plano escolhido:\n*${plan.label}*\n${plan.subtitle} – R$${plan.price}\n\n` +
+    `Esse horário fica reservado no sistema por alguns minutos enquanto você finaliza.\n\n` +
+    `Para confirmar sua consulta, é só concluir aqui:\n${link}\n\n` +
+    `Assim que o pagamento entrar, eu confirmo sua consulta aqui imediatamente 😊\n\n` +
+    `Se tiver qualquer dificuldade com o pagamento, me avise que eu te ajudo rapidinho.`
   );
 }
 
 function pendingPaymentReply(state) {
   return (
-    `Seu horário continua reservado 😊\n\n` +
+    `Seu horário ainda está reservado 😊\n\n` +
     `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
-    `Para confirmar, é só finalizar aqui:\n${state.payment.link}`
+    `Para confirmar a consulta, só falta finalizar o pagamento aqui:\n${state.payment.link}\n\n` +
+    `Assim que o pagamento for confirmado, eu libero a confirmação da consulta para você.`
   );
 }
 
 function afterPaidReply(state) {
   return (
     "Pagamento confirmado ✅\n\n" +
-    `Sua consulta está marcada para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
-    "Mais perto do horário eu envio as orientações 😊\nQualquer dúvida até lá, é só me chamar."
+    `Sua consulta ficou confirmada para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
+    "Mais perto do horário eu envio as orientações da consulta 😊"
   );
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   QUESTION ANSWERS BANK — NOVO NA V14
-   ═══════════════════════════════════════════════════════════════════
-   ▸ Respostas prontas para perguntas diretas. Cada uma retorna
-   a resposta SEM CTA (o CTA é adicionado pelo caller baseado no stage).
-   ═══════════════════════════════════════════════════════════════════ */
-
-const QUESTION_ANSWERS = {
-  howConsultWorks: "A avaliação com o Dr. Alef é *100% online, por videochamada*, dura em média *45 minutos* e é totalmente individualizada. Ele analisa seu histórico, o que você já tentou, suas medicações e define com você se esse tratamento faz sentido no seu caso.",
-
-  isOnline: "Sim 😊 A consulta é *100% online*, por videochamada. Você faz de onde estiver, sem precisar se deslocar.",
-
-  isLegal: "Sim 😊 O uso medicinal de canabinoides é legal no Brasil, sempre com avaliação e prescrição médica, seguindo as normas da Anvisa.",
-
-  chapado: "Essa é uma das dúvidas mais comuns 😊 O tratamento medicinal é diferente do uso recreativo. São formulações específicas, com doses controladas e acompanhamento médico. O objetivo é tratar sintomas, não causar alteração.",
-
-  whoIsDrAlef: "O Dr. Alef Kotula é o médico responsável pelos atendimentos. A consulta é individualizada e focada em entender com profundidade se esse tratamento faz sentido para o seu caso.",
-
-  isScam: "Você faz muito bem em perguntar 😊 É consulta médica de verdade, individualizada, com o Dr. Alef, por telemedicina. Não é venda de curso, suplemento nem kit. O objetivo é avaliar seu caso e ver com honestidade se esse tratamento faz sentido para você.",
-
-  recipe: "Se o Dr. Alef entender que faz sentido para o seu caso, sim — ele já orienta os próximos passos e emite a prescrição na própria consulta 😊",
-
-  medCost: "O valor do tratamento pode variar conforme o tipo de produto e a dose, mas o Dr. Alef costuma orientar pensando também no que é viável para o paciente. Ele não te coloca em um caminho que depois não faça sentido financeiramente. A consulta serve justamente para ter essa clareza 😊",
-
-  canReschedule: "Pode sim 😊 É só me avisar com antecedência que a gente reorganiza.",
-
-  privacy: "Total sigilo 😊 A consulta é individual, por telemedicina, e tudo segue as normas de sigilo médico.",
-
-  startNow: "Entendo sua vontade de começar 😊 Por segurança, eu não consigo orientar dose ou forma de uso por aqui — isso depende da avaliação médica. Mas a boa notícia é que na consulta o Dr. Alef já orienta os próximos passos.",
-
-  payMethod: "O pagamento é pelo link que eu envio aqui mesmo. Aceita cartão de crédito, débito, Pix e boleto 😊",
-
-  isForMe: "Muita gente que chega aqui tem exatamente esse perfil 😊 Não precisa ter diagnóstico fechado nem ser caso grave. A avaliação serve justamente para entender se esse tratamento faz sentido para o seu caso, com segurança.",
-
-  differential: "O que costuma diferenciar aqui é que o Dr. Alef faz uma avaliação bem individualizada, revisa com cuidado suas medicações e interações, e não trabalha com protocolo pronto. Muita gente procura justamente depois de já ter passado por abordagens mais genéricas.",
-
-  whatIncludes_full: `Nesse acompanhamento de R$${PLANS.full.price} você faz a consulta com o Dr. Alef agora e já fica com um retorno incluído em ~30 dias. Esse retorno serve para revisar como você está, ajustar o tratamento se necessário e acompanhar o início com mais segurança. É o que a maioria escolhe justamente por ter essa tranquilidade 😊`,
-
-  whatIncludes_basic: `A avaliação de R$${PLANS.basic.price} é a consulta inicial completa, de 45 minutos. O Dr. Alef analisa seu caso com profundidade e define os próximos passos com segurança 😊`,
-};
-
-/* ═══════════════════════════════════════════════════════════════════
-   OBJECTION HANDLERS — NOVO NA V14
-   ═══════════════════════════════════════════════════════════════════ */
-
-function handleExpensive(state) {
-  const cond = state.condition || "dor_cronica";
-  const ev = EVIDENCE_DB[cond];
-  const future = ev?.future ? `\n\n${pickRandom(ev.future)}` : "";
-  // ▸ V14 FIX: CTA dinâmico por stage (antes era hardcoded "te explico a diferença")
-  return `Entendo você pensar nisso.\n\nMas aqui não é uma consulta rápida. O Dr. Alef dedica em média *45 minutos* ao seu caso, revisa tudo o que você já tentou e monta um plano individualizado. A maioria dos pacientes me diz que foi a consulta mais completa que já fizeram.${future}` + getStageCTA(state);
+function buildExpensiveReply() {
+  return (
+    "Entendo você pensar nisso 😊\n\n" +
+    "Mas aqui não é só uma conversa rápida. É uma avaliação médica individualizada, com profundidade, justamente para entender seu histórico, o que você já tentou e qual caminho pode fazer sentido para você com segurança.\n\n" +
+    "Se quiser, eu posso te explicar rapidamente a diferença entre as opções."
+  );
 }
 
-function handleWillSee(state) {
+function buildThinkingReply(state) {
   if (state?.date_key && state?.slot_time) {
-    return `Claro, sem problema 😊 Se quiser, eu consigo manter *${prettySlot(state.date_key, state.slot_time)}* reservado por mais alguns minutos enquanto você decide. Assim não corre risco de perder a vaga.`;
+    return `Claro 😊\n\nSe quiser, eu consigo manter *${prettySlot(state.date_key, state.slot_time)}* pré‑reservado por alguns minutos enquanto você decide.`;
   }
-  return "Claro, sem problema 😊 Se quiser, eu posso te mostrar os horários disponíveis e você decide com calma.";
+  return "Claro 😊\n\nSe quiser, eu posso te mostrar os horários disponíveis e você decide com calma.";
 }
 
-function handleUnsure(state, text) {
-  const cond = detectCondition(text) || state.condition || null;
-  const ev = cond && Number(state.evidence_used_count || 0) < 2 ? EVIDENCE_DB[cond] : null;
-  let msg = "É super normal ter essa dúvida 😊 A avaliação serve justamente para entender com profundidade se esse tratamento faz sentido para você, sem compromisso de seguir se não fizer.";
+function buildUnsureReply(state, incomingText) {
+  const cond = detectCondition(incomingText) || state.condition || null;
+  const base = "É super normal ter essa dúvida 😊\n\nA avaliação serve justamente para entender seu caso com profundidade e ver se esse tratamento pode fazer sentido para você, com segurança e individualização.";
+  const ev = cond && Number(state.evidence_used_count || 0) < 2 ? buildEvidenceMessage(cond) : null;
   if (ev) {
-    msg += `\n\n${pickRandom(ev.testimony)}`;
+    state.evidence_used_count += 1;
+    return `${base}\n\n${ev}`;
   }
-  // ▸ V14 FIX: Reconectar ao stage com CTA (spec 4.2: toda objeção termina com CTA do stage)
-  return msg + getStageCTA(state);
+  return base;
 }
 
-function handleCheaperElsewhere(state) {
-  // ▸ V14 FIX: Adicionado state param + CTA dinâmico por stage
-  return "Entendo 😊 Muita gente compara antes de decidir, e está certo.\n\nO que costuma diferenciar aqui é a avaliação individualizada e o cuidado com segurança e ajustes. O Dr. Alef não trabalha com protocolo pronto — cada caso é avaliado com profundidade.\n\nMuita gente chega aqui justamente depois de abordagens mais genéricas." + getStageCTA(state);
+function buildWorksReply(state, incomingText) {
+  const cond = detectCondition(incomingText) || state.condition || state.focus || null;
+  const ev = cond ? buildEvidenceMessage(cond) : null;
+  if (ev) {
+    state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
+    return `Sim, existem evidências interessantes 😊\n\n${ev}`;
+  }
+  return "Sim, existem evidências interessantes em alguns casos 😊 Mas a avaliação médica é importante para entender se isso faz sentido para o seu caso e com segurança.";
 }
 
-function handleCheckSpouse() {
-  return "Faz total sentido 😊 Se quiser, eu posso te resumir como funciona e os valores — fica mais fácil de conversar. E se decidirem seguir, eu consigo encaixar um horário nessa semana ainda.";
+// ----- NOVAS RESPOSTAS PARA INTENÇÕES PRIORITÁRIAS -----
+function scamReply() {
+  return "Você faz muito bem em perguntar 😊\nÉ consulta médica de verdade, individualizada, com o Dr. Alef, por telemedicina. Não é curso, não é venda de produto nem esquema. Se quiser, posso te explicar rapidinho como funciona.";
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   GPT — SYSTEM PROMPT V14
-   ═══════════════════════════════════════════════════════════════════
-   ▸ MUDANÇA CRÍTICA: Prompt com convicção, esperança, limites claros
-   de profundidade clínica e obrigação de micro-CTA.
-   ═══════════════════════════════════════════════════════════════════ */
+function comparisonReply() {
+  return (
+    "Faz sentido você comparar 😊\n" +
+    "O que costuma diferenciar a consulta do Dr. Alef é que ele faz uma avaliação bem individualizada do caso, revisa com cuidado o que o paciente já tentou, medicações em uso e segurança do tratamento, e não trabalha com protocolo pronto.\n" +
+    "Em dor crônica isso faz bastante diferença.\n\n" +
+    "Se quiser, eu posso te explicar rapidinho como funciona a avaliação."
+  );
+}
 
-function buildSystemPrompt(stageCTA = "") {
-  return `Você é "Lia", secretária pessoal do Dr. Alef Kotula. Você trabalha ao lado dele todos os dias e já viu centenas de pacientes.
+function worksForConditionReply(condition) {
+  const ev = buildEvidenceMessage(condition);
+  if (ev) return ev + "\n\nSe você quiser, eu posso te explicar como funciona a avaliação médica com o Dr. Alef.";
+  return "Existem estudos que mostram benefícios em alguns casos, mas isso precisa ser avaliado individualmente. A consulta serve justamente para isso.";
+}
 
-QUEM VOCÊ É:
-- Humana, acolhedora, clara, com convicção
-- Você acredita no tratamento porque vê resultado real
-- Você já viu gente sem esperança voltar melhor
-- Você transmite esperança fundamentada, nunca promessa vazia
+function priceDirectReply() {
+  return priceReply(); // já está completa
+}
 
-PODE:
-- Dizer "o que eu vejo aqui com frequência é que os pacientes melhoram"
-- Transmitir esperança e ajudar o paciente a enxergar futuro melhor
-- Falar que muita gente melhora, que pacientes voltam relatando melhora
-- Usar dados de estudos para confirmar a experiência
+// ------------------------------------------------------
 
-NÃO PODE:
-- Inventar preço / enviar links / citar R$
-- Prometer cura / garantir resultado
-- Diagnosticar / sugerir dose / prescrever
-- Fazer mais de 1 pergunta por mensagem
-- Investigar sintomas clínicos em profundidade (irradiação, formigamento, etc.)
-- Ultrapassar 5 linhas de texto
+function detectIntent(text) {
+  const t = norm(text);
+  const wantsPrice = /\b(preco|preço|valor|quanto custa|investimento|custa|valores)\b/.test(t);
+  const asksPriceDirect = wantsPrice;
+  const intentPay = /\b(como (pagar|faço para pagar)|pagar|pagamento|pix|cartao|cartão|credito|crédito|debito|débito|boleto|link|parcel|parcela|quero pagar)\b/.test(t);
+  const wantsBook = /\b(quero marcar|quero agendar|agendar|marcar|confirmar consulta|quero consulta|gostaria de agendar|tem horario|tem horário|agenda)\b/.test(t);
+  const asksHours = /\b(horarios|horário|horario|que horas|vagas|disponibilidade)\b/.test(t);
+  const confirms = /\b(sim|ok|beleza|pode|confirmo|fechado|vamos|pode ser|serve|confirmar)\b/.test(t);
+  const refuses = /\b(nao quero|não quero|pare|para|chega|rude|grosso|nao gostei|não gostei)\b/.test(t);
+  const asksStartNow = /\b(como tomar|dose|dosagem|quantas gotas|comecar agora|começar agora)\b/.test(t);
+  const urgency = /\b(dor no peito|falta de ar|desmaio|avc|convuls|paralisia|confusao|confusão)\b/.test(t);
+  const asksWho = /\b(quem e|quem eh|quem é|quem e o dr|quem é o dr|quem e o doutor|quem é o doutor)\b/.test(t);
+  const asksIfWorks = /\b(funciona|serve|vale a pena|ajuda|melhora|tem resultado)\b/.test(t);
+  const saysWillSee = /\b(vou ver|depois te falo|vou confirmar|vou pensar|te aviso|depois vejo)\b/.test(t);
+  const saysIndecisive = /\b(tanto faz|qual voce acha melhor|qual você acha melhor)\b/.test(t);
+  const saysExpensive = /\b(caro|caríssima|carissimo|caríssimo|achei caro|muito caro|pesado)\b/.test(t);
+  const saysUnsure = /\b(nao tenho certeza|não tenho certeza|nao sei|não sei|sera|será|to na duvida|tô na dúvida|duvida|dúvida)\b/.test(t);
+  const asksHowConsultWorks = /\b(como funciona a consulta|como funciona essa consulta|como funciona essa avaliacao|como funciona essa avaliação|como funciona a avaliacao|como funciona a avaliação)\b/.test(t);
+  const asksIfOnline = /\b(e online|é online|online mesmo|presencial|precisa ir|tem que ir|ir em algum lugar|precisa ir na clinica|precisa ir na clínica)\b/.test(t);
+  const asksLegal = /\b(legal no brasil|e legal|é legal|precisa de receita|receita|pode comprar|comprar sem receita|anvisa)\b/.test(t);
+  const asksChapado = /\b(chapado|chapar|maconha mesmo|isso e maconha|isso é maconha|droga)\b/.test(t);
+  // Novas intenções
+  const asksScam = /\b(golpe|esquema|fraude|pirâmide|engano)\b/.test(t);
+  const asksComparison = /\b(diferen[çc]a|qual a diferença|por que com vocês|o que muda|diferencial)\b/.test(t);
 
-REGRAS:
-- Responda primeiro a pergunta do paciente
-- Depois conduza com suavidade
-- Sempre termine com direção suave${stageCTA ? `: "${stageCTA}"` : ""}
-- Se o paciente está sofrendo, intensifique acolhimento e esperança
-- Máximo 5 linhas
+  const focus =
+    (/\b(insonia|insônia|dormir|sono|acordar)\b/.test(t) && "insonia") ||
+    (/\b(ansiedade|panico|pânico|crise)\b/.test(t) && "ansiedade") ||
+    (/\b(fibromialgia)\b/.test(t) && "fibromialgia") ||
+    (/\b(neuropat)\b/.test(t) && "dor_neuropatica") ||
+    (/\b(artrose)\b/.test(t) && "artrose") ||
+    (/\b(artrite)\b/.test(t) && "artrite") ||
+    (/\b(coluna|lombar)\b/.test(t) && "dor_lombar") ||
+    (/\b(dor)\b/.test(t) && "dor_cronica") ||
+    null;
 
-COMANDOS:
-- Pediu preço: "PRECISA_PRECO"
-- Pediu pagamento/link: "PRECISA_PAGAR"
-- Pediu horários/agendar: "PRECISA_AGENDAR"
-- Urgência médica: "URGENTE"
+  return {
+    wantsPrice,
+    asksPriceDirect,
+    intentPay,
+    wantsBook,
+    asksHours,
+    confirms,
+    refuses,
+    asksStartNow,
+    urgency,
+    asksWho,
+    asksIfWorks,
+    saysWillSee,
+    saysIndecisive,
+    saysExpensive,
+    saysUnsure,
+    asksHowConsultWorks,
+    asksIfOnline,
+    asksLegal,
+    asksChapado,
+    asksScam,
+    asksComparison,
+    focus,
+  };
+}
+
+function compactMemory(state) {
+  const s = state || {};
+  return {
+    nome: s.nome || null,
+    focus: s.focus || null,
+    condition: s.condition || null,
+    problem_text: s.problem_text || null,
+    stage: s.stage || null,
+    date_key: s.date_key || null,
+    slot_time: s.slot_time || null,
+    nome_completo: s.nome_completo || null,
+    birthdate: s.birthdate || null,
+    email: s.email || null,
+    selected_plan_key: s.selected_plan_key || null,
+    payment_status: s.payment?.status || null,
+    evidence_used_count: s.evidence_used_count || 0,
+    objection_used_count: s.objection_used_count || 0,
+    rapport_done: !!s.rapport_done,
+    diagnostic_step: s.diagnostic_step || 0,
+    price_ask_count: s.price_ask_count || 0,
+    last_user_message: s.last_user_message || "",
+    last_bot_reply: s.last_bot_reply || "",
+    last_user_message_at: s.last_user_message_at || null,
+    last_bot_reply_at: s.last_bot_reply_at || null,
+    followup_count: s.followup_count || 0,
+  };
+}
+
+function buildSystemPrompt() {
+  return `\
+Você é "Lia", secretária humana e premium do Dr. Alef Kotula.
+
+OBJETIVO:
+- soar humana, acolhedora, clara e objetiva
+- responder perguntas abertas com naturalidade
+- conduzir a conversa com elegância até consulta/agendamento
+- nunca parecer robótica ou apressada
+
+REGRAS ABSOLUTAS:
+- Nunca invente preço.
+- Nunca envie links.
+- Nunca cite valores em R$ por conta própria.
+- Nunca prometa cura ou resultado garantido.
+- Nunca prescreva dose, marca, compra ou produto.
+- Responda como uma ótima secretária humana.
+- No máximo 1 pergunta principal por mensagem.
+- Responda primeiro a pergunta do paciente, depois conduza.
+
+APÓS O DIAGNÓSTICO (fase AFTER_DIAGNOSTIC):
+- Não faça mais perguntas clínicas detalhadas.
+- Se o paciente trouxer novos sintomas, resuma que isso será avaliado na consulta e convide para agendar.
+- Mantenha o foco em agendamento e dúvidas finais.
+
+COMANDOS ESPECIAIS:
+- Se pedirem preço ou valor: responda exatamente "PRECISA_PRECO"
+- Se pedirem pagamento ou link: responda exatamente "PRECISA_PAGAR"
+- Se pedirem horários ou agendar: responda exatamente "PRECISA_AGENDAR"
+- Se houver urgência médica: responda exatamente "URGENTE"
 
 FORMATO JSON:
-{ "reply": "mensagem", "updates": { "nome": "...", "problem_text": "...", "condition": "..." } }`;
+{
+  "reply": "mensagem",
+  "updates": {
+    "nome": "...",
+    "problem_text": "...",
+    "condition": "...",
+    "rapport_done": true
+  }
+}
+`;
 }
 
-function buildUserPrompt({ incomingText, state, flags }) {
-  return `MEMÓRIA:
-${JSON.stringify({
-  nome: state.nome, focus: state.focus, condition: state.condition,
-  problem_text: state.problem_text, stage: state.stage,
-  date_key: state.date_key, slot_time: state.slot_time,
-  evidence_used: state.evidence_used_count || 0,
-  lead_profile: state.lead_profile || "padrao",
-})}
+function buildUserPrompt({ incomingText, state, flags, mode }) {
+  return `\
+MODO:
+${mode}
 
-MENSAGEM: ${incomingText}
+MEMÓRIA:
+${JSON.stringify(compactMemory(state))}
 
-SINAIS: ${JSON.stringify({
-  wantsPrice: flags.wantsPrice, wantsBook: flags.wantsBook,
-  asksIfWorks: flags.asksIfWorks, saysExpensive: flags.saysExpensive,
-  strongPain: flags.strongPain, confirms: flags.confirms,
-})}`;
+MENSAGEM DO PACIENTE:
+${incomingText}
+
+SINAIS DETECTADOS:
+${JSON.stringify(flags)}
+
+INSTRUÇÕES:
+- Responda primeiro a dúvida principal do paciente.
+- Depois conduza com suavidade, sem pressão.
+- Se o paciente estiver frio, seja acolhedora.
+- Se já houver contexto suficiente, avance com naturalidade.
+- Pode salvar nome, problema e condição em updates quando identificar.
+${state.stage === "AFTER_DIAGNOSTIC" ? "- IMPORTANTE: você está na fase pós‑diagnóstico. Não faça novas perguntas clínicas. Foque em responder dúvidas e orientar para agendamento." : ""}
+`;
 }
 
 function violatesNoPriceNoLink(text) {
@@ -1068,13 +948,13 @@ function violatesNoPriceNoLink(text) {
   return false;
 }
 
-async function runLia({ incomingText, state, flags, stageCTA = "" }) {
+async function runLia({ incomingText, state, flags, mode = "guided" }) {
   const resp = await openai.chat.completions.create({
     model: CHAT_MODEL,
-    temperature: 0.5,
+    temperature: 0.55,
     messages: [
-      { role: "system", content: buildSystemPrompt(stageCTA) },
-      { role: "user", content: buildUserPrompt({ incomingText, state, flags }) },
+      { role: "system", content: buildSystemPrompt() },
+      { role: "user", content: buildUserPrompt({ incomingText, state, flags, mode }) },
     ],
   });
 
@@ -1083,7 +963,7 @@ async function runLia({ incomingText, state, flags, stageCTA = "" }) {
   try { parsed = JSON.parse(content); } catch { parsed = null; }
 
   if (!parsed || typeof parsed !== "object" || !parsed.reply) {
-    return { reply: "Me conta mais sobre o que está te incomodando 😊", updates: {} };
+    return { reply: "Entendi 😊 Me conta só qual é sua principal dúvida agora?", updates: {} };
   }
 
   const r = String(parsed.reply || "").trim();
@@ -1093,24 +973,21 @@ async function runLia({ incomingText, state, flags, stageCTA = "" }) {
   if (r === "URGENTE") return { reply: "__URGENT__", updates: parsed.updates || {} };
 
   if (violatesNoPriceNoLink(r)) {
-    return { reply: "Me conta: qual é a sua principal dúvida agora? 😊", updates: {} };
+    return { reply: "Entendi 😊 Me conta só qual é sua principal dúvida agora?", updates: {} };
   }
 
-  parsed.reply = clip(r, 900);
+  parsed.reply = clip(r, 1100);
   if (!parsed.updates) parsed.updates = {};
   return parsed;
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   MERCADO PAGO (preservado da V13)
-   ═══════════════════════════════════════════════════════════════════ */
-
 async function mpCreatePreference({ phone, planKey }) {
   const plan = PLANS[planKey];
   if (!plan) throw new Error("Plano inválido");
+
   const external_reference = `lia_${phone}_${planKey}_${Date.now()}`;
   const body = {
-    items: [{ title: `Dr. Alef Kotula — ${plan.label}`, quantity: 1, unit_price: plan.price, currency_id: "BRL" }],
+    items: [{ title: `Dr. Alef Kotula – ${plan.label}`, quantity: 1, unit_price: plan.price, currency_id: "BRL" }],
     external_reference,
     notification_url: `${BASE_URL}/mp/webhook`,
     back_urls: {
@@ -1122,6 +999,7 @@ async function mpCreatePreference({ phone, planKey }) {
     statement_descriptor: "CONSULTA ONLINE",
     metadata: { phone, plan_key: planKey, plan_price: plan.price },
   };
+
   const r = await fetch("https://api.mercadopago.com/checkout/preferences", {
     method: "POST",
     headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}`, "Content-Type": "application/json" },
@@ -1132,14 +1010,22 @@ async function mpCreatePreference({ phone, planKey }) {
     throw new Error(`MP preference erro: ${r.status} ${t}`);
   }
   const data = await r.json();
-  return { preference_id: data.id, link: data.init_point || data.sandbox_init_point, plan, external_reference };
+  return {
+    preference_id: data.id,
+    link: data.init_point || data.sandbox_init_point,
+    plan,
+    external_reference,
+  };
 }
 
 async function mpGetPayment(paymentId) {
   const r = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
     headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
   });
-  if (!r.ok) throw new Error(`MP payment fetch erro: ${r.status}`);
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`MP payment fetch erro: ${r.status} ${t}`);
+  }
   return await r.json();
 }
 
@@ -1148,16 +1034,13 @@ function mpExtractPhoneFromPayment(payment) {
   return md.phone ? String(md.phone).trim() : null;
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   HUMAN DELAY (preservado da V13, ajustado)
-   ═══════════════════════════════════════════════════════════════════ */
-
 function computeHumanDelay(flags, state) {
   let base = randInt(MIN_DELAY, MAX_DELAY);
-  if (flags.wantsBook || flags.asksHours || flags.intentPay) base = randInt(1, 3);
+  if (flags.wantsBook || flags.asksHours) base = randInt(1, 3);
   if (flags.wantsPrice) base = randInt(2, 4);
-  // ▸ V14 FIX: Delay reduzido para todo o ciclo de vida do lead emocional (spec 6.2)
-  if (flags.strongPain || state.lead_profile === "emocional") base = randInt(1, 2);
+  if (flags.intentPay) base = randInt(1, 3);
+  if (flags.asksIfWorks) base = randInt(2, 4);
+  if (flags.refuses) base = randInt(2, 4);
   const lastAt = Number(state.last_sent_at || 0);
   if (Date.now() - lastAt < 2000) base += 1;
   return Math.max(1, base);
@@ -1168,176 +1051,9 @@ async function sendWhatsApp(to, from, body, delaySec) {
   await twilioClient.messages.create({ to, from, body });
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   CONTEXT CTAs — NOVO NA V14
-   ═══════════════════════════════════════════════════════════════════
-   ▸ Retorna o CTA adequado ao stage atual do funil. Usado pelo
-   Question Priority Engine para reconectar ao fechamento.
-   ═══════════════════════════════════════════════════════════════════ */
-
-function getStageCTA(state) {
-  const s = state.stage;
-  if (s === "ASK_DAY") return "\n\nQual dia fica melhor para você? 😊";
-  if (s === "OFFER_SLOTS") return "\n\nQual desses horários funciona melhor? 😊";
-  if (s === "ASK_FULLNAME") return "\n\nMe passa seu *nome completo* para eu finalizar a reserva 😊";
-  if (s === "ASK_BIRTHDATE") return "\n\nMe manda sua *data de nascimento* para eu prosseguir 😊";
-  if (s === "ASK_EMAIL") return "\n\nMe passa seu *e-mail* para eu completar o cadastro 😊";
-  if (s === "ASK_PLAN") return "\n\nQual dessas opções faz mais sentido? Me responde com *1, 2 ou 3* 😊";
-  if (s === "WAIT_PAYMENT" && state.payment?.link) return `\n\nSeu horário continua reservado e o link segue ativo: ${state.payment.link} 😊`;
-  return "\n\nSe quiser, eu posso te mostrar os horários disponíveis 😊";
-}
-
-/**
- * ▸ QUESTION PRIORITY ENGINE
- * Verifica se o paciente fez uma pergunta direta e retorna a resposta
- * + CTA do stage atual. Retorna null se nenhuma pergunta detectada.
- */
-function handleDirectQuestion(flags, state, text) {
-  const cta = getStageCTA(state);
-  let answer = null;
-
-  if (flags.asksIsScam) answer = QUESTION_ANSWERS.isScam;
-  else if (flags.asksLegal) answer = QUESTION_ANSWERS.isLegal;
-  else if (flags.asksChapado) answer = QUESTION_ANSWERS.chapado;
-  else if (flags.asksWho) answer = QUESTION_ANSWERS.whoIsDrAlef;
-  else if (flags.asksIfOnline) answer = QUESTION_ANSWERS.isOnline;
-  else if (flags.asksHowConsultWorks) answer = QUESTION_ANSWERS.howConsultWorks;
-  else if (flags.asksRecipe) answer = QUESTION_ANSWERS.recipe;
-  else if (flags.asksMedCost) answer = QUESTION_ANSWERS.medCost;
-  else if (flags.asksCanReschedule) answer = QUESTION_ANSWERS.canReschedule;
-  else if (flags.asksPrivacy) answer = QUESTION_ANSWERS.privacy;
-  else if (flags.asksStartNow) answer = QUESTION_ANSWERS.startNow;
-  else if (flags.asksPayMethod) answer = QUESTION_ANSWERS.payMethod;
-  else if (flags.asksIfForMe) answer = QUESTION_ANSWERS.isForMe;
-  else if (flags.asksDifferential) answer = QUESTION_ANSWERS.differential;
-  else if (flags.asksWhatIncludes) {
-    // Se já tem plano selecionado ou contexto de acompanhamento
-    const t = norm(text);
-    if (/(447|acompanhamento|opcao 1|opção 1|primeira)/.test(t)) answer = QUESTION_ANSWERS.whatIncludes_full;
-    else if (/(347|avaliacao|avaliação|opcao 2|opção 2|segunda)/.test(t)) answer = QUESTION_ANSWERS.whatIncludes_basic;
-    else answer = QUESTION_ANSWERS.whatIncludes_full; // default: explicar o mais popular
-  }
-
-  if (answer) return answer + cta;
-  return null;
-}
-
-/**
- * ▸ OBJECTION HANDLER
- * Verifica se o paciente expressou objeção e retorna tratamento.
- * Retorna null se nenhuma objeção detectada.
- */
-function handleObjection(flags, state, text) {
-  if (flags.saysExpensive) return handleExpensive(state);
-  if (flags.saysWillSee) return handleWillSee(state);
-  if (flags.saysUnsure) return handleUnsure(state, text);
-  if (flags.saysCheaperElsewhere) return handleCheaperElsewhere(state);
-  if (flags.saysCheckSpouse) return handleCheckSpouse();
-  if (flags.saysIndecisive) {
-    // ▸ Recomendar a opção mais popular com justificativa
-    if (state.stage === "ASK_PLAN") {
-      return `A maioria dos pacientes escolhe o *Acompanhamento* (opção 1) porque já inclui o retorno em ~30 dias — dá mais segurança para acompanhar o início do tratamento 😊\n\nMas se preferir começar só com a avaliação inicial, a opção 2 também funciona bem. Quer seguir com a 1 ou a 2?`;
-    }
-    if (state.stage === "OFFER_SLOTS" || state.stage === "ASK_DAY") {
-      return `Os horários que os pacientes costumam preferir são no final da tarde/início da noite 😊 Se quiser, eu sugiro o melhor disponível.`;
-    }
-    return "Sem problema 😊 Me diz o que te deixa em dúvida que eu te ajudo a decidir.";
-  }
-  return null;
-}
-
-/* ═══════════════════════════════════════════════════════════════════
-   TRIAGEM ADAPTATIVA — NOVO NA V14
-   ═══════════════════════════════════════════════════════════════════
-   ▸ Decide quantas perguntas diagnósticas ainda são necessárias.
-   ▸ Se o paciente já contou tudo, pode ser 0.
-   ═══════════════════════════════════════════════════════════════════ */
-
-function getNextDiagQuestion(state, text) {
-  const has = {
-    tempo: !!(state.diag_has_tempo),
-    impacto: !!(state.diag_has_impacto),
-    tratamento: !!(state.diag_has_tratamento),
-  };
-
-  // Detectar se o texto atual já contém respostas
-  const low = norm(text);
-  if (/(ha |há |faz |anos|meses|tempo|começo|comecou|começou)/.test(low)) has.tempo = true;
-  if (/(rotina|dia a dia|trabalho|sono|atrapalha|incomoda|impacto|cansaço|cansaco)/.test(low)) has.impacto = true;
-  if (/(ja tomei|já tomei|ja tentei|já tentei|remedio|remédio|anti.?inflamat|fisioterapia|medicacao|medicação|pregabalina|duloxetina|amitriptilina|gabapentina|infiltracao|infiltração)/.test(low)) has.tratamento = true;
-
-  // Salvar o que já tem
-  state.diag_has_tempo = has.tempo;
-  state.diag_has_impacto = has.impacto;
-  state.diag_has_tratamento = has.tratamento;
-
-  // Decidir próxima pergunta
-  const asked = Number(state.diagnostic_step || 0);
-  if (asked >= 3) return null; // Limite absoluto
-  // ▸ V14 FIX: Lead emocional → max 1 pergunta (spec 6.2: "Triagem mínima, 1 pergunta máx")
-  if (state.lead_profile === "emocional" && asked >= 1) return null;
-
-  if (!has.tempo && asked < 3) { state.diagnostic_step = asked + 1; return diagQ_tempo(state); }
-  if (!has.impacto && asked < 3) { state.diagnostic_step = asked + 1; return diagQ_impacto(state); }
-  if (!has.tratamento && asked < 3) { state.diagnostic_step = asked + 1; return diagQ_tratamento(); }
-
-  return null; // Tudo já coletado
-}
-
-/* ═══════════════════════════════════════════════════════════════════
-   STATE INITIALIZATION
-   ═══════════════════════════════════════════════════════════════════ */
-
-function initializeState(state, bot) {
-  // ▸ V14 FIX: Migrar stages da V13 que não existem na V14
-  // V13 usava DIAG_Q1, DIAG_Q2, DIAG_Q3 separados; V14 consolida em DIAGNOSTIC
-  if (state.stage && /^DIAG_Q[123]$/.test(state.stage)) {
-    const qNum = Number(state.stage.replace("DIAG_Q", "")) || 0;
-    state.stage = "DIAGNOSTIC";
-    state.diagnostic_step = Math.max(Number(state.diagnostic_step || 0), qNum);
-  }
-  // V13 usava AFTER_DIAGNOSTIC; V14 usa BRIDGE
-  if (state.stage === "AFTER_DIAGNOSTIC") {
-    state.stage = "BRIDGE";
-  }
-
-  state.last_bot_reply = state.last_bot_reply || "";
-  state.last_user_message = state.last_user_message || "";
-  state.last_sent_at = state.last_sent_at || 0;
-  state.nome = state.nome || null;
-  state.focus = state.focus || null;
-  state.condition = state.condition || null;
-  state.problem_text = state.problem_text || null;
-  state.payment = state.payment || null;
-  state.stage = state.stage || null;
-  state.selected_plan_key = state.selected_plan_key || null;
-  state.name_used_count = Number(state.name_used_count || 0);
-  state.evidence_used_count = Number(state.evidence_used_count || 0);
-  state.offered_slots = state.offered_slots || [];
-  state.date_key = state.date_key || null;
-  state.slot_time = state.slot_time || null;
-  state.slot_key = state.slot_key || null;
-  state.nome_completo = state.nome_completo || null;
-  state.birthdate = state.birthdate || null;
-  state.email = state.email || null;
-  state.price_ask_count = Number(state.price_ask_count || 0);
-  state.diagnostic_step = Number(state.diagnostic_step || 0);
-  state.diag_has_tempo = !!state.diag_has_tempo;
-  state.diag_has_impacto = !!state.diag_has_impacto;
-  state.diag_has_tratamento = !!state.diag_has_tratamento;
-  state.lead_profile = state.lead_profile || null;
-  state.last_bot_from = bot;
-  return state;
-}
-
-/* ═══════════════════════════════════════════════════════════════════
-   ROUTES
-   ═══════════════════════════════════════════════════════════════════ */
-
 app.get("/", (req, res) => res.send("OK"));
 app.get("/mp/thanks", (req, res) => res.send("OK"));
 
-// Webhook Mercado Pago (preservado da V13)
 app.post("/mp/webhook", async (req, res) => {
   res.status(200).send("OK");
   try {
@@ -1361,35 +1077,119 @@ app.post("/mp/webhook", async (req, res) => {
       state.payment.plan_key = payment?.metadata?.plan_key || state.payment.plan_key || null;
 
       if (status === "approved" && state.slot_key) await markSlotPaid(state.slot_key, phone);
-      // ▸ V14 FIX: Setar stage CONFIRMED para consistência com spec 8.2
-      if (status === "approved") state.stage = "CONFIRMED";
       await saveUserState(phone, state);
 
       if (status === "approved") {
         const botFrom = state?.last_bot_from || null;
         if (botFrom) {
           try {
-            await twilioClient.messages.create({ to: `whatsapp:${phone}`, from: botFrom, body: afterPaidReply(state) });
+            await twilioClient.messages.create({
+              to: `whatsapp:${phone}`,
+              from: botFrom,
+              body: afterPaidReply(state),
+            });
           } catch {}
         }
       }
     }
-  } catch (err) { console.error("❌ MP webhook erro:", err); }
+  } catch (err) {
+    console.error("❌ MP webhook erro:", err);
+  }
 });
 
-/* ═══════════════════════════════════════════════════════════════════
-   ███████████████████████████████████████████████████████████████████
-   MAIN HANDLER — LÓGICA DE DECISÃO V14
-   ███████████████████████████████████████████████████████████████████
+function initializeState(state, bot) {
+  state.last_bot_reply = state.last_bot_reply || "";
+  state.last_user_message = state.last_user_message || "";
+  state.last_sent_at = state.last_sent_at || 0;
+  state.last_user_message_at = state.last_user_message_at || null;
+  state.last_bot_reply_at = state.last_bot_reply_at || null;
+  state.followup_count = state.followup_count || 0;
+  state.nome = state.nome || null;
+  state.focus = state.focus || null;
+  state.condition = state.condition || null;
+  state.problem_text = state.problem_text || null;
+  state.payment = state.payment || null;
+  state.stage = state.stage || null;
+  state.selected_plan_key = state.selected_plan_key || null;
+  state.rapport_done = !!state.rapport_done;
+  state.name_used_count = Number(state.name_used_count || 0);
+  state.evidence_used_count = Number(state.evidence_used_count || 0);
+  state.objection_used_count = Number(state.objection_used_count || 0);
+  state.offered_slots = state.offered_slots || [];
+  state.date_key = state.date_key || null;
+  state.slot_time = state.slot_time || null;
+  state.slot_key = state.slot_key || null;
+  state.nome_completo = state.nome_completo || null;
+  state.birthdate = state.birthdate || null;
+  state.email = state.email || null;
+  state.price_ask_count = Number(state.price_ask_count || 0);
+  state.diagnostic_step = Number(state.diagnostic_step || 0);
+  state.diagnostic_answers = state.diagnostic_answers || {};
+  state.awaiting_operational_permission = !!state.awaiting_operational_permission;
+  state.last_bot_from = bot;
+  return state;
+}
 
-   ARQUITETURA:
-   [0] Proteções (pagamento aprovado, urgência, admin)
-   [1] Question Priority Engine (pergunta direta → resposta + CTA)
-   [2] Objection Handler (objeção → tratamento + CTA)
-   [3] State Machine (fluxo normal do funil)
-   [4] Fallback GPT (prompt restrito com convicção)
+// ---------- FOLLOW‑UP AUTOMÁTICO ----------
+async function checkFollowUps() {
+  try {
+    // Busca usuários que:
+    // - têm last_bot_reply_at > last_user_message_at (aguardando resposta)
+    // - last_bot_reply_at há mais de X minutos
+    // - followup_count < 3
+    // - não estão em estado final (pago, etc.)
+    const { rows } = await pool.query(`
+      SELECT phone, state
+      FROM wa_users
+      WHERE state->>'payment_status' IS DISTINCT FROM 'approved'
+        AND state->>'followup_count' IS NULL OR (state->>'followup_count')::int < 3
+    `);
 
-   ═══════════════════════════════════════════════════════════════════ */
+    const now = Date.now();
+    for (const row of rows) {
+      const phone = row.phone;
+      const state = row.state;
+      const lastBot = state.last_bot_reply_at;
+      const lastUser = state.last_user_message_at;
+      if (!lastBot) continue;
+      if (lastUser && lastUser > lastBot) continue; // usuário já respondeu
+
+      const minutesSinceBot = (now - lastBot) / 60000;
+      let shouldFollowUp = false;
+      let followUpMessage = "";
+
+      // Define os intervalos conforme o contador
+      if (state.followup_count === 0 && minutesSinceBot > 30 && minutesSinceBot < 90) {
+        shouldFollowUp = true;
+        followUpMessage = `Oi, ${state.nome || "tudo bem"}? 😊\nFiquei pensando no que você comentou sobre ${state.problem_text ? "seu caso" : "sua dúvida"}. Quer continuar de onde paramos?`;
+      } else if (state.followup_count === 1 && minutesSinceBot > 120 && minutesSinceBot < 360) {
+        shouldFollowUp = true;
+        followUpMessage = `Oi, ${state.nome || "tudo bem"}? 😊\nVi que nossa conversa ficou pausada. Se ainda fizer sentido entender melhor seu caso, eu sigo aqui com você.`;
+      } else if (state.followup_count === 2 && minutesSinceBot > 1380 && minutesSinceBot < 1500) { // ~24h
+        shouldFollowUp = true;
+        followUpMessage = `Passando só para não te deixar sem resposta 😊\nSe quiser, eu posso retomar daqui e te explicar melhor como funciona a avaliação.`;
+      }
+
+      if (shouldFollowUp) {
+        state.followup_count = (state.followup_count || 0) + 1;
+        state.last_bot_reply_at = now; // evita follow-ups múltiplos
+        await saveUserState(phone, state);
+        await twilioClient.messages.create({
+          to: `whatsapp:${phone}`,
+          from: state.last_bot_from || "whatsapp:+14155238886", // fallback
+          body: followUpMessage,
+        });
+      }
+    }
+  } catch (err) {
+    console.error("❌ Erro no follow-up:", err);
+  }
+}
+
+// Inicia o verificador de follow-up a cada 10 minutos
+setInterval(checkFollowUps, 10 * 60 * 1000);
+
+// -------------------------------------------
 
 app.post("/whatsapp", async (req, res) => {
   const twiml = new twilio.twiml.MessagingResponse();
@@ -1402,17 +1202,22 @@ app.post("/whatsapp", async (req, res) => {
       const phone = lead.replace("whatsapp:", "").trim();
       const phoneDigits = String(phone).replace(/\D/g, "");
       const incomingText = (req.body.Body || "").trim();
+      const finalText = incomingText;
 
-      // ── Admin reset ──
-      if (norm(incomingText) === "reset" && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
-        await pool.query(`UPDATE wa_users SET state = '{}'::jsonb, updated_at = NOW() WHERE regexp_replace(phone, '\\D', '', 'g') = $1`, [phoneDigits]);
+      // Admin resets
+      if (finalText.trim().toLowerCase() === "reset" && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
+        await pool.query(
+          `UPDATE wa_users
+           SET state = '{}'::jsonb, updated_at = NOW()
+           WHERE regexp_replace(phone, '\\D', '', 'g') = $1`,
+          [phoneDigits]
+        );
         await pool.query(`DELETE FROM wa_slot_locks WHERE phone = $1 AND status='held'`, [phone]);
-        await sendWhatsApp(`whatsapp:+${phoneDigits}`, bot, "🔄 Memória resetada. Pode testar do zero.", 0);
+        await sendWhatsApp(`whatsapp:+${phoneDigits}`, bot, "🕹️ Memória resetada. Pode testar do zero agora.", 0);
         return;
       }
 
-      // ── Admin simular pagamento ──
-      if (["simular pagamento","paguei_teste","simular_pagamento","aprovar_teste"].includes(norm(incomingText)) && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
+      if (["simular pagamento", "paguei_teste", "simular_pagamento", "aprovar_teste"].includes(norm(finalText)) && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
         const st = await getUserState(phone);
         st.payment = st.payment || {};
         st.payment.status = "approved";
@@ -1423,295 +1228,279 @@ app.post("/whatsapp", async (req, res) => {
         return;
       }
 
-      // ── Load state ──
       let state = initializeState(await getUserState(phone), bot);
-
-      // ▸ FIX: Tratar mensagens sem texto (áudio, imagem, sticker, figurinha)
-      const hasMedia = Number(req.body.NumMedia || 0) > 0;
-      if ((!incomingText || incomingText.length < 2) && hasMedia) {
-        const mediaReply = state.nome
-          ? `${state.nome}, por enquanto eu só consigo ler mensagens de texto 😊 Me manda sua dúvida digitando que eu te ajudo.`
-          : "Por enquanto eu só consigo ler mensagens de texto 😊 Me manda sua dúvida digitando que eu te ajudo.";
-        state.last_bot_reply = mediaReply;
-        state.last_sent_at = Date.now();
-        await saveUserState(phone, state);
-        await sendWhatsApp(lead, bot, mediaReply, randInt(1, 2));
-        return;
-      }
-
-      const flags = detectIntent(incomingText);
-
-      // Atualizar focus/condition passivamente
+      const flags = detectIntent(finalText);
       if (flags.focus && !state.focus) state.focus = flags.focus;
-      const detCond = detectCondition(incomingText);
-      if (detCond && !state.condition) state.condition = detCond;
-      const detProb = extractProblemText(incomingText);
-      if (detProb && !state.problem_text) state.problem_text = detProb;
+      const detectedCondition = detectCondition(finalText);
+      if (detectedCondition && !state.condition) state.condition = detectedCondition;
+      const detectedProblem = extractProblemText(finalText);
+      if (detectedProblem && !state.problem_text) state.problem_text = detectedProblem;
 
-      // Classificar lead (se ainda não classificado ou sinal forte)
-      const lp = classifyLead(flags, incomingText, state);
-      if (!state.lead_profile || ["emocional","desconfiado","quente"].includes(lp)) state.lead_profile = lp;
+      // Atualiza timestamps do usuário
+      state.last_user_message = finalText;
+      state.last_user_message_at = Date.now();
 
       let reply = "";
 
-      /* ═══════════════════════════════════════════════════════════════
-         [CAMADA 0] — PROTEÇÕES
-         ═══════════════════════════════════════════════════════════════ */
-
-      if (state.payment?.status === "approved") {
-        reply = afterPaidReply(state);
+      // ---------- PRIORIDADE MÁXIMA: RESPOSTA A PERGUNTAS DIRETAS ----------
+      if (flags.urgency) {
+        reply = "Entendi. Pela sua mensagem, isso pode precisar de avaliação urgente. Procure um pronto atendimento agora (ou SAMU 192). Assim que estiver seguro(a), me chama aqui.";
       }
-      else if (flags.urgency) {
-        reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Por favor, procure um pronto-socorro ou ligue para o SAMU (192) agora. Quando estiver seguro(a), me chama aqui 😊";
+      else if (flags.asksScam) {
+        reply = scamReply();
       }
-
-      /* ═══════════════════════════════════════════════════════════════
-         [CAMADA 1] — QUESTION PRIORITY ENGINE
-         ▸ Se o paciente fez pergunta direta, responder ANTES de
-         qualquer lógica de stage. A resposta inclui CTA do stage.
-         ▸ Não avança o stage (funil aberto).
-         ▸ Exceção: se pedir preço e nunca viu preço → transiciona.
-         ═══════════════════════════════════════════════════════════════ */
-
-      else if (state.stage) { // Só ativa se já entrou no funil
-
-        // ▸ FIX: Durante DIAGNOSTIC e ASK_PROBLEM, Camada 1 só intercepta
-        //   perguntas inequívocas (contêm "?" ou são flags de alta confiança).
-        //   Evita que "melhora um pouco" seja interpretado como "funciona?".
-        const isDiagStage = (state.stage === "DIAGNOSTIC" || state.stage === "ASK_PROBLEM");
-        const hasQuestionMark = incomingText.includes("?");
-        const highConfidenceQuestion = flags.asksIsScam || flags.asksLegal || flags.asksChapado
-          || flags.asksWho || flags.asksHowConsultWorks || flags.asksIfOnline
-          || flags.asksRecipe || flags.asksMedCost || flags.asksCanReschedule
-          || flags.asksPrivacy || flags.asksStartNow || flags.asksPayMethod
-          || flags.asksWhatIncludes || flags.asksIfForMe || flags.asksDifferential;
-
-        const shouldRunCamada1 = !isDiagStage || hasQuestionMark || highConfidenceQuestion;
-
-        const directAnswer = shouldRunCamada1 ? handleDirectQuestion(flags, state, incomingText) : null;
-        if (directAnswer) {
-          reply = directAnswer;
-          // Não muda stage — reconecta ao ponto atual
-        }
-
-        // Preço: se pediu e tem stage ativo
-        else if (flags.wantsPrice && state.stage !== "ASK_PLAN" && state.stage !== "WAIT_PAYMENT") {
-          state.price_ask_count += 1;
-          if (state.price_ask_count >= 2 || state.lead_profile === "pragmatico") {
-            reply = priceReply();
-            state.stage = "ASK_PLAN";
-          } else {
-            reply = `Claro 😊 Hoje trabalhamos com opções a partir de R$${PLANS.basic.price}. Depois te explico certinho as diferenças.` + getStageCTA(state);
-          }
-        }
-
-        // AsksIfWorks: responder com testimony + CTA (só fora de triagem)
-        else if (flags.asksIfWorks && !isDiagStage && !reply) {
-          const cond = detectCondition(incomingText) || state.condition || "dor_cronica";
-          const ev = EVIDENCE_DB[cond];
-          if (ev) {
-            state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
-            reply = `${pickRandom(ev.testimony)}\n\n${ev.study}\n\n${ev.hope}` + getStageCTA(state);
-          }
-        }
-
-      /* ═══════════════════════════════════════════════════════════════
-         [CAMADA 2] — OBJECTION HANDLER
-         ═══════════════════════════════════════════════════════════════ */
-
-        if (!reply) {
-          const objReply = handleObjection(flags, state, incomingText);
-          if (objReply) reply = objReply;
+      else if (flags.asksComparison) {
+        reply = comparisonReply();
+      }
+      else if (flags.asksLegal) {
+        reply = legalReply() + " Se quiser, eu também posso te explicar rapidinho como funciona a avaliação.";
+      }
+      else if (flags.asksChapado) {
+        reply = chapadoReply() + " Se você quiser, eu posso te explicar como funciona a avaliação médica com o Dr. Alef.";
+      }
+      else if (flags.asksHowConsultWorks || flags.asksIfOnline) {
+        reply = `${consultationExplanationReply()}\n\n${flags.asksIfOnline ? onlineReply() + "\n\n" : ""}Se você quiser, eu posso te mostrar os próximos horários disponíveis 😊`;
+      }
+      else if (flags.asksWho) {
+        reply = whoReply() + "\n\nSe você quiser, eu posso te explicar rapidamente como funciona a avaliação.";
+      }
+      else if (flags.asksIfWorks) {
+        // Se ele perguntou se funciona para uma condição específica, usa evidência
+        const cond = detectCondition(finalText) || state.condition;
+        if (cond) {
+          reply = worksForConditionReply(cond);
+          state.evidence_used_count = (state.evidence_used_count || 0) + 1;
+        } else {
+          reply = buildWorksReply(state, finalText);
         }
       }
+      else if (flags.wantsPrice) {
+        // Tratamento especial para preço: se já pediu 2 vezes, responde direto
+        state.price_ask_count += 1;
+        if (state.price_ask_count >= 2) {
+          reply = priceReply();
+          state.stage = "ASK_PLAN"; // já pode ir para escolha de plano
+        } else {
+          reply = prePriceValueReply();
+        }
+      }
+      // ---------------------------------------------------------------
+      else {
+        // Se não houve pergunta prioritária, segue o fluxo normal baseado no stage
 
-      /* ═══════════════════════════════════════════════════════════════
-         [CAMADA 3] — STATE MACHINE
-         ═══════════════════════════════════════════════════════════════ */
+        // 0) confirmado
+        if (state.payment?.status === "approved") {
+          reply = afterPaidReply(state);
+        }
 
-      if (!reply) {
-
-        // ── Abertura: sem stage e sem nome ──
-        if (!state.stage && !state.nome) {
-          // Verificar se a primeira mensagem já tem pergunta importante
-          const firstQ = handleDirectQuestion(flags, state, incomingText);
-          if (firstQ && !flags.wantsPrice) {
-            // Responder a pergunta + pedir nome
-            reply = firstQ.replace(/\n\nSe quiser.*$/, "") + "\n\nAntes de mais nada, qual é o seu *primeiro nome*? 😊";
-          } else {
-            reply = askNameIntroReply();
-          }
+        // 1) abertura
+        else if (!state.stage && !state.nome) {
           state.stage = "ASK_NAME";
+          reply = askNameIntroReply();
         }
 
-        // ── Captura do nome ──
-        else if (state.stage === "ASK_NAME") {
-          const nm = extractFirstName(incomingText);
+        // 2) captura do nome
+        else if (state.stage === "ASK_NAME" && !state.nome) {
+          const nm = extractFirstName(finalText);
           if (nm) {
             state.nome = nm;
-            state.name_used_count = 0;
-
-            // Se já temos problema detectado passivamente
-            if (state.problem_text) {
-              // ▸ Lead quente ou emocional: encurtar
-              if (state.lead_profile === "quente" || flags.wantsBook) {
-                state.stage = "ASK_DAY";
-                reply = `Prazer, ${nm} 😊 Vou te mostrar os horários disponíveis.`;
-                reply += "\n\n" + await askDayReply();
-              }
-              // ▸ Lead pragmático: acknowledger rápido + preço
-              else if (state.lead_profile === "pragmatico" || flags.wantsPrice) {
-                state.stage = "ASK_PLAN";
-                const condLabel = state.condition ? { fibromialgia:"a fibromialgia", dor_cronica:"a dor", dor_lombar:"a dor na coluna", ansiedade:"a ansiedade", insonia:"o sono", artrose:"a artrose", artrite:"a artrite", enxaqueca:"a enxaqueca", dor_neuropatica:"a dor" }[state.condition] || "o que você mencionou" : "o que você mencionou";
-                reply = `Prazer, ${nm} 😊 Entendi sobre ${condLabel}.\n\n${priceReply()}`;
-              }
-              // ▸ Outros: triagem adaptativa
-              else {
-                state.stage = "DIAGNOSTIC";
-                const nextQ = getNextDiagQuestion(state, state.problem_text || incomingText);
-                if (nextQ) {
-                  reply = `Prazer, ${nm} 😊\n\n${nextQ}`;
-                } else {
-                  state.stage = "BRIDGE";
-                  reply = `Prazer, ${nm} 😊\n\n${bridgeReply(state)}`;
-                }
-              }
-            } else {
-              state.stage = "ASK_PROBLEM";
-              reply = askProblemReply(state);
-            }
+            state.rapport_done = true;
+            state.stage = "ASK_PROBLEM";
+            reply = askProblemAfterNameReply(state);
           } else {
-            // Não conseguiu extrair nome — pode ser pergunta
-            const directQ = handleDirectQuestion(flags, state, incomingText);
-            if (directQ) {
-              reply = directQ.replace(/\n\n(Se quiser|Qual|Me responde|Me passa|Seu horário).*$/, "") + "\n\nAntes de seguir, me diz seu *primeiro nome* 😊";
+            const ai = await runLia({ incomingText: finalText, state, flags, mode: "rapport" });
+            if (ai.reply === "__NEED_PRICE__" || ai.reply === "__NEED_BOOK__" || ai.reply === "__NEED_PAY__") {
+              reply = askNameIntroReply();
             } else {
-              reply = "Antes de tudo, me diz seu *primeiro nome* 😊";
+              reply = "Perfeito 😊 Antes de seguir, me diz só seu *primeiro nome*.";
             }
           }
         }
 
-        // ── Captura do problema ──
-        else if (state.stage === "ASK_PROBLEM") {
-          const pb = extractProblemText(incomingText);
+        // 3) captura problema
+        else if (state.stage === "ASK_PROBLEM" || (state.nome && !state.problem_text && !state.date_key)) {
+          const pb = extractProblemText(finalText);
           if (pb) {
             state.problem_text = pb;
             state.condition = state.condition || detectCondition(pb) || state.focus || null;
-
-            // Triagem adaptativa
-            state.stage = "DIAGNOSTIC";
-            const nextQ = getNextDiagQuestion(state, incomingText);
-            if (nextQ) {
-              reply = nextQ;
-            } else {
-              // Paciente já contou tudo → bridge direto
-              state.stage = "BRIDGE";
-              reply = bridgeReply(state);
-            }
+            state.stage = "DIAG_Q1";
+            state.diagnostic_step = 1;
+            reply = q1Reply(state);
           } else {
-            // Texto não parece problema — GPT tenta extrair
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "Me conta: o que tem te incomodado mais?" });
-            if (ai.reply.startsWith("__")) {
-              reply = askProblemReply(state);
-            } else {
-              reply = ai.reply;
-              state = mergeState(state, ai.updates);
-            }
+            const ai = await runLia({ incomingText: finalText, state, flags, mode: "qualify_problem" });
+            if (ai.reply === "__NEED_PRICE__") reply = "Claro 😊 Antes de entrar nos valores, eu quero entender rapidinho seu foco principal. O que você gostaria de tratar hoje?";
+            else reply = askProblemAfterNameReply(state);
           }
         }
 
-        // ── Triagem adaptativa ──
-        else if (state.stage === "DIAGNOSTIC") {
-          // Atualizar dados com a resposta
-          const low = norm(incomingText);
-          if (/(ha |há |faz |anos|meses)/.test(low)) state.diag_has_tempo = true;
-          if (/(rotina|dia a dia|trabalho|sono|atrapalha|incomoda|cansaço)/.test(low)) state.diag_has_impacto = true;
-          if (/(ja tomei|já tomei|ja tentei|já tentei|remedio|remédio|anti.?inflam|fisioterapia|medicac|pregabalina|duloxetina|amitriptilina|infiltrac)/.test(low)) state.diag_has_tratamento = true;
-
-          const nextQ = getNextDiagQuestion(state, incomingText);
-          if (nextQ) {
-            reply = nextQ;
-          } else {
-            state.stage = "BRIDGE";
-            reply = bridgeReply(state);
-          }
+        // 4) script diagnóstico (máx 3 perguntas)
+        else if (state.stage === "DIAG_Q1") {
+          state.diagnostic_answers.q1 = finalText;
+          state.diagnostic_step = 2;
+          state.stage = "DIAG_Q2";
+          reply = q2Reply(state);
+        }
+        else if (state.stage === "DIAG_Q2") {
+          state.diagnostic_answers.q2 = finalText;
+          state.diagnostic_step = 3;
+          state.stage = "DIAG_Q3";
+          reply = q3Reply();
+        }
+        else if (state.stage === "DIAG_Q3") {
+          state.diagnostic_answers.q3 = finalText;
+          state.diagnostic_step = 3;
+          state.stage = "AFTER_DIAGNOSTIC";
+          reply = bridgeToConsultReply(state);
         }
 
-        // ── Bridge: pós-triagem, esperando confirmação para agenda ──
-        else if (state.stage === "BRIDGE") {
-          if (flags.wantsBook || flags.asksHours || flags.confirms) {
+        // 5) após diagnóstico: se quiser agendar, vai; senão, IA mas sem novas perguntas clínicas
+        else if (state.stage === "AFTER_DIAGNOSTIC" && (flags.wantsBook || flags.asksHours || flags.confirms)) {
+          state.stage = "ASK_DAY";
+          reply = await askDayReply();
+        }
+        else if (state.stage === "AFTER_DIAGNOSTIC") {
+          const ai = await runLia({ incomingText: finalText, state, flags, mode: "after_diagnostic" });
+          if (ai.reply === "__NEED_BOOK__") {
             state.stage = "ASK_DAY";
             reply = await askDayReply();
-          } else if (flags.wantsPrice) {
+          } else if (ai.reply === "__NEED_PRICE__") {
             state.price_ask_count += 1;
-            reply = priceReply();
-            state.stage = "ASK_PLAN";
+            reply = state.price_ask_count >= 2 ? priceReply() : prePriceValueReply();
+            if (state.price_ask_count >= 2) state.stage = "ASK_PLAN";
           } else {
-            // GPT para conversa aberta pós-bridge
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "Se quiser, eu posso te mostrar os horários disponíveis" });
-            if (ai.reply === "__NEED_BOOK__") { state.stage = "ASK_DAY"; reply = await askDayReply(); }
-            else if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceReply(); state.stage = "ASK_PLAN"; }
-            else { reply = ai.reply; state = mergeState(state, ai.updates); }
+            reply = ai.reply;
+            state = mergeState(state, ai.updates);
           }
         }
 
-        // ── Escolher dia ──
-        else if (state.stage === "ASK_DAY") {
-          const dayChoice = extractNumericChoice(incomingText);
-          const explicitDate = extractDateKey(incomingText);
-          const suggested = await getSuggestedDayKeys();
+        // 6) intenção de pagar / pagamento pendente
+        else if (state.payment?.status === "pending" && state.payment?.link) {
+          if (flags.intentPay) {
+            reply = pendingPaymentReply(state);
+            state.stage = "WAIT_PAYMENT";
+          } else if (flags.saysExpensive) {
+            reply = buildExpensiveReply() + `\n\nSe quiser confirmar agora, seu link continua ativo:\n${state.payment.link}`;
+            state.stage = "WAIT_PAYMENT";
+          } else if (flags.saysWillSee || flags.saysUnsure) {
+            reply = buildThinkingReply(state) + `\n\nSe quiser finalizar agora, seu link continua aqui:\n${state.payment.link}`;
+            state.stage = "WAIT_PAYMENT";
+          } else {
+            reply = pendingPaymentReply(state);
+            state.stage = "WAIT_PAYMENT";
+          }
+        }
+        else if (flags.intentPay) {
+          if (!state.nome) {
+            state.stage = "ASK_NAME";
+            reply = askNameIntroReply();
+          } else if (!state.problem_text) {
+            state.stage = "ASK_PROBLEM";
+            reply = askProblemAfterNameReply(state);
+          } else if (!state.date_key) {
+            state.stage = "ASK_DAY";
+            reply = "Perfeito 😊 Antes do pagamento, vou te mostrar os horários disponíveis para reservar seu atendimento.";
+          } else if (!state.slot_time || !state.slot_key) {
+            state.stage = "OFFER_SLOTS";
+            reply = await offerSlotsReply(state);
+          } else if (!state.nome_completo) {
+            state.stage = "ASK_FULLNAME";
+            reply = askFullNameReply(state);
+          } else if (!state.birthdate) {
+            state.stage = "ASK_BIRTHDATE";
+            reply = askBirthdateReply(state);
+          } else if (!state.email) {
+            state.stage = "ASK_EMAIL";
+            reply = askEmailReply();
+          } else if (state.selected_plan_key) {
+            const planKey = state.selected_plan_key;
+            const holdCheck = await acquireSlotHold(state.date_key, state.slot_time, phone);
+            if (!holdCheck.ok) {
+              state.slot_time = null;
+              state.slot_key = null;
+              state.stage = "OFFER_SLOTS";
+              reply = "Esse horário acabou de ser preenchido antes da confirmação 😕 Vou te mostrar as próximas melhores opções.\n\n" + (await offerSlotsReply(state));
+            } else {
+              state.slot_key = holdCheck.slot_key;
+              const pref = await mpCreatePreference({ phone, planKey });
+              state.payment = {
+                status: "pending",
+                plan_key: planKey,
+                preference_id: pref.preference_id,
+                link: pref.link,
+                external_reference: pref.external_reference,
+                created_at: Date.now(),
+              };
+              reply = paymentSentReply(pref.plan, pref.link, state);
+              state.stage = "WAIT_PAYMENT";
+            }
+          } else {
+            state.stage = "ASK_PLAN";
+            reply = askPlanReply();
+          }
+        }
 
+        // 7) entrada de agendamento
+        else if (flags.wantsBook || flags.asksHours) {
+          if (!state.nome) {
+            state.stage = "ASK_NAME";
+            reply = askNameIntroReply();
+          } else if (!state.problem_text) {
+            state.stage = "ASK_PROBLEM";
+            reply = askProblemAfterNameReply(state);
+          } else if (!state.date_key) {
+            state.stage = "ASK_DAY";
+            reply = await askDayReply();
+          } else if (!state.slot_time) {
+            state.stage = "OFFER_SLOTS";
+            reply = await offerSlotsReply(state);
+          } else if (!state.nome_completo) {
+            state.stage = "ASK_FULLNAME";
+            reply = askFullNameReply(state);
+          } else if (!state.birthdate) {
+            state.stage = "ASK_BIRTHDATE";
+            reply = askBirthdateReply(state);
+          } else if (!state.email) {
+            state.stage = "ASK_EMAIL";
+            reply = askEmailReply();
+          } else {
+            state.stage = "ASK_PLAN";
+            reply = askPlanReply();
+          }
+        }
+
+        // 8) escolher dia
+        else if (state.stage === "ASK_DAY") {
+          const dayChoice = extractNumericChoice(finalText);
+          const explicitDate = extractDateKey(finalText);
+          const suggested = await getSuggestedDayKeys();
           if (dayChoice && suggested[dayChoice - 1]) {
             state.date_key = suggested[dayChoice - 1];
             state.stage = "OFFER_SLOTS";
             reply = await offerSlotsReply(state);
           } else if (explicitDate) {
             const avail = await getAvailableSlotsForDate(explicitDate);
-            if (!avail.length) { reply = "Esse dia está sem vagas no momento 😕 Quer que eu te mostre outra data?"; }
-            else { state.date_key = explicitDate; state.stage = "OFFER_SLOTS"; reply = await offerSlotsReply(state); }
-          } else if (flags.confirms && suggested.length) {
-            // "pode ser", "tanto faz" → sugerir o primeiro
-            state.date_key = suggested[0];
-            state.stage = "OFFER_SLOTS";
-            reply = await offerSlotsReply(state);
-          } else {
-            // ▸ V14 FIX: Se a mensagem é longa (>40 chars) ou tem "?", provavelmente é pergunta, não escolha de dia.
-            //   Usar GPT para responder naturalmente + CTA do stage, em vez de repetir "qual dia".
-            if (incomingText.length > 40 || incomingText.includes("?")) {
-              const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dia fica melhor para você?" });
-              if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceReply(); state.stage = "ASK_PLAN"; }
-              else if (ai.reply === "__NEED_BOOK__") { reply = await askDayReply(); }
-              else if (ai.reply.startsWith("__")) { reply = await askDayReply(); }
-              else { reply = ai.reply; state = mergeState(state, ai.updates); }
-            } else {
-              reply = "Qual dia fica melhor para você? Pode me responder com o número ou com o dia, por exemplo *quinta-feira* 😊";
+            if (!avail.length) reply = "Esse dia está indisponível no momento 😕 Quer que eu te mostre outra data próxima?";
+            else {
+              state.date_key = explicitDate;
+              state.stage = "OFFER_SLOTS";
+              reply = await offerSlotsReply(state);
             }
+          } else {
+            reply = "Qual data fica melhor para você? Pode me responder com o número da opção ou com o dia, por exemplo *quarta-feira* 😊";
           }
         }
 
-        // ── Escolher horário ──
+        // 9) escolher horário
         else if (state.stage === "OFFER_SLOTS") {
           const best = state.offered_slots?.length ? state.offered_slots : await chooseBestSlotsForDate(state.date_key, 3);
-          const choiceNum = extractNumericChoice(incomingText);
-          const requestedTime = extractHourOnly(incomingText);
+          const choiceNum = extractNumericChoice(finalText);
+          const requestedTime = extractHourOnly(finalText);
 
-          let chosen = null;
-          if (choiceNum && best[choiceNum - 1]) chosen = best[choiceNum - 1];
-          else if (requestedTime) {
-            const available = await getAvailableSlotsForDate(state.date_key);
-            if (available.includes(requestedTime)) chosen = requestedTime;
-            else {
-              const best2 = await chooseBestSlotsForDate(state.date_key, 3);
-              reply = `Esse horário não está disponível. O mais próximo que tenho é:\n${best2.map((s,i) => `${i+1}) *${s}*`).join("\n")}\n\nQual fica melhor? 😊`;
-            }
-          } else if (/\b(outro|nenhum|tem mais)\b/.test(norm(incomingText))) {
-            reply = `Sem problema 😊 Que horário em *${formatDatePt(state.date_key)}* funciona melhor para você?`;
-          }
-
-          if (chosen && !reply) {
+          if (choiceNum && best[choiceNum - 1]) {
+            const chosen = best[choiceNum - 1];
             const hold = await acquireSlotHold(state.date_key, chosen, phone);
             if (!hold.ok) {
-              reply = "Esse horário acabou de ser preenchido 😕 Vou te mostrar outras opções.\n\n" + (await offerSlotsReply(state));
+              reply = "Esse horário acabou de ser preenchido 😕 Vou te mostrar as próximas melhores opções.\n\n" + (await offerSlotsReply(state));
             } else {
               state.slot_time = chosen;
               state.slot_key = hold.slot_key;
@@ -1719,262 +1508,222 @@ app.post("/whatsapp", async (req, res) => {
               state.stage = "ASK_FULLNAME";
               reply = askFullNameReply(state);
             }
-          }
-
-          if (!reply) {
-            // ▸ V14 FIX: Fallback GPT para mensagens longas/perguntas em OFFER_SLOTS
-            if (incomingText.length > 40 || incomingText.includes("?")) {
-              const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual desses horários funciona melhor?" });
-              if (ai.reply.startsWith("__")) { reply = await offerSlotsReply(state); }
-              else { reply = ai.reply; state = mergeState(state, ai.updates); }
+          } else if (requestedTime) {
+            const available = await getAvailableSlotsForDate(state.date_key);
+            if (available.includes(requestedTime)) {
+              const hold = await acquireSlotHold(state.date_key, requestedTime, phone);
+              if (!hold.ok) {
+                reply = "Esse horário acabou de ser preenchido 😕 Posso te mostrar as próximas melhores opções.\n\n" + (await offerSlotsReply(state));
+              } else {
+                state.slot_time = requestedTime;
+                state.slot_key = hold.slot_key;
+                await releaseOldHeldSlotsForPhone(phone, hold.slot_key);
+                state.stage = "ASK_FULLNAME";
+                reply = askFullNameReply(state);
+              }
             } else {
-              reply = "Qual horário fica melhor? Pode me responder com *1, 2, 3* ou com o horário exato 😊";
+              const best2 = await chooseBestSlotsForDate(state.date_key, 3);
+              reply = `Esse horário específico não está disponível em *${formatDatePt(state.date_key)}*.\n\nO mais próximo que tenho é:\n${best2.map((s, i) => `${i + 1}) *${s}*`).join("\n")}\n\nQual fica melhor para você?`;
+            }
+          } else if (/\b(outro horario|outro horário|nenhum desses|nenhum|tem outro|outro dia)\b/.test(norm(finalText))) {
+            state.stage = "ASK_SPECIFIC_TIME";
+            reply = askPreferredTimeReply(state);
+          } else {
+            reply = "Qual você prefere? Pode me responder com *1, 2, 3* ou com o horário exato 😊";
+          }
+        }
+
+        // 10) horário específico
+        else if (state.stage === "ASK_SPECIFIC_TIME") {
+          const requestedTime = extractHourOnly(finalText);
+          if (!requestedTime) {
+            reply = `Me diz o horário exato em *${formatDatePt(state.date_key)}*, por exemplo *16h* 😊`;
+          } else {
+            const available = await getAvailableSlotsForDate(state.date_key);
+            if (available.includes(requestedTime)) {
+              const hold = await acquireSlotHold(state.date_key, requestedTime, phone);
+              if (!hold.ok) {
+                reply = "Esse horário acabou de ser preenchido 😕 Vou te mostrar outras opções.\n\n" + (await offerSlotsReply(state));
+                state.stage = "OFFER_SLOTS";
+              } else {
+                state.slot_time = requestedTime;
+                state.slot_key = hold.slot_key;
+                await releaseOldHeldSlotsForPhone(phone, hold.slot_key);
+                state.stage = "ASK_FULLNAME";
+                reply = askFullNameReply(state);
+              }
+            } else {
+              reply = `Esse horário não está disponível em *${formatDatePt(state.date_key)}*.\n\nQuer que eu te mostre as melhores opções desse dia?`;
+              state.stage = "OFFER_SLOTS";
             }
           }
         }
 
-        // ── Dados cadastrais ──
+        // 11) dados cadastrais
         else if (state.stage === "ASK_FULLNAME") {
-          const full = extractFullName(incomingText);
+          const full = extractFullName(finalText);
           if (full) {
             state.nome_completo = full;
             state.stage = "ASK_BIRTHDATE";
             reply = askBirthdateReply(state);
           } else {
-            reply = "Me manda seu *nome completo* certinho, por favor.";
+            reply = "Perfeito 😊 Me manda seu *nome completo* certinho, por favor.";
           }
         }
         else if (state.stage === "ASK_BIRTHDATE") {
-          const bd = extractBirthDate(incomingText);
+          const bd = extractBirthDate(finalText);
           if (bd) {
             state.birthdate = bd;
             state.stage = "ASK_EMAIL";
             reply = askEmailReply();
           } else {
-            reply = "Me manda sua *data de nascimento* no formato *dd/mm/aaaa*.";
+            reply = "Me manda sua *data de nascimento* no formato *dd/mm/aaaa* 😊";
           }
         }
         else if (state.stage === "ASK_EMAIL") {
-          const em = extractEmail(incomingText);
+          const em = extractEmail(finalText);
           if (em) {
             state.email = em;
             state.stage = "ASK_PLAN";
-            // ▸ V14: NÃO repetir explicação da consulta aqui (paciente já ouviu no bridge)
-            reply = `Obrigada 😊\n\nHorário reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\n${priceReply()}`;
+            reply = `Obrigado 😊\n\nHorário provisoriamente reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\n${askPlanReply()}`;
           } else {
-            reply = "Me manda seu *e-mail* certinho, por favor.";
+            reply = "Perfeito 😊 Me manda seu *e-mail* certinho, por favor.";
           }
         }
 
-        // ── Escolha do plano ──
+        // 12) plano
         else if (state.stage === "ASK_PLAN") {
-          const planKey = extractPlanChoice(incomingText);
-
-          if (planKey) {
+          const planKey = extractPlanChoice(finalText);
+          if (flags.saysExpensive) reply = buildExpensiveReply();
+          else if (flags.saysWillSee) reply = buildThinkingReply(state);
+          else if (flags.saysUnsure) reply = buildUnsureReply(state, finalText);
+          else if (planKey) {
             state.selected_plan_key = planKey;
-            // Gerar pagamento
-            const holdCheck = state.date_key && state.slot_time ? await acquireSlotHold(state.date_key, state.slot_time, phone) : { ok: true };
-            if (state.date_key && !holdCheck.ok) {
+            const holdCheck = await acquireSlotHold(state.date_key, state.slot_time, phone);
+            if (!holdCheck.ok) {
               state.slot_time = null;
               state.slot_key = null;
               state.stage = "OFFER_SLOTS";
-              reply = "Esse horário acabou de ser preenchido 😕 Vou te mostrar outras opções.\n\n" + (await offerSlotsReply(state));
+              reply = "Esse horário acabou de ser preenchido antes da confirmação 😕 Vou te mostrar as próximas melhores opções.\n\n" + (await offerSlotsReply(state));
             } else {
-              if (holdCheck.slot_key) state.slot_key = holdCheck.slot_key;
-
-              // Se ainda faltam dados, coletar
-              if (!state.date_key) {
-                state.stage = "ASK_DAY";
-                reply = `Perfeito 😊 Vou organizar sua reserva.\n\n${await askDayReply()}`;
-              } else if (!state.slot_time) {
-                state.stage = "OFFER_SLOTS";
-                reply = await offerSlotsReply(state);
-              } else if (!state.nome_completo) {
-                state.stage = "ASK_FULLNAME";
-                reply = askFullNameReply(state);
-              } else if (!state.birthdate) {
-                state.stage = "ASK_BIRTHDATE";
-                reply = askBirthdateReply(state);
-              } else if (!state.email) {
-                state.stage = "ASK_EMAIL";
-                reply = askEmailReply();
+              state.slot_key = holdCheck.slot_key;
+              const already = state.payment && state.payment.preference_id && state.payment.plan_key === planKey && state.payment.status === "pending";
+              if (already && state.payment.link) {
+                reply = paymentSentReply(PLANS[planKey], state.payment.link, state);
               } else {
-                // Tudo pronto → gerar pagamento
                 const pref = await mpCreatePreference({ phone, planKey });
                 state.payment = {
-                  status: "pending", plan_key: planKey,
-                  preference_id: pref.preference_id, link: pref.link,
-                  external_reference: pref.external_reference, created_at: Date.now(),
+                  status: "pending",
+                  plan_key: planKey,
+                  preference_id: pref.preference_id,
+                  link: pref.link,
+                  external_reference: pref.external_reference,
+                  created_at: Date.now(),
                 };
                 reply = paymentSentReply(pref.plan, pref.link, state);
-                state.stage = "WAIT_PAYMENT";
               }
-            }
-          }
-          // ▸ Se paciente não escolheu plano e Camada 1/2 não respondeu
-          else if (!reply) {
-            // Tentar GPT para entender o que o paciente disse
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dessas opções faz mais sentido? Me responde com 1, 2 ou 3" });
-            if (ai.reply.startsWith("__")) {
-              reply = "Se quiser, eu posso te explicar a diferença entre as opções. Qual faz mais sentido: *1, 2 ou 3*?";
-            } else {
-              reply = ai.reply;
-              state = mergeState(state, ai.updates);
-            }
-          }
-        }
-
-        // ── Aguardando pagamento ──
-        else if (state.stage === "WAIT_PAYMENT") {
-          if (state.payment?.status === "pending" && state.payment?.link) {
-            if (flags.intentPay || flags.confirms) {
-              reply = pendingPaymentReply(state);
-            } else {
-              // Pergunta ou objeção já tratada na Camada 1/2.
-              // Se chegou aqui, mensagem não é nem pergunta nem objeção.
-              // GPT responde com naturalidade + reconecta ao link.
-              const ai = await runLia({ incomingText, state, flags, stageCTA: `Seu horário continua reservado. Para confirmar é só finalizar aqui: ${state.payment.link}` });
-              if (ai.reply.startsWith("__")) {
-                reply = pendingPaymentReply(state);
-              } else {
-                reply = ai.reply;
-                state = mergeState(state, ai.updates);
-              }
+              state.stage = "WAIT_PAYMENT";
             }
           } else {
-            reply = "Me conta: como posso te ajudar agora? 😊";
+            reply = "Qual dessas opções faz mais sentido para você? Me responde com *1, 2 ou 3* 😊";
           }
         }
 
-        // ── Intenção de agendar (fora de stage) ──
-        else if (flags.wantsBook || flags.asksHours) {
-          if (!state.nome) { state.stage = "ASK_NAME"; reply = askNameIntroReply(); }
-          else if (!state.problem_text) { state.stage = "ASK_PROBLEM"; reply = askProblemReply(state); }
-          else if (!state.date_key) { state.stage = "ASK_DAY"; reply = await askDayReply(); }
-          else if (!state.slot_time) { state.stage = "OFFER_SLOTS"; reply = await offerSlotsReply(state); }
-          else { state.stage = "ASK_PLAN"; reply = priceReply(); }
-        }
-
-        // ── Intenção de preço (fora de stage) ──
-        else if (flags.wantsPrice) {
-          state.price_ask_count += 1;
-          if (!state.nome) {
-            if (state.price_ask_count >= 2) {
-              state.stage = "ASK_PLAN";
-              reply = priceReply();
-            } else {
-              state.stage = "ASK_NAME";
-              reply = "Claro, vou te passar as opções 😊 Antes, me diz seu *primeiro nome*?";
-            }
-          } else {
-            reply = priceReply();
-            state.stage = "ASK_PLAN";
-          }
-        }
-
-        // ── Intenção de pagar (fora de stage) ──
-        else if (flags.intentPay) {
-          if (state.payment?.status === "pending" && state.payment?.link) {
-            reply = pendingPaymentReply(state);
-            state.stage = "WAIT_PAYMENT";
-          } else if (!state.date_key) {
-            state.stage = "ASK_DAY";
-            reply = `Perfeito 😊 Antes do pagamento, vou reservar seu horário.\n\n${await askDayReply()}`;
-          } else {
-            state.stage = "ASK_PLAN";
-            reply = priceReply();
-          }
-        }
-
-        // ── Recusa ──
+        // 13) resistência
         else if (flags.refuses) {
-          reply = "Tranquilo, sem problema 😊 Se quiser tirar qualquer dúvida ou entender melhor como funciona, estou aqui.";
+          reply = "Tranquilo 😊 Desculpa se soou pressionado. Quer que eu te explique rapidinho como funciona ou prefere só tirar uma dúvida agora?";
         }
 
-      /* ═══════════════════════════════════════════════════════════════
-         [CAMADA 4] — FALLBACK GPT
-         ═══════════════════════════════════════════════════════════════ */
+        // 14) evidence útil (caso ainda não tenha usado)
+        else if (shouldUseEvidence(flags, state, finalText)) {
+          const cond = detectCondition(finalText) || state.condition;
+          const ev = buildEvidenceMessage(cond);
+          if (ev) {
+            state.evidence_used_count += 1;
+            reply = ev + "\n\nSe você quiser, eu posso te explicar rapidamente como funciona a avaliação.";
+          } else {
+            const ai = await runLia({ incomingText: finalText, state, flags, mode: "guided" });
+            reply = ai.reply;
+            state = mergeState(state, ai.updates);
+          }
+        }
 
+        // 15) conversa aberta com autonomia guiada
         else {
-          const cta = getStageCTA(state);
-          const ai = await runLia({ incomingText, state, flags, stageCTA: cta.trim() });
-
+          const ai = await runLia({ incomingText: finalText, state, flags, mode: "open_conversation" });
           if (ai.reply === "__NEED_PRICE__") {
             state.price_ask_count += 1;
-            reply = priceReply();
-            state.stage = "ASK_PLAN";
+            reply = state.price_ask_count >= 2 ? priceReply() : prePriceValueReply();
+            if (state.price_ask_count >= 2) state.stage = "ASK_PLAN";
           } else if (ai.reply === "__NEED_BOOK__") {
-            if (!state.nome) { state.stage = "ASK_NAME"; reply = askNameIntroReply(); }
-            else if (!state.problem_text) { state.stage = "ASK_PROBLEM"; reply = askProblemReply(state); }
-            else { state.stage = "ASK_DAY"; reply = await askDayReply(); }
+            if (!state.nome) {
+              state.stage = "ASK_NAME";
+              reply = askNameIntroReply();
+            } else if (!state.problem_text) {
+              state.stage = "ASK_PROBLEM";
+              reply = askProblemAfterNameReply(state);
+            } else {
+              state.stage = "ASK_DAY";
+              reply = await askDayReply();
+            }
           } else if (ai.reply === "__NEED_PAY__") {
-            if (state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
-            else { reply = "Perfeito 😊 Antes de finalizar, preciso reservar seu horário." + getStageCTA(state); }
+            if (state.payment?.status === "pending" && state.payment?.link) {
+              reply = pendingPaymentReply(state);
+              state.stage = "WAIT_PAYMENT";
+            } else {
+              reply = "Perfeito 😊 Antes de finalizar, eu só preciso reservar seu horário e confirmar alguns dados.";
+            }
           } else if (ai.reply === "__URGENT__") {
-            reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Procure um pronto-socorro ou SAMU (192).";
+            reply = "Pela sua mensagem, isso pode precisar de avaliação urgente. Procure um pronto atendimento agora (ou SAMU 192).";
           } else {
             reply = ai.reply;
             state = mergeState(state, ai.updates);
             if (!state.nome && ai.updates?.nome) state.nome = String(ai.updates.nome).trim();
             if (!state.problem_text && ai.updates?.problem_text) state.problem_text = String(ai.updates.problem_text).trim();
-            if (!state.condition && (ai.updates?.condition || state.problem_text)) {
-              state.condition = ai.updates?.condition || detectCondition(state.problem_text);
-            }
+            if (!state.condition && (ai.updates?.condition || state.problem_text)) state.condition = ai.updates?.condition || detectCondition(state.problem_text);
           }
         }
       }
 
-      /* ═══════════════════════════════════════════════════════════════
-         ANTI-REPETIÇÃO + ENVIO
-         ═══════════════════════════════════════════════════════════════ */
-
-      // ▸ V14: Anti-repetição melhorado — nunca manda a mesma coisa
-      // ▸ V14 FIX: Pular anti-repetição quando pagamento aprovado (repetir confirmação é esperado)
-      if (state.payment?.status === "approved") {
-        // OK — repetir afterPaidReply é comportamento correto
-      } else if (similar(reply, state.last_bot_reply)) {
-        // Tentar avançar para próximo passo lógico
+      // Evita repetir a mesma mensagem (fallback seguro)
+      if (similar(reply, state.last_bot_reply)) {
         if (!state.nome) reply = askNameIntroReply();
-        else if (!state.problem_text) reply = askProblemReply(state);
+        else if (!state.problem_text) reply = askProblemAfterNameReply(state);
+        else if (state.stage === "DIAG_Q1") reply = q1Reply(state);
+        else if (state.stage === "DIAG_Q2") reply = q2Reply(state);
+        else if (state.stage === "DIAG_Q3") reply = q3Reply();
         else if (!state.date_key) reply = await askDayReply();
-        else if (!state.slot_time && state.date_key) reply = await offerSlotsReply(state);
+        else if (!state.slot_time) reply = await offerSlotsReply(state);
         else if (!state.nome_completo) reply = askFullNameReply(state);
         else if (!state.birthdate) reply = askBirthdateReply(state);
         else if (!state.email) reply = askEmailReply();
-        else if (state.payment?.link) reply = pendingPaymentReply(state);
-        else reply = "Me conta: como posso te ajudar agora? 😊";
+        else if (state.payment?.status === "pending" && state.payment?.link) reply = pendingPaymentReply(state);
+        else reply = "Entendi 😊 Me diz só: seu foco hoje é mais dor, sono, ansiedade ou outra questão?";
       }
 
-      // Contar uso do nome
-      if (state.nome && reply.includes(state.nome)) {
-        state.name_used_count = Number(state.name_used_count || 0) + 1;
-      }
+      if (state.nome && reply.includes(state.nome)) state.name_used_count = Number(state.name_used_count || 0) + 1;
 
       const delaySec = computeHumanDelay(flags, state);
       state.last_bot_reply = reply;
-      state.last_user_message = incomingText;
+      state.last_bot_reply_at = Date.now();
       state.last_sent_at = Date.now();
 
       await saveUserState(phone, state);
       await sendWhatsApp(lead, bot, reply, delaySec);
-
     } catch (err) {
-      console.error("❌ Erro no processamento:", err);
+      console.error("❌ Erro no processamento async:", err);
       try {
         const lead = req.body.From || "";
         const bot = req.body.To || "";
         await twilioClient.messages.create({
-          to: lead, from: bot,
-          body: "Tive uma instabilidade rápida aqui 😊 Me manda de novo em 1 frase: quer *agendar*, *tirar dúvida* ou *ver valores*?",
+          to: lead,
+          from: bot,
+          body: "Tive uma instabilidade rápida aqui 😕 Me manda de novo em 1 frase se você quer *agendar*, *tirar dúvida* ou *ver valores*.",
         });
       } catch {}
     }
   })();
 });
 
-/* ═══════════════════════════════════════════════════════════════════
-   SERVER
-   ═══════════════════════════════════════════════════════════════════ */
-
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 LIA V14 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 LIA V13 (pós‑auditoria) rodando na porta ${PORT}`));
