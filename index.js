@@ -1,6 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════════════
- * INDEX V14 — LIA CONVERSACIONAL SUPERIOR
+ * INDEX V17 — OPUS COM FECHAMENTO OPERACIONAL
  * ═══════════════════════════════════════════════════════════════════
  *
  * MUDANÇAS FUNDAMENTAIS vs V13:
@@ -938,6 +938,16 @@ function askEmailReply() {
   return "E qual *e-mail* você prefere para receber as orientações?";
 }
 
+function askCadastreBundleReply(state) {
+  return (
+    `Perfeito. Vou reservar *${prettySlot(state.date_key, state.slot_time)}* para você 😊\n\n` +
+    "Para te mandar o link e deixar tudo certinho, me envia nesta ordem:\n" +
+    "1. *nome completo*\n" +
+    "2. *data de nascimento*\n" +
+    "3. *e-mail*"
+  );
+}
+
 function priceReply() {
   return (
     "Hoje trabalhamos com estas opções:\n\n" +
@@ -985,9 +995,15 @@ function afterPaidReply(state) {
 const QUESTION_ANSWERS = {
   howConsultWorks: "A avaliação com o Dr. Alef é *100% online, por videochamada*, dura em média *45 minutos* e é totalmente individualizada. Ele entende seu histórico, o que mais te incomoda hoje, o que você já tentou, quais medicações usa e avalia com cuidado se esse tratamento faz sentido no seu caso.",
 
+  howConsultWorksOperational: "Funciona assim: a consulta é *100% online*, dura em média *45 minutos* e o Dr. Alef avalia seu histórico, sintomas, remédios em uso e objetivo com o tratamento. Se houver indicação, ele já explica o caminho mais seguro e o próximo passo prático.",
+
+  scheduleHours: "Consigo te passar os horários por aqui mesmo. O próximo passo é escolher o dia para eu abrir as vagas disponíveis e já avançar sua reserva.",
+
   isOnline: "Sim 😊 A consulta é *100% online*, por videochamada. Você faz de onde estiver, sem precisar se deslocar.",
 
-  isLegal: "Sim 😊 O uso medicinal de canabinoides é legal no Brasil quando existe avaliação e prescrição médica, seguindo as normas da Anvisa. Na prática, o caminho é consulta, definição do produto e orientação do acesso mais adequado para o seu caso.",
+  isLegal: "Sim 😊 O uso medicinal de canabinoides é legal no Brasil quando existe avaliação e prescrição médica, seguindo as normas da Anvisa. Na prática, funciona assim: consulta, definição do produto, prescrição se houver indicação e orientação do caminho de acesso por farmácia ou importação.",
+
+  legalPathOperational: "Na prática funciona assim: se o tratamento fizer sentido para você, o próprio Dr. Alef faz a prescrição e orienta qual é o caminho de acesso mais adequado, seja farmácia no Brasil ou importação regularizada. Você não precisa descobrir isso sozinho(a).",
 
   chapado: "Essa é uma das dúvidas mais comuns 😊 No tratamento medicinal, o objetivo não é deixar ninguém alterado. São formulações específicas, com dose controlada e acompanhamento médico. Quando o foco é CBD, a proposta é aliviar sintomas com segurança e preservar sua rotina.",
 
@@ -995,7 +1011,9 @@ const QUESTION_ANSWERS = {
 
   isScam: "Essa é uma dúvida muito justa, porque realmente existe muita gente despreparada nessa área. No caso do Dr. Alef Kotula, ele se formou em medicina em uma das melhores faculdades da Rússia, viveu seis anos na Europa e ainda tem pós-graduação internacional em cannabis medicinal. Então não se trata de alguém que entrou nisso por modinha, mas de um médico com formação sólida e preparo específico para avaliar esse tipo de tratamento.",
 
-  recipe: "Se o Dr. Alef entender que faz sentido para o seu caso, sim — ele já orienta os próximos passos e emite a prescrição na própria consulta 😊",
+  recipe: "Se o Dr. Alef entender que faz sentido para o seu caso, sim — ele faz a prescrição na própria consulta e já orienta o próximo passo de acesso 😊",
+
+  prescriberOperational: "Quem prescreve é o próprio Dr. Alef, caso ele veja indicação médica real no seu caso. A consulta serve justamente para avaliar isso com critério e já deixar claro qual é o próximo passo.",
 
   medCost: "O custo do tratamento pode variar conforme o tipo de produto e a dose. Na consulta, o Dr. Alef avalia o seu caso pensando também no que é viável para você e explica qual caminho costuma fazer mais sentido em termos de segurança, acesso e custo recorrente 😊",
 
@@ -1005,7 +1023,11 @@ const QUESTION_ANSWERS = {
 
   startNow: "Entendo sua vontade de começar 😊 Por segurança, eu não consigo orientar dose ou forma de uso por aqui — isso depende da avaliação médica. Mas a boa notícia é que na consulta o Dr. Alef já orienta os próximos passos.",
 
-  payMethod: "O pagamento é pelo link que eu envio aqui mesmo. Aceita cartão de crédito, débito, Pix e boleto 😊",
+  payMethod: "Depois que eu reservo seu horário e fecho o cadastro básico, eu envio o link por aqui mesmo. Aceita cartão, Pix e boleto 😊",
+
+  nextStepOperational: "O próximo passo é simples: eu reservo seu horário, peço os dados básicos para cadastro e, com isso certo, envio o link de pagamento aqui mesmo. Assim que o pagamento entra, eu confirmo a consulta no mesmo chat.",
+
+  paymentFlowOperational: "O link entra depois que o horário fica reservado e o cadastro básico está ok. Eu mando aqui mesmo, e assim que o pagamento entra a consulta fica confirmada por aqui.",
 
   isForMe: "Muita gente que chega aqui tem exatamente esse perfil 😊 Não precisa ter diagnóstico fechado nem ser caso grave. A avaliação serve justamente para entender se esse tratamento faz sentido para o seu caso, com segurança.",
 
@@ -1021,7 +1043,11 @@ const QUESTION_ANSWERS = {
 
   timeToEffect: "Os efeitos podem aparecer já desde o início em alguns pacientes, mas isso depende da dose, da formulação e da resposta de cada organismo. Em alguns casos a melhora é percebida cedo; em outros, é preciso ajustar até encontrar a dose ideal, sem prometer resultado instantâneo.",
 
-  importProcess: "Hoje existem caminhos tanto por farmácia no Brasil quanto por importação, e o paciente não precisa descobrir isso sozinho. Na consulta, o Dr. Alef define o caminho mais adequado e orienta o passo a passo, inclusive quando há necessidade de receita e liberação na Anvisa.",
+  importProcess: "Hoje existem caminhos tanto por farmácia no Brasil quanto por importação, e o paciente não precisa descobrir isso sozinho. Na consulta, o Dr. Alef define o caminho mais adequado, orienta o passo a passo e explica o que depende de prescrição, farmácia ou Anvisa.",
+
+  accessPathOperational: "Depois da consulta, se houver indicação, você já sai sabendo quem prescreve, qual é o caminho de acesso e se faz mais sentido farmácia no Brasil ou importação. A ideia é justamente evitar enrolação e deixar o processo prático.",
+
+  afterConsultOperational: "Depois da consulta, se houver indicação, o Dr. Alef já orienta o produto, a prescrição e o caminho de acesso. Ou seja: você não fica perdido(a) tentando entender sozinho(a) o que fazer depois.",
 
   brainSafety: "Não é correto resumir isso como algo que 'mata neurônios'. O que existe é diferença entre uso recreativo, formulação, dose e contexto clínico. No uso medicinal, com produto adequado e acompanhamento, o foco é segurança e controle de sintomas, não exposição irresponsável.",
 
@@ -1034,6 +1060,16 @@ const QUESTION_ANSWERS = {
   insurance: "Hoje a consulta é particular. Se o seu plano trabalha com reembolso, vale conferir as regras diretamente com o convênio. Se quiser, eu te explico as modalidades da consulta para você ver o que faz mais sentido.",
 
   triedEverything: "Eu entendo esse cansaço, porque muita gente chega aqui exatamente depois de já ter tentado vários caminhos sem resultado. A diferença é que a consulta serve para avaliar com honestidade se existe um raciocínio médico consistente para o seu caso, em vez de repetir tentativa no escuro.",
+
+  elderlySafety: "Na pessoa idosa, o cuidado precisa ser ainda mais criterioso, e é exatamente por isso que a avaliação médica faz diferença. O Dr. Alef analisa idade, doenças associadas, remédios em uso e risco de interação antes de definir se existe indicação e qual formulação seria mais segura.",
+
+  cbdVsThc: "CBD e THC não são a mesma coisa. O CBD costuma ser a parte mais ligada a controle de sintomas e funcionalidade, enquanto o THC exige mais critério por causa de efeito psicoativo em algumas formulações. Na prática, o que importa é a combinação certa para o seu caso, com dose e objetivo definidos por médico.",
+
+  priceDifference: "A diferença não está em consulta rápida ou prescrição automática. Aqui o Dr. Alef dedica em média *45 minutos* ao caso, revisa histórico, medicações, risco de interação e caminho de acesso. O foco é te dar uma avaliação mais completa e objetiva, para você não perder tempo nem dinheiro em tentativa no escuro.",
+
+  notMarketing: "Essa preocupação é justa. O ponto aqui não é empurrar tratamento, e sim separar o que é promessa vazia do que tem indicação médica real. Se fizer sentido, o Dr. Alef explica o caminho prático; se não fizer, ele também deixa isso claro.",
+
+  notWasteTime: "A consulta é justamente para você não perder tempo no escuro. Ela responde três coisas objetivas: se existe indicação real para o seu caso, qual seria o caminho mais seguro e como funciona o acesso na prática. Se não fizer sentido, isso também fica claro.",
 
   whatIncludes_full: `Nesse acompanhamento de R$${PLANS.full.price} você faz a consulta com o Dr. Alef agora e já fica com um retorno incluído em ~30 dias. Esse retorno serve para revisar como você está, ajustar o tratamento se necessário e acompanhar o início com mais segurança. É o que a maioria escolhe justamente por ter essa tranquilidade 😊`,
 
@@ -1071,6 +1107,18 @@ function getPriorityTrustAnswer(state, text) {
     return QUESTION_ANSWERS.importProcess;
   }
 
+  if (/\b(como fica legalidade|caminho de acesso|quem prescreve|quem receita|como consigo a medicacao|como consigo a medicação|o que acontece depois da consulta|depois da consulta)\b/.test(t)) {
+    return QUESTION_ANSWERS.accessPathOperational;
+  }
+
+  if (/\b(quais horarios voce tem|quais horários você tem|tem horario essa semana|tem horário essa semana|como fecha o agendamento)\b/.test(t)) {
+    return QUESTION_ANSWERS.scheduleHours;
+  }
+
+  if (/\b(quando entra o link|quando manda o link|link de pagamento|como fecha o pagamento|como eu pago)\b/.test(t)) {
+    return QUESTION_ANSWERS.paymentFlowOperational;
+  }
+
   if (/\b(mata neuronios|mata neurônios|faz mal para o cerebro|faz mal para o cérebro)\b/.test(t)) {
     return QUESTION_ANSWERS.brainSafety;
   }
@@ -1087,6 +1135,14 @@ function getPriorityTrustAnswer(state, text) {
     return QUESTION_ANSWERS.driveWork;
   }
 
+  if (/\b(idoso|idosa|minha idade|na minha idade|seguro na minha idade)\b/.test(t)) {
+    return QUESTION_ANSWERS.elderlySafety;
+  }
+
+  if (/\b(cbd e thc|cbd.*thc|thc.*cbd|diferenca entre cbd e thc|diferença entre cbd e thc)\b/.test(t)) {
+    return QUESTION_ANSWERS.cbdVsThc;
+  }
+
   if (/\b(convenio|convênio|reembolso|plano cobre)\b/.test(t)) {
     return QUESTION_ANSWERS.insurance;
   }
@@ -1101,6 +1157,18 @@ function getPriorityTrustAnswer(state, text) {
 
   if (/\b(funciona mesmo|vale a pena|resolve mesmo|oleo vai ajudar|óleo vai ajudar|nao encontro informacao clara|não encontro informação clara|promessa de milagre)\b/.test(t)) {
     return QUESTION_ANSWERS.scientificProof;
+  }
+
+  if (/\b(marketing|propaganda|instagram|modinha)\b/.test(t) && /\b(como sei|nao e so|não é só|so marketing|só marketing)\b/.test(t)) {
+    return QUESTION_ANSWERS.notMarketing;
+  }
+
+  if (/\b(perder tempo|perda de tempo|nao vou perder tempo|não vou perder tempo)\b/.test(t)) {
+    return QUESTION_ANSWERS.notWasteTime;
+  }
+
+  if (/\b(150|200|347)\b/.test(t) && /\b(diferenca pratica|diferença prática|por que sua consulta custa mais|consulta custa mais|mercado fala de consultas)\b/.test(t)) {
+    return QUESTION_ANSWERS.priceDifference;
   }
 
   return null;
@@ -1336,6 +1404,94 @@ function getStageCTA(state) {
   if (s === "ASK_PLAN") return "\n\nQual dessas opções faz mais sentido? Me responde com *1, 2 ou 3* 😊";
   if (s === "WAIT_PAYMENT" && state.payment?.link) return `\n\nSeu horário continua reservado e o link segue ativo: ${state.payment.link} 😊`;
   return "\n\nSe quiser, eu posso te mostrar os horários disponíveis 😊";
+}
+
+function isOperationalScheduleQuestion(text, flags) {
+  const t = norm(text);
+  return (
+    flags.wantsBook ||
+    flags.asksHours ||
+    /\b(quais horarios voce tem|quais horários você tem|quais horarios tem|tem horario essa semana|tem horário essa semana|como faco para agendar|como faço para agendar|como fecha o agendamento|como funciona o agendamento)\b/.test(t)
+  );
+}
+
+function isOperationalAccessQuestion(text, flags) {
+  const t = norm(text);
+  return (
+    flags.asksLegal ||
+    flags.asksRecipe ||
+    /\b(caminho de acesso|acesso pratico|acesso prático|como consigo a medicacao|como consigo a medicação|como conseguir o tratamento|como funciona o acesso|farmacia|farmácia|importacao|importação|quem prescreve|quem receita)\b/.test(t)
+  );
+}
+
+function isOperationalAfterConsultQuestion(text) {
+  const t = norm(text);
+  return /\b(depois da consulta|o que acontece depois da consulta|o que acontece depois)\b/.test(t);
+}
+
+function isOperationalNextStepQuestion(text) {
+  const t = norm(text);
+  return /\b(proximo passo|próximo passo|se eu seguir|como fecha|como eu fecho|o que eu faco agora|o que eu faço agora)\b/.test(t);
+}
+
+function isOperationalPaymentQuestion(text, flags) {
+  const t = norm(text);
+  return (
+    flags.intentPay ||
+    flags.asksPayMethod ||
+    /\b(quando entra o link|quando manda o link|me manda o link|manda o link|como pago|como fecha o pagamento|link de pagamento)\b/.test(t)
+  );
+}
+
+async function maybeHandleOperationalClose(state, flags, text) {
+  const wantsSchedule = isOperationalScheduleQuestion(text, flags);
+  const asksConsultFlow = flags.asksHowConsultWorks || /\b(como funciona a consulta|como e a consulta|como é a consulta)\b/.test(norm(text));
+  const asksAccess = isOperationalAccessQuestion(text, flags);
+  const asksAfterConsult = isOperationalAfterConsultQuestion(text);
+  const asksNextStep = isOperationalNextStepQuestion(text);
+  const asksPayment = isOperationalPaymentQuestion(text, flags);
+
+  if (!wantsSchedule && !asksConsultFlow && !asksAccess && !asksAfterConsult && !asksNextStep && !asksPayment) {
+    return null;
+  }
+
+  const parts = [];
+
+  if (wantsSchedule) parts.push(QUESTION_ANSWERS.scheduleHours);
+  if (asksConsultFlow) parts.push(QUESTION_ANSWERS.howConsultWorksOperational);
+  if (asksAccess) parts.push(QUESTION_ANSWERS.accessPathOperational);
+  if (asksAfterConsult) parts.push(QUESTION_ANSWERS.afterConsultOperational);
+  if (asksNextStep) parts.push(QUESTION_ANSWERS.nextStepOperational);
+  if (asksPayment) parts.push(QUESTION_ANSWERS.paymentFlowOperational);
+
+  const intro = removeDuplicates(parts).slice(0, 2).join("\n\n").trim();
+
+  if (state.payment?.link) {
+    return [intro, pendingPaymentReply(state)].filter(Boolean).join("\n\n");
+  }
+
+  if (state.date_key && !state.slot_time && (wantsSchedule || asksNextStep)) {
+    return [intro, await offerSlotsReply(state)].filter(Boolean).join("\n\n");
+  }
+
+  if (!state.date_key && (wantsSchedule || asksConsultFlow || asksNextStep)) {
+    return [intro, await askDayReply()].filter(Boolean).join("\n\n");
+  }
+
+  if (state.date_key && state.slot_time && !state.nome_completo && (asksNextStep || asksPayment)) {
+    return [intro, askCadastreBundleReply(state)].filter(Boolean).join("\n\n");
+  }
+
+  if (state.date_key && state.slot_time && state.nome_completo && state.birthdate && !state.email && (asksNextStep || asksPayment)) {
+    return [intro, askEmailReply()].filter(Boolean).join("\n\n");
+  }
+
+  if (state.date_key && state.slot_time && state.nome_completo && state.birthdate && state.email && !state.payment?.link && (asksNextStep || asksPayment)) {
+    return [intro, priceReply()].filter(Boolean).join("\n\n");
+  }
+
+  if (intro) return intro + getStageCTA(state);
+  return null;
 }
 
 /**
@@ -1640,11 +1796,18 @@ if (!IS_SIMULATOR_MODE) {
           || flags.asksWho || flags.asksHowConsultWorks || flags.asksIfOnline
           || flags.asksRecipe || flags.asksMedCost || flags.asksCanReschedule
           || flags.asksPrivacy || flags.asksStartNow || flags.asksPayMethod
-          || flags.asksWhatIncludes || flags.asksIfForMe || flags.asksDifferential;
+          || flags.asksWhatIncludes || flags.asksIfForMe || flags.asksDifferential
+          || flags.wantsBook || flags.asksHours || flags.intentPay;
 
         const shouldRunCamada1 = !isDiagStage || hasQuestionMark || highConfidenceQuestion;
 
-        const directAnswer = shouldRunCamada1 ? handleDirectQuestion(flags, state, incomingText) : null;
+        const operationalCloseReply = shouldRunCamada1 ? await maybeHandleOperationalClose(state, flags, incomingText) : null;
+        if (operationalCloseReply) {
+          reply = operationalCloseReply;
+          // Não muda stage — reconecta ao ponto atual
+        }
+
+        const directAnswer = !reply && shouldRunCamada1 ? handleDirectQuestion(flags, state, incomingText) : null;
         if (directAnswer) {
           reply = directAnswer;
           // Não muda stage — reconecta ao ponto atual
@@ -2135,7 +2298,7 @@ if (!IS_SIMULATOR_MODE) {
 
 const PORT = process.env.PORT || 10000;
 if (!IS_SIMULATOR_MODE) {
-  app.listen(PORT, () => console.log(`🚀 LIA V14 rodando na porta ${PORT}`));
+  app.listen(PORT, () => console.log(`🚀 LIA V17 rodando na porta ${PORT}`));
 }
 
 // =========================================
@@ -2145,21 +2308,240 @@ if (!IS_SIMULATOR_MODE) {
 async function responderLIA_simulador(mensagem, contexto = {}) {
   const persona = contexto.persona || {};
   const historico = Array.isArray(contexto.historico) ? contexto.historico : [];
+  const effectiveHistorico =
+    historico.length > 0 &&
+    historico[historico.length - 1]?.speaker === "patient" &&
+    norm(historico[historico.length - 1]?.text || "") === norm(mensagem)
+      ? historico.slice(0, -1)
+      : historico;
   const flags = detectIntent(mensagem);
   const personaCondition = detectCondition(persona.condicao_principal || "");
   const messageCondition = detectCondition(mensagem);
-  const lastLiaReply = [...historico].reverse().find((item) => item.speaker === "lia")?.text || "";
   const firstName = typeof persona.nome_ficticio === "string" ? persona.nome_ficticio.split(" ")[0] : null;
+  const normalizedMessage = norm(mensagem);
 
   const state = {
     nome: firstName,
     condition: messageCondition || personaCondition || null,
     focus: messageCondition || personaCondition || null,
     problem_text: extractProblemText(mensagem) || persona.condicao_principal || null,
-    stage: /\b(1|2|3|modalidade|modalidades|acompanhamento|avaliacao|avaliação)\b/i.test(lastLiaReply) ? "ASK_PLAN" : null,
+    stage: null,
     evidence_used_count: 0,
     lead_profile: classifyLead(flags, mensagem, { problem_text: extractProblemText(mensagem) || persona.condicao_principal || null }),
+    date_key: null,
+    slot_time: null,
+    nome_completo: null,
+    birthdate: null,
+    email: null,
+    selected_plan_key: "basic",
+    payment: null,
   };
+
+  for (const item of effectiveHistorico) {
+    const text = String(item.text || "");
+    const low = norm(text);
+
+    if (item.speaker === "lia") {
+      if (
+        text.includes("Essa semana ainda tenho horários disponíveis") ||
+        low.includes("horarios disponiveis desta semana") ||
+        low.includes("qual dia costuma ficar melhor") ||
+        low.includes("qual dia fica melhor para voce") ||
+        low.includes("qual dia fica melhor para você")
+      ) {
+        state.stage = "ASK_DAY";
+      } else if (text.startsWith("Para *") && text.includes("Qual fica melhor")) {
+        state.stage = "OFFER_SLOTS";
+      } else if (low.includes("nome completo") && low.includes("data de nascimento") && (low.includes("e-mail") || low.includes("email"))) {
+        state.stage = "ASK_CADASTRE";
+      } else if (low.includes("nome completo")) {
+        state.stage = "ASK_FULLNAME";
+      } else if (low.includes("data de nascimento")) {
+        state.stage = "ASK_BIRTHDATE";
+      } else if (low.includes("e-mail") || low.includes("email")) {
+        state.stage = "ASK_EMAIL";
+      } else if (low.includes("hoje trabalhamos com estas opcoes") || low.includes("duas modalidades principais")) {
+        state.stage = "ASK_PLAN";
+      } else if (low.includes("para confirmar sua consulta, e so finalizar aqui") || low.includes("para confirmar, e so finalizar aqui")) {
+        const linkMatch = text.match(/https?:\/\/\S+/i);
+        state.payment = {
+          status: "pending",
+          link: linkMatch ? linkMatch[0] : "https://pagamento.teste/lia",
+        };
+        state.stage = "WAIT_PAYMENT";
+      } else if (low.includes("pagamento confirmado") || low.includes("consulta esta marcada") || low.includes("consulta está marcada")) {
+        state.payment = state.payment || { link: "https://pagamento.teste/lia" };
+        state.payment.status = "approved";
+        state.stage = "CONFIRMED";
+      }
+      continue;
+    }
+
+    if (!state.date_key) {
+      const extractedDateKey = extractDateKey(text);
+      if (extractedDateKey) state.date_key = extractedDateKey;
+    }
+
+    if (!state.slot_time) {
+      const extractedTime = extractHourOnly(text);
+      if (extractedTime) state.slot_time = extractedTime;
+    }
+
+    if (!state.nome_completo) {
+      const fullName = extractFullName(text);
+      if (fullName) state.nome_completo = fullName;
+    }
+
+    if (!state.birthdate) {
+      const extractedBirthdate = extractBirthDate(text);
+      if (extractedBirthdate) state.birthdate = extractedBirthdate;
+    }
+
+    if (!state.email) {
+      const extractedEmail = extractEmail(text);
+      if (extractedEmail) state.email = extractedEmail;
+    }
+
+    if (norm(text) === "aprovar_teste") {
+      state.payment = state.payment || { link: "https://pagamento.teste/lia" };
+      state.payment.status = "approved";
+      state.stage = "CONFIRMED";
+    }
+  }
+
+  const paymentWasRequested =
+    state.payment?.link ||
+    effectiveHistorico.some(
+      (item) =>
+        item.speaker === "lia" &&
+        (norm(item.text || "").includes("para confirmar sua consulta, e so finalizar aqui") ||
+          norm(item.text || "").includes("para confirmar, e so finalizar aqui") ||
+          /https?:\/\/\S+/i.test(String(item.text || ""))),
+    );
+
+  if ((state.stage === "WAIT_PAYMENT" || paymentWasRequested) && normalizedMessage === "aprovar_teste") {
+    state.payment = state.payment || { link: "https://pagamento.teste/lia" };
+    state.payment.status = "approved";
+    return afterPaidReply({
+      ...state,
+      date_key: state.date_key || "13-03",
+      slot_time: state.slot_time || "19h",
+    });
+  }
+
+  if (state.stage === "ASK_DAY") {
+    let dateKey = extractDateKey(mensagem);
+    if (!dateKey) {
+      const numericChoice = extractNumericChoice(mensagem);
+      const suggested = await getSuggestedDayKeys();
+      if (numericChoice && suggested[numericChoice - 1]) dateKey = suggested[numericChoice - 1];
+    }
+
+    if (dateKey) {
+      state.date_key = dateKey;
+      return offerSlotsReply(state);
+    }
+
+    return await askDayReply();
+  }
+
+  if (state.stage === "OFFER_SLOTS") {
+    let slotTime = extractHourOnly(mensagem);
+
+    if (!slotTime) {
+      const numericChoice = extractNumericChoice(mensagem);
+      const best = await chooseBestSlotsForDate(state.date_key || "13-03", 3);
+      if (numericChoice && best[numericChoice - 1]) slotTime = best[numericChoice - 1];
+    }
+
+    if (slotTime) {
+      state.slot_time = slotTime;
+      return askCadastreBundleReply({
+        ...state,
+        date_key: state.date_key || "13-03",
+        slot_time: state.slot_time,
+      });
+    }
+
+    return offerSlotsReply({
+      ...state,
+      date_key: state.date_key || "13-03",
+    });
+  }
+
+  if (state.stage === "ASK_CADASTRE") {
+    const fullName = extractFullName(mensagem);
+    const birthdate = extractBirthDate(mensagem);
+    const email = extractEmail(mensagem);
+
+    if (fullName && birthdate && email) {
+      state.nome_completo = fullName;
+      state.birthdate = birthdate;
+      state.email = email;
+      const plan = PLANS[state.selected_plan_key || "basic"];
+      const fakeLink = `https://pagamento.teste/${persona.id || "lead"}-${state.date_key || "13-03"}-${state.slot_time || "19h"}`;
+      return paymentSentReply(plan, fakeLink, {
+        ...state,
+        date_key: state.date_key || "13-03",
+        slot_time: state.slot_time || "19h",
+      });
+    }
+
+    return askCadastreBundleReply({
+      ...state,
+      date_key: state.date_key || "13-03",
+      slot_time: state.slot_time || "19h",
+    });
+  }
+
+  if (state.stage === "ASK_FULLNAME") {
+    const fullName = extractFullName(mensagem);
+    if (fullName) {
+      state.nome_completo = fullName;
+      return askBirthdateReply({
+        ...state,
+        nome_completo: fullName,
+      });
+    }
+    return "Me manda seu *nome completo* certinho, por favor.";
+  }
+
+  if (state.stage === "ASK_BIRTHDATE") {
+    const birthdate = extractBirthDate(mensagem);
+    if (birthdate) {
+      state.birthdate = birthdate;
+      return askEmailReply();
+    }
+    return "Me manda sua *data de nascimento* no formato *dd/mm/aaaa*.";
+  }
+
+  if (state.stage === "ASK_EMAIL") {
+    const email = extractEmail(mensagem);
+    if (email) {
+      state.email = email;
+      const plan = PLANS[state.selected_plan_key || "basic"];
+      const fakeLink = `https://pagamento.teste/${persona.id || "lead"}-${state.date_key || "13-03"}-${state.slot_time || "19h"}`;
+      return paymentSentReply(plan, fakeLink, {
+        ...state,
+        date_key: state.date_key || "13-03",
+        slot_time: state.slot_time || "19h",
+      });
+    }
+    return askEmailReply();
+  }
+
+  if (state.stage === "WAIT_PAYMENT" && state.payment?.link) {
+    if (flags.intentPay || flags.asksPayMethod || normalizedMessage.includes("link")) {
+      return pendingPaymentReply({
+        ...state,
+        date_key: state.date_key || "13-03",
+        slot_time: state.slot_time || "19h",
+      });
+    }
+  }
+
+  const operationalCloseReply = await maybeHandleOperationalClose(state, flags, mensagem);
+  if (operationalCloseReply) return operationalCloseReply;
 
   const priorityAnswer = getPriorityTrustAnswer(state, mensagem);
   if (priorityAnswer) return priorityAnswer + getStageCTA(state);
@@ -2186,7 +2568,7 @@ async function responderLIA_simulador(mensagem, contexto = {}) {
     return bridgeReply(state);
   }
 
-  return askProblemReply(state);
+  return `Entendi, ${state.nome || "tudo bem"} 😊 Antes de te orientar melhor, me conta rapidinho o que mais tem te incomodado hoje?`;
 }
 
 module.exports = { responderLIA_simulador };
