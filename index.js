@@ -44,16 +44,75 @@
  * ═══════════════════════════════════════════════════════════════════
  */
 
-const express = require("express");
-const bodyParser = require("body-parser");
-const twilio = require("twilio");
-const { Pool } = require("pg");
-const OpenAI = require("openai");
+const IS_SIMULATOR_MODE = process.env.LIA_SIMULATOR_MODE === "1";
 
-const app = express();
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(express.json());
-app.use("/mp", express.json({ type: ["application/json", "text/json", "*/*"] }));
+function createNoopApp() {
+  return {
+    use() {},
+    get() {},
+    post() {},
+    listen() {},
+  };
+}
+
+let express;
+let bodyParser;
+let twilio;
+let Pool;
+let OpenAI;
+let app;
+
+if (IS_SIMULATOR_MODE) {
+  express = Object.assign(() => createNoopApp(), {
+    json: () => (_req, _res, next) => (typeof next === "function" ? next() : undefined),
+  });
+  bodyParser = {
+    urlencoded: () => (_req, _res, next) => (typeof next === "function" ? next() : undefined),
+  };
+  twilio = Object.assign(
+    () => ({
+      messages: { create: async () => ({ sid: "simulated" }) },
+    }),
+    {
+      twiml: {
+        MessagingResponse: class MessagingResponse {
+          toString() {
+            return "";
+          }
+        },
+      },
+    },
+  );
+  Pool = class PoolStub {
+    on() {}
+    async query() {
+      return { rows: [] };
+    }
+  };
+  OpenAI = class OpenAIStub {
+    constructor() {
+      this.chat = {
+        completions: {
+          create: async () => ({
+            choices: [{ message: { content: "" } }],
+          }),
+        },
+      };
+    }
+  };
+  app = createNoopApp();
+} else {
+  express = require("express");
+  bodyParser = require("body-parser");
+  twilio = require("twilio");
+  ({ Pool } = require("pg"));
+  OpenAI = require("openai");
+
+  app = express();
+  app.use(bodyParser.urlencoded({ extended: false }));
+  app.use(express.json());
+  app.use("/mp", express.json({ type: ["application/json", "text/json", "*/*"] }));
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    ENV + CLIENTS
@@ -159,7 +218,9 @@ async function initDB() {
   `);
   console.log("✅ Tabelas prontas.");
 }
-initDB().catch((e) => console.error("❌ initDB erro:", e));
+if (!IS_SIMULATOR_MODE) {
+  initDB().catch((e) => console.error("❌ initDB erro:", e));
+}
 
 async function getUserState(phone) {
   const { rows } = await pool.query("SELECT state FROM wa_users WHERE phone=$1", [phone]);
@@ -922,21 +983,21 @@ function afterPaidReply(state) {
    ═══════════════════════════════════════════════════════════════════ */
 
 const QUESTION_ANSWERS = {
-  howConsultWorks: "A avaliação com o Dr. Alef é *100% online, por videochamada*, dura em média *45 minutos* e é totalmente individualizada. Ele analisa seu histórico, o que você já tentou, suas medicações e define com você se esse tratamento faz sentido no seu caso.",
+  howConsultWorks: "A avaliação com o Dr. Alef é *100% online, por videochamada*, dura em média *45 minutos* e é totalmente individualizada. Ele entende seu histórico, o que mais te incomoda hoje, o que você já tentou, quais medicações usa e avalia com cuidado se esse tratamento faz sentido no seu caso.",
 
   isOnline: "Sim 😊 A consulta é *100% online*, por videochamada. Você faz de onde estiver, sem precisar se deslocar.",
 
-  isLegal: "Sim 😊 O uso medicinal de canabinoides é legal no Brasil, sempre com avaliação e prescrição médica, seguindo as normas da Anvisa.",
+  isLegal: "Sim 😊 O uso medicinal de canabinoides é legal no Brasil quando existe avaliação e prescrição médica, seguindo as normas da Anvisa. Na prática, o caminho é consulta, definição do produto e orientação do acesso mais adequado para o seu caso.",
 
-  chapado: "Essa é uma das dúvidas mais comuns 😊 O tratamento medicinal é diferente do uso recreativo. São formulações específicas, com doses controladas e acompanhamento médico. O objetivo é tratar sintomas, não causar alteração.",
+  chapado: "Essa é uma das dúvidas mais comuns 😊 No tratamento medicinal, o objetivo não é deixar ninguém alterado. São formulações específicas, com dose controlada e acompanhamento médico. Quando o foco é CBD, a proposta é aliviar sintomas com segurança e preservar sua rotina.",
 
-  whoIsDrAlef: "O Dr. Alef Kotula é o médico responsável pelos atendimentos. A consulta é individualizada e focada em entender com profundidade se esse tratamento faz sentido para o seu caso.",
+  whoIsDrAlef: "Essa é uma dúvida muito justa, porque realmente existe muita gente despreparada nessa área. No caso do Dr. Alef Kotula, ele se formou em medicina em uma das melhores faculdades da Rússia, viveu seis anos na Europa e ainda tem pós-graduação internacional em cannabis medicinal. Então não se trata de alguém que entrou nisso por modinha, mas de um médico com formação sólida e preparo específico para avaliar esse tipo de tratamento.",
 
-  isScam: "Você faz muito bem em perguntar 😊 É consulta médica de verdade, individualizada, com o Dr. Alef, por telemedicina. Não é venda de curso, suplemento nem kit. O objetivo é avaliar seu caso e ver com honestidade se esse tratamento faz sentido para você.",
+  isScam: "Essa é uma dúvida muito justa, porque realmente existe muita gente despreparada nessa área. No caso do Dr. Alef Kotula, ele se formou em medicina em uma das melhores faculdades da Rússia, viveu seis anos na Europa e ainda tem pós-graduação internacional em cannabis medicinal. Então não se trata de alguém que entrou nisso por modinha, mas de um médico com formação sólida e preparo específico para avaliar esse tipo de tratamento.",
 
   recipe: "Se o Dr. Alef entender que faz sentido para o seu caso, sim — ele já orienta os próximos passos e emite a prescrição na própria consulta 😊",
 
-  medCost: "O valor do tratamento pode variar conforme o tipo de produto e a dose, mas o Dr. Alef costuma orientar pensando também no que é viável para o paciente. Ele não te coloca em um caminho que depois não faça sentido financeiramente. A consulta serve justamente para ter essa clareza 😊",
+  medCost: "O custo do tratamento pode variar conforme o tipo de produto e a dose. Na consulta, o Dr. Alef avalia o seu caso pensando também no que é viável para você e explica qual caminho costuma fazer mais sentido em termos de segurança, acesso e custo recorrente 😊",
 
   canReschedule: "Pode sim 😊 É só me avisar com antecedência que a gente reorganiza.",
 
@@ -950,10 +1011,100 @@ const QUESTION_ANSWERS = {
 
   differential: "O que costuma diferenciar aqui é que o Dr. Alef faz uma avaliação bem individualizada, revisa com cuidado suas medicações e interações, e não trabalha com protocolo pronto. Muita gente procura justamente depois de já ter passado por abordagens mais genéricas.",
 
+  consultEvaluation: "Na consulta, o Dr. Alef costuma começar entendendo seu histórico, os sintomas que mais te incomodam, o que você já tentou, quais remédios usa hoje e se existe algum risco de interação. A partir disso, ele avalia se a cannabis faz sentido para o seu caso e qual seria o caminho mais seguro.",
+
+  dependence: "Essa preocupação faz sentido. O ponto importante é que a proposta aqui não é trocar seu problema por outra dependência. O CBD não tem o mesmo perfil de dependência de opioides ou benzodiazepínicos, e quando alguma formulação exige mais cuidado isso é decidido com dose controlada e acompanhamento médico.",
+
+  interaction: "Essa preocupação é importante e faz sentido. Existem remédios que exigem mais atenção, e por isso a consulta é essencial: o Dr. Alef analisa exatamente o que você usa hoje e verifica se há risco de interação, além de avaliar se dá para conduzir isso com segurança.",
+
+  scientificProof: "Entendo esse ceticismo, porque existe muito conteúdo ruim prometendo milagre. Mas cannabis medicinal não é só opinião ou modinha: existem estudos e uso médico sério em vários contextos. A consulta serve justamente para separar promessa vazia de indicação real para o seu caso.",
+
+  timeToEffect: "Os efeitos podem aparecer já desde o início em alguns pacientes, mas isso depende da dose, da formulação e da resposta de cada organismo. Em alguns casos a melhora é percebida cedo; em outros, é preciso ajustar até encontrar a dose ideal, sem prometer resultado instantâneo.",
+
+  importProcess: "Hoje existem caminhos tanto por farmácia no Brasil quanto por importação, e o paciente não precisa descobrir isso sozinho. Na consulta, o Dr. Alef define o caminho mais adequado e orienta o passo a passo, inclusive quando há necessidade de receita e liberação na Anvisa.",
+
+  brainSafety: "Não é correto resumir isso como algo que 'mata neurônios'. O que existe é diferença entre uso recreativo, formulação, dose e contexto clínico. No uso medicinal, com produto adequado e acompanhamento, o foco é segurança e controle de sintomas, não exposição irresponsável.",
+
+  stigma: "Entendo sua resistência. Aqui não estamos falando de uso recreativo, e sim de formulações médicas, como óleo sublingual, com dose controlada e acompanhamento. O objetivo não é 'usar droga', e sim avaliar um tratamento de forma séria, legal e segura.",
+
+  fibro: "É verdade que fibromialgia não tem cura. A proposta da cannabis medicinal não é prometer cura, e sim tentar melhorar sintomas importantes do quadro, como dor, sono e ansiedade. O foco é qualidade de vida e controle de sintomas, com critério.",
+
+  driveWork: "Isso precisa ser considerado com cuidado, e por isso a consulta é importante. Quando a proposta envolve formulações mais funcionais, a ideia é preservar sua lucidez e sua rotina. Se você dirige ou depende do trabalho com atenção total, isso entra na decisão do produto e do horário de uso.",
+
+  insurance: "Hoje a consulta é particular. Se o seu plano trabalha com reembolso, vale conferir as regras diretamente com o convênio. Se quiser, eu te explico as modalidades da consulta para você ver o que faz mais sentido.",
+
+  triedEverything: "Eu entendo esse cansaço, porque muita gente chega aqui exatamente depois de já ter tentado vários caminhos sem resultado. A diferença é que a consulta serve para avaliar com honestidade se existe um raciocínio médico consistente para o seu caso, em vez de repetir tentativa no escuro.",
+
   whatIncludes_full: `Nesse acompanhamento de R$${PLANS.full.price} você faz a consulta com o Dr. Alef agora e já fica com um retorno incluído em ~30 dias. Esse retorno serve para revisar como você está, ajustar o tratamento se necessário e acompanhar o início com mais segurança. É o que a maioria escolhe justamente por ter essa tranquilidade 😊`,
 
   whatIncludes_basic: `A avaliação de R$${PLANS.basic.price} é a consulta inicial completa, de 45 minutos. O Dr. Alef analisa seu caso com profundidade e define os próximos passos com segurança 😊`,
 };
+
+function getPriorityTrustAnswer(state, text) {
+  const t = norm(text);
+
+  if (/\b(como sei que (esse )?(medico|médico|dr|doutor) e serio|como sei que .*e sério|charlatao|charlatão|medico.*instagram|m[eé]dico.*instagram|marketing|isso e serio|isso é sério)\b/.test(t)) {
+    return QUESTION_ANSWERS.isScam;
+  }
+
+  if (/\b(o que voce costuma avaliar primeiro na consulta|o que você costuma avaliar primeiro na consulta|o que voce avalia primeiro|o que você avalia primeiro|como o dr avalia|como ele avalia meu caso)\b/.test(t)) {
+    return QUESTION_ANSWERS.consultEvaluation;
+  }
+
+  if (/\b(vicia|viciante|dependencia|dependência|ficar dependente|gera dependencia|gera dependência)\b/.test(t)) {
+    return QUESTION_ANSWERS.dependence;
+  }
+
+  if (/\b(interage|interacao|interação|misturar|junto com meus remedios|junto com meus remédios|antidepressivo|ansiolitico|ansiolítico)\b/.test(t)) {
+    return QUESTION_ANSWERS.interaction;
+  }
+
+  if (/\b(comprovacao|comprovação|prova cientifica|prova científica|evidencia|evidência|placebo|modinha|estudo cientifico|estudo científico)\b/.test(t)) {
+    return QUESTION_ANSWERS.scientificProof;
+  }
+
+  if (/\b(demora.*fazer efeito|quanto tempo.*fazer efeito|quanto tempo.*resultado|quando.*resultado)\b/.test(t)) {
+    return QUESTION_ANSWERS.timeToEffect;
+  }
+
+  if (/\b(importacao|importação|importar|burocratico|burocrático|burocracia|por onde comecar|por onde começar|como conseguir)\b/.test(t)) {
+    return QUESTION_ANSWERS.importProcess;
+  }
+
+  if (/\b(mata neuronios|mata neurônios|faz mal para o cerebro|faz mal para o cérebro)\b/.test(t)) {
+    return QUESTION_ANSWERS.brainSafety;
+  }
+
+  if (/\b(isso e maconha|isso é maconha|nao quero usar droga|não quero usar droga)\b/.test(t)) {
+    return QUESTION_ANSWERS.stigma;
+  }
+
+  if (/\bfibromialgia\b/.test(t) && /\b(cura|ajudar|melhorar)\b/.test(t)) {
+    return QUESTION_ANSWERS.fibro;
+  }
+
+  if (/\b(dirigir|trabalhar|trabalho|exame toxicologico|exame toxicológico)\b/.test(t)) {
+    return QUESTION_ANSWERS.driveWork;
+  }
+
+  if (/\b(convenio|convênio|reembolso|plano cobre)\b/.test(t)) {
+    return QUESTION_ANSWERS.insurance;
+  }
+
+  if (/\b(ja tentei de tudo|já tentei de tudo|nada funciona|nada funcionou|perda de tempo|mais uma tentativa|mais uma perda de tempo)\b/.test(t)) {
+    return QUESTION_ANSWERS.triedEverything;
+  }
+
+  if ((/\b(muito caro|caro|nao tenho condicao|não tenho condição|consulta e cara|consulta é cara)\b/.test(t) && !/\b(preco|preço|valor|quanto custa)\b/.test(t))) {
+    return "Eu entendo você. Quando a pessoa já gastou com remédios, consultas e tratamentos que não trouxeram o resultado esperado, qualquer novo investimento pesa mesmo. Mas a proposta aqui é justamente fazer uma avaliação médica mais direcionada, para entender seu caso com profundidade e ver se esse caminho realmente faz sentido para você, em vez de continuar tentando coisas no escuro.";
+  }
+
+  if (/\b(funciona mesmo|vale a pena|resolve mesmo|oleo vai ajudar|óleo vai ajudar|nao encontro informacao clara|não encontro informação clara|promessa de milagre)\b/.test(t)) {
+    return QUESTION_ANSWERS.scientificProof;
+  }
+
+  return null;
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    OBJECTION HANDLERS — NOVO NA V14
@@ -1194,6 +1345,8 @@ function getStageCTA(state) {
  */
 function handleDirectQuestion(flags, state, text) {
   const cta = getStageCTA(state);
+  const priorityAnswer = getPriorityTrustAnswer(state, text);
+  if (priorityAnswer) return priorityAnswer + cta;
   let answer = null;
 
   if (flags.asksIsScam) answer = QUESTION_ANSWERS.isScam;
@@ -1228,6 +1381,8 @@ function handleDirectQuestion(flags, state, text) {
  * Retorna null se nenhuma objeção detectada.
  */
 function handleObjection(flags, state, text) {
+  const priorityAnswer = getPriorityTrustAnswer(state, text);
+  if (priorityAnswer) return priorityAnswer + getStageCTA(state);
   if (flags.saysExpensive) return handleExpensive(state);
   if (flags.saysWillSee) return handleWillSee(state);
   if (flags.saysUnsure) return handleUnsure(state, text);
@@ -1334,48 +1489,49 @@ function initializeState(state, bot) {
    ROUTES
    ═══════════════════════════════════════════════════════════════════ */
 
-app.get("/", (req, res) => res.send("OK"));
-app.get("/mp/thanks", (req, res) => res.send("OK"));
+if (!IS_SIMULATOR_MODE) {
+  app.get("/", (req, res) => res.send("OK"));
+  app.get("/mp/thanks", (req, res) => res.send("OK"));
 
-// Webhook Mercado Pago (preservado da V13)
-app.post("/mp/webhook", async (req, res) => {
-  res.status(200).send("OK");
-  try {
-    const body = req.body || {};
-    const type = body.type || body.topic;
-    const paymentId = body?.data?.id || body?.id;
-    if (!paymentId) return;
+  // Webhook Mercado Pago (preservado da V13)
+  app.post("/mp/webhook", async (req, res) => {
+    res.status(200).send("OK");
+    try {
+      const body = req.body || {};
+      const type = body.type || body.topic;
+      const paymentId = body?.data?.id || body?.id;
+      if (!paymentId) return;
 
-    if (type && String(type).includes("payment")) {
-      const payment = await mpGetPayment(paymentId);
-      const status = payment.status;
-      const phone = mpExtractPhoneFromPayment(payment);
-      if (!phone) return;
+      if (type && String(type).includes("payment")) {
+        const payment = await mpGetPayment(paymentId);
+        const status = payment.status;
+        const phone = mpExtractPhoneFromPayment(payment);
+        if (!phone) return;
 
-      const state = await getUserState(phone);
-      state.payment = state.payment || {};
-      state.payment.payment_id = paymentId;
-      state.payment.status = status;
-      state.payment.updated_at = Date.now();
-      state.payment.amount = payment.transaction_amount || null;
-      state.payment.plan_key = payment?.metadata?.plan_key || state.payment.plan_key || null;
+        const state = await getUserState(phone);
+        state.payment = state.payment || {};
+        state.payment.payment_id = paymentId;
+        state.payment.status = status;
+        state.payment.updated_at = Date.now();
+        state.payment.amount = payment.transaction_amount || null;
+        state.payment.plan_key = payment?.metadata?.plan_key || state.payment.plan_key || null;
 
-      if (status === "approved" && state.slot_key) await markSlotPaid(state.slot_key, phone);
-      // ▸ V14 FIX: Setar stage CONFIRMED para consistência com spec 8.2
-      if (status === "approved") state.stage = "CONFIRMED";
-      await saveUserState(phone, state);
+        if (status === "approved" && state.slot_key) await markSlotPaid(state.slot_key, phone);
+        // ▸ V14 FIX: Setar stage CONFIRMED para consistência com spec 8.2
+        if (status === "approved") state.stage = "CONFIRMED";
+        await saveUserState(phone, state);
 
-      if (status === "approved") {
-        const botFrom = state?.last_bot_from || null;
-        if (botFrom) {
-          try {
-            await twilioClient.messages.create({ to: `whatsapp:${phone}`, from: botFrom, body: afterPaidReply(state) });
-          } catch {}
+        if (status === "approved") {
+          const botFrom = state?.last_bot_from || null;
+          if (botFrom) {
+            try {
+              await twilioClient.messages.create({ to: `whatsapp:${phone}`, from: botFrom, body: afterPaidReply(state) });
+            } catch {}
+          }
         }
       }
-    }
-  } catch (err) { console.error("❌ MP webhook erro:", err); }
-});
+    } catch (err) { console.error("❌ MP webhook erro:", err); }
+  });
 
 /* ═══════════════════════════════════════════════════════════════════
    ███████████████████████████████████████████████████████████████████
@@ -1391,7 +1547,7 @@ app.post("/mp/webhook", async (req, res) => {
 
    ═══════════════════════════════════════════════════════════════════ */
 
-app.post("/whatsapp", async (req, res) => {
+  app.post("/whatsapp", async (req, res) => {
   const twiml = new twilio.twiml.MessagingResponse();
   res.type("text/xml").send(twiml.toString());
 
@@ -1970,11 +2126,67 @@ app.post("/whatsapp", async (req, res) => {
       } catch {}
     }
   })();
-});
+  });
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    SERVER
    ═══════════════════════════════════════════════════════════════════ */
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 LIA V14 rodando na porta ${PORT}`));
+if (!IS_SIMULATOR_MODE) {
+  app.listen(PORT, () => console.log(`🚀 LIA V14 rodando na porta ${PORT}`));
+}
+
+// =========================================
+// ADAPTER PARA SIMULADOR
+// =========================================
+
+async function responderLIA_simulador(mensagem, contexto = {}) {
+  const persona = contexto.persona || {};
+  const historico = Array.isArray(contexto.historico) ? contexto.historico : [];
+  const flags = detectIntent(mensagem);
+  const personaCondition = detectCondition(persona.condicao_principal || "");
+  const messageCondition = detectCondition(mensagem);
+  const lastLiaReply = [...historico].reverse().find((item) => item.speaker === "lia")?.text || "";
+  const firstName = typeof persona.nome_ficticio === "string" ? persona.nome_ficticio.split(" ")[0] : null;
+
+  const state = {
+    nome: firstName,
+    condition: messageCondition || personaCondition || null,
+    focus: messageCondition || personaCondition || null,
+    problem_text: extractProblemText(mensagem) || persona.condicao_principal || null,
+    stage: /\b(1|2|3|modalidade|modalidades|acompanhamento|avaliacao|avaliação)\b/i.test(lastLiaReply) ? "ASK_PLAN" : null,
+    evidence_used_count: 0,
+    lead_profile: classifyLead(flags, mensagem, { problem_text: extractProblemText(mensagem) || persona.condicao_principal || null }),
+  };
+
+  const priorityAnswer = getPriorityTrustAnswer(state, mensagem);
+  if (priorityAnswer) return priorityAnswer + getStageCTA(state);
+
+  if (flags.wantsPrice) {
+    return "Hoje a consulta com o Dr. Alef tem duas modalidades principais: avaliação inicial por R$347 e acompanhamento com retorno por R$447. Se quiser, eu te explico rapidinho qual costuma fazer mais sentido para cada caso 😊";
+  }
+
+  const directAnswer = handleDirectQuestion(flags, state, mensagem);
+  if (directAnswer) return directAnswer;
+
+  const objectionAnswer = handleObjection(flags, state, mensagem);
+  if (objectionAnswer) return objectionAnswer;
+
+  if (flags.wantsBook || flags.asksHours || flags.confirms) {
+    return "Consigo sim 😊 A consulta é 100% online e eu posso te mostrar os horários disponíveis desta semana. Qual dia costuma ficar melhor para você?";
+  }
+
+  if (flags.asksIfWorks) {
+    return "Essa é uma dúvida muito comum. Muita gente procura o Dr. Alef justamente depois de já ter tentado outros caminhos. A consulta serve para avaliar com honestidade se existe indicação real para o seu caso, com segurança e sem promessa vazia.\n\nSe fizer sentido, eu posso te explicar como funciona a avaliação 😊";
+  }
+
+  if (state.problem_text || state.condition || persona.condicao_principal) {
+    return bridgeReply(state);
+  }
+
+  return askProblemReply(state);
+}
+
+module.exports = { responderLIA_simulador };
