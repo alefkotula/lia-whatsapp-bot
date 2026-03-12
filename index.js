@@ -449,7 +449,9 @@ function detectIntent(text) {
     // Intenções comerciais
     wantsPrice:       /\b(preco|preço|valor|quanto custa|investimento|custa|valores|quanto e|quanto é)\b/.test(t),
     intentPay:        /\b(como (pagar|fa[cç]o para pagar)|pagar|pagamento|pix|cartao|cartão|credito|crédito|debito|débito|boleto|link|parcel|parcela|quero pagar)\b/.test(t),
-    wantsBook:        /\b(quero marcar|quero agendar|agendar|marcar|confirmar consulta|quero consulta|gostaria de agendar|tem horario|tem horário|agenda)\b/.test(t),
+    // ▸ V14 FIX: Removido "marcar", "agendar", "agenda" standalone (falso positivo: "antes de marcar consulta")
+    //   Agora exige verbo de intenção: quero/vou/posso/queria/gostaria/preciso + marcar/agendar
+    wantsBook:        /\b(quero marcar|quero agendar|vou marcar|vou agendar|queria marcar|queria agendar|gostaria de (marcar|agendar)|posso (marcar|agendar)|preciso (marcar|agendar)|bora (marcar|agendar)|confirmar consulta|quero consulta|quero uma vaga|me agenda|tem horario|tem horário)\b/.test(t),
     asksHours:        /\b(horarios|horário|horario|que horas|vagas|disponibilidade)\b/.test(t),
 
     // Confirmação / Recusa
@@ -462,8 +464,10 @@ function detectIntent(text) {
     asksLegal:        /\b(legal no brasil|e legal|é legal|precisa de receita|receita|anvisa|legalizado|regularizado)\b/.test(t),
     asksChapado:      /\b(chapado|chapar|maconha mesmo|isso e maconha|isso é maconha|droga|fico alterado|ficar alterado)\b/.test(t),
     asksWho:          /\b(quem e|quem eh|quem é|quem e o dr|quem é o dr|quem e o doutor|quem é o doutor)\b/.test(t),
-    asksIfWorks:      /\b(funciona|serve|vale a pena|ajuda mesmo|melhora|tem resultado|faz efeito)\b/.test(t),
-    asksIfForMe:      /\b(serve pra mim|serve para mim|é só para|e so para|é pra caso grave|serve pra quem|precisa ter diagnostico|precisa ter diagnóstico|mesmo sem diagnostico|mesmo sem diagnóstico)\b/.test(t),
+    // ▸ V14 FIX: Expandido para cobrir "costuma ajudar", "realmente ajuda", "faz diferença", etc.
+    asksIfWorks:      /\b(funciona|vale a pena|ajuda mesmo|ajuda pra|ajuda para|costuma ajudar|costuma funcionar|costuma melhorar|realmente ajuda|realmente funciona|melhora mesmo|tem resultado|faz efeito|faz diferenca|faz diferença|resolve mesmo|e eficaz|é eficaz|tem eficacia|tem eficácia|da resultado|dá resultado|funciona mesmo|funciona de verdade)\b/.test(t),
+    // ▸ V14 FIX: Expandido para cobrir "casos como o meu", "no meu caso", "pra quem tem [cond]"
+    asksIfForMe:      /\b(serve pra mim|serve para mim|é só para|e so para|é pra caso grave|serve pra quem|funciona pra quem|ajuda quem tem|ajudar quem tem|precisa ter diagnostico|precisa ter diagnóstico|mesmo sem diagnostico|mesmo sem diagnóstico|no meu caso|meu caso|casos como o meu|como o meu|indicado pra|indicado para|pra quem tem)\b/.test(t),
     asksDifferential: /\b(diferença|diferenca|diferencial|por que o dr|por que o doutor|o que muda|o que diferencia|comparando)\b/.test(t),
     asksWhatIncludes: /\b(inclui o que|o que inclui|o que ta incluido|o que tá incluído|o que vem|o que tem dentro|explica o plano|explica a opcao|explica a opção)\b/.test(t),
     asksMedCost:      /\b(medicamento.*cust|remedio.*cust|remedío.*cust|caro.*depois|custo.*mensal|quanto.*mes|quanto.*mês|gast.*por mes|gast.*por mês|tratamento.*cust)\b/.test(t),
@@ -509,7 +513,8 @@ function classifyLead(flags, text, state) {
   if (flags.strongPain) return "emocional";
   // ▸ V14 FIX: Removido "verdade" (falso positivo com "é verdade que funciona?")
   if (flags.asksIsScam || /\b(golpe|fraude|serio|sério)\b/.test(t)) return "desconfiado";
-  if (flags.wantsBook || flags.asksHours || /\b(quero marcar|quero agendar|tem vaga)\b/.test(t)) return "quente";
+  // ▸ V14 FIX: Usa flags (já corrigido) em vez de regex extra com "quero marcar" (redundante)
+  if (flags.wantsBook || flags.asksHours) return "quente";
   if (flags.wantsPrice && !state.problem_text) return "pragmatico";
   if (flags.asksDifferential || flags.saysCheaperElsewhere || /\b(pesquisando|comparando)\b/.test(t)) return "comparador";
   if (flags.asksIfForMe || /\b(serve pra mim|caso grave|sem diagnostico|sem diagnóstico)\b/.test(t)) return "frio";
@@ -1670,7 +1675,17 @@ app.post("/whatsapp", async (req, res) => {
             state.stage = "OFFER_SLOTS";
             reply = await offerSlotsReply(state);
           } else {
-            reply = "Qual dia fica melhor para você? Pode me responder com o número ou com o dia, por exemplo *quinta-feira* 😊";
+            // ▸ V14 FIX: Se a mensagem é longa (>40 chars) ou tem "?", provavelmente é pergunta, não escolha de dia.
+            //   Usar GPT para responder naturalmente + CTA do stage, em vez de repetir "qual dia".
+            if (incomingText.length > 40 || incomingText.includes("?")) {
+              const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dia fica melhor para você?" });
+              if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceReply(); state.stage = "ASK_PLAN"; }
+              else if (ai.reply === "__NEED_BOOK__") { reply = await askDayReply(); }
+              else if (ai.reply.startsWith("__")) { reply = await askDayReply(); }
+              else { reply = ai.reply; state = mergeState(state, ai.updates); }
+            } else {
+              reply = "Qual dia fica melhor para você? Pode me responder com o número ou com o dia, por exemplo *quinta-feira* 😊";
+            }
           }
         }
 
@@ -1706,7 +1721,16 @@ app.post("/whatsapp", async (req, res) => {
             }
           }
 
-          if (!reply) reply = "Qual horário fica melhor? Pode me responder com *1, 2, 3* ou com o horário exato 😊";
+          if (!reply) {
+            // ▸ V14 FIX: Fallback GPT para mensagens longas/perguntas em OFFER_SLOTS
+            if (incomingText.length > 40 || incomingText.includes("?")) {
+              const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual desses horários funciona melhor?" });
+              if (ai.reply.startsWith("__")) { reply = await offerSlotsReply(state); }
+              else { reply = ai.reply; state = mergeState(state, ai.updates); }
+            } else {
+              reply = "Qual horário fica melhor? Pode me responder com *1, 2, 3* ou com o horário exato 😊";
+            }
+          }
         }
 
         // ── Dados cadastrais ──
