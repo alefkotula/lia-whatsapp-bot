@@ -329,10 +329,6 @@ function extractFirstName(text) {
   if (/^(sim|ok|beleza|pode|claro|show|tanto faz|nao|não)$/.test(low)) return null;
   if (/^(dor|sono|ansiedade|fibromialgia|insônia|insonia|artrose|artrite|coluna)$/.test(low)) return null;
 
-  // Se a mensagem parece pergunta ou frase longa, não é nome
-  if ((t.includes("?") || low.split(" ").length > 6)) return null;
-  if (/\b(quanto|como|qual|onde|quando|porque|por que|isso|esse|essa|vocês|voces)\b/.test(low)) return null;
-
   // Padrões de introdução de nome — ORDEM IMPORTA
   const patterns = [
     /(?:pode\s+(?:me\s+)?chamar?\s+(?:de\s+)?)\s*(.+)/i,
@@ -351,8 +347,14 @@ function extractFirstName(text) {
     }
   }
 
+  // Se a mensagem parece pergunta e não houve padrão de apresentação, não é nome.
+  if (!candidate && t.includes("?")) return null;
+
   // Se nenhum padrão casou, usar texto inteiro como candidato
   if (!candidate) candidate = t;
+
+  // Se o nome veio no começo e o resto da mensagem continuou, cortar no fim da primeira frase.
+  candidate = candidate.split(/[\n.!?]/)[0].trim();
 
   // Limpar pontuação
   candidate = candidate.replace(/[^\p{L}\p{N}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
@@ -361,6 +363,8 @@ function extractFirstName(text) {
   const parts = candidate.split(" ").filter(Boolean);
   if (parts.length < 1 || parts.length > 5) return null;
   if (/^\d+$/.test(candidate)) return null;
+
+  if (!candidate && low.split(" ").length > 6) return null;
 
   // Rejeitar se parecer nome de condição médica
   const condWords = /^(dor|sono|ansiedade|fibromialgia|artrose|artrite|enxaqueca|coluna|insônia|insonia|lombar|neuropat)/i;
@@ -524,7 +528,7 @@ function detectIntent(text) {
     asksHowConsultWorks: /\b(como funciona|como e a consulta|como é a consulta|o que acontece na consulta)\b/.test(t),
     asksIfOnline:     /\b(e online|é online|online mesmo|presencial|precisa ir|tem que ir|por video|por vídeo)\b/.test(t),
     asksLegal:        /\b(legal no brasil|e legal|é legal|precisa de receita|receita|anvisa|legalizado|regularizado)\b/.test(t),
-    asksChapado:      /\b(chapado|chapar|maconha mesmo|isso e maconha|isso é maconha|droga|fico alterado|ficar alterado)\b/.test(t),
+    asksChapado:      /\b(chapado|chapar|maconha mesmo|isso e maconha|isso é maconha|droga|fico alterado|fico alterada|ficar alterado|ficar alterada|meio alterado|meio alterada)\b/.test(t),
     asksWho:          /\b(quem e|quem eh|quem é|quem e o dr|quem é o dr|quem e o doutor|quem é o doutor)\b/.test(t),
     // ▸ V14 FIX: Expandido para cobrir "costuma ajudar", "realmente ajuda", "faz diferença", etc.
     asksIfWorks:      /\b(funciona|vale a pena|ajuda mesmo|ajuda pra|ajuda para|costuma ajudar|costuma funcionar|costuma melhorar|realmente ajuda|realmente funciona|melhora mesmo|tem resultado|faz efeito|faz diferenca|faz diferença|resolve mesmo|e eficaz|é eficaz|tem eficacia|tem eficácia|da resultado|dá resultado|funciona mesmo|funciona de verdade)\b/.test(t),
@@ -988,7 +992,7 @@ function afterPaidReply(state) {
 
 function isRepairSignal(text) {
   const t = norm(text);
-  return /\b(voce nao respondeu|você não respondeu|nao respondeu|não respondeu|acho que estamos nos desencontrando|estamos nos desencontrando|isso parece automatico|isso parece automático|isso esta parecendo automatico|isso está parecendo automático|parece roteiro|eu fiz uma pergunta especifica|eu fiz uma pergunta específica|minha pergunta principal|voce esta desviando|você está desviando|responde isso primeiro|antes de pagar.*responde)\b/.test(t);
+  return /\b(voce nao respondeu|você não respondeu|nao respondeu|não respondeu|acho que estamos nos desencontrando|estamos nos desencontrando|isso parece automatico|isso parece automático|isso esta parecendo automatico|isso está parecendo automático|parece roteiro|eu fiz uma pergunta especifica|eu fiz uma pergunta específica|minha pergunta principal|voce esta desviando|você está desviando|responde isso primeiro|antes de pagar.*responde|pulou minha pergunta|travando um pouco na mesma parte|minha pergunta anterior)\b/.test(t);
 }
 
 function hasBeforePaymentFrame(text) {
@@ -1038,6 +1042,17 @@ function shouldTrackImportantQuestion(text, flags) {
   );
 }
 
+function shouldHoldStageCTA(text, flags, state = {}) {
+  const t = norm(text);
+  return (
+    isRepairSignal(text) ||
+    hasBeforePaymentFrame(text) ||
+    /\b(medicamento|remedio mesmo|remédio mesmo|produto especifico|produto específico|depois da consulta|como funciona o tratamento em si|tratamento continuo|tratamento contínuo|usar por meses|usar por anos|por um periodo|por um período|depois nao precisa|depois não precisa|parar|ajuda tambem na ansiedade|ajuda também na ansiedade|mais usado para sono e dor|como costuma acontecer na pratica|como costuma acontecer na prática|antes de pensar em consulta|antes de pensar em marcar|antes de ver horarios|antes de ver horários|antes de marcar|antes de agendar)\b/.test(t) ||
+    ((flags.asksIfWorks || flags.asksIfForMe) && /\b(ansiedade|sono|dor|periodo|período|continuo|contínuo|funciona para isso|serve para isso)\b/.test(t)) ||
+    (state.payment?.link && /\b(acesso|receita|prescricao|prescrição|produto|farmacia|farmácia|importacao|importação|medicacao|medicação)\b/.test(t))
+  );
+}
+
 function isFinalClarificationQuestion(text, flags, state = {}) {
   const resolved = extractReferencedQuestion(text, state);
   const resolvedFlags = detectIntent(resolved);
@@ -1074,8 +1089,11 @@ function buildRepairAcknowledgement(text, state = {}) {
     : "Você tem razão em me cobrar isso. Vou te responder de forma objetiva.";
 }
 
-function buildPaymentResumeReply(state) {
+function buildPaymentResumeReply(state, options = {}) {
   if (state.payment?.link) {
+    if (options.deferLink) {
+      return "Se isso ficou claro para você, eu retomo o fechamento daqui sem te jogar o link de novo antes da hora.";
+    }
     return (
       "Se isso te deixar mais seguro(a), seu horário segue reservado e o link continua aqui para quando você quiser concluir:\n" +
       state.payment.link
@@ -1097,11 +1115,14 @@ function buildRepairResumeReply(state) {
   return "";
 }
 
-function buildPrePaymentClarificationAnswer(text, flags) {
-  const resolved = extractReferencedQuestion(text);
+function buildPrePaymentClarificationAnswer(text, flags, state = {}) {
+  const resolved = extractReferencedQuestion(text, state);
   const t = norm(resolved);
   const resolvedFlags = { ...flags, ...detectIntent(resolved) };
   const parts = [];
+  const directAnswer = getDirectAnswerOnly(resolvedFlags, state, resolved);
+
+  if (directAnswer) parts.push(directAnswer);
 
   if (
     isOperationalAccessQuestion(resolved, resolvedFlags) ||
@@ -1148,8 +1169,8 @@ function maybeHandlePrePaymentClarification(state, flags, text) {
   state.last_prepayment_question = resolvedQuestion;
 
   const ack = buildRepairAcknowledgement(text, state);
-  const answer = buildPrePaymentClarificationAnswer(resolvedQuestion, flags);
-  const resume = buildPaymentResumeReply(state);
+  const answer = buildPrePaymentClarificationAnswer(resolvedQuestion, flags, state);
+  const resume = buildPaymentResumeReply(state, { deferLink: isRepairSignal(text) || shouldHoldStageCTA(resolvedQuestion, flags, state) });
 
   return [ack, answer, resume].filter(Boolean).join("\n\n");
 }
@@ -1165,6 +1186,12 @@ const QUESTION_ANSWERS = {
   howConsultWorks: "A avaliação com o Dr. Alef é *100% online, por videochamada*, dura em média *45 minutos* e é totalmente individualizada. Ele entende seu histórico, o que mais te incomoda hoje, o que você já tentou, quais medicações usa e avalia com cuidado se esse tratamento faz sentido no seu caso.",
 
   howConsultWorksOperational: "Funciona assim: a consulta é *100% online*, dura em média *45 minutos* e o Dr. Alef avalia seu histórico, sintomas, remédios em uso e objetivo com o tratamento. Se houver indicação, ele já explica o caminho mais seguro e o próximo passo prático.",
+
+  treatmentFlowMedication: "Funciona como *tratamento médico*, não como algo solto. Primeiro acontece a consulta. Se houver indicação, o Dr. Alef define se faz sentido prescrever, orienta qual tipo de produto costuma ser mais adequado e explica como funciona o acesso. Ou seja: não é você saindo para comprar qualquer coisa por conta própria.",
+
+  treatmentDuration: "Isso varia de pessoa para pessoa e do objetivo do tratamento. Tem gente que usa por meses com acompanhamento; em outros casos, depois que os sintomas estabilizam, é possível reduzir ou até suspender. O ponto honesto é que isso não é definido como uso obrigatório 'para sempre', e sim pela resposta do seu caso na prática.",
+
+  anxietyAndSleepTogether: "No seu caso faz sentido olhar *ansiedade e sono juntos*, porque uma coisa costuma alimentar a outra. Muita gente procura justamente por isso. Quando existe indicação, o tratamento pode ser pensado para melhorar o sono e também reduzir essa ativação ansiosa, sempre considerando segurança e rotina.",
 
   scheduleHours: "Consigo te passar os horários por aqui mesmo. O próximo passo é escolher o dia para eu abrir as vagas disponíveis e já avançar sua reserva.",
 
@@ -1269,6 +1296,18 @@ const QUESTION_ANSWERS = {
 
 function getPriorityTrustAnswer(state, text) {
   const t = norm(text);
+
+  if (/\b(medicamento que o medico prescreve|medicamento que o médico prescreve|remedio mesmo|remédio mesmo|produto especifico|produto específico|comprar algum produto|comprar produto|como funciona o tratamento em si)\b/.test(t)) {
+    return QUESTION_ANSWERS.treatmentFlowMedication;
+  }
+
+  if (/\b(tratamento continuo|tratamento contínuo|usar por muito tempo|usar por meses|usar por anos|por um periodo|por um período|depois nao precisa|depois não precisa|parar|como costuma acontecer na pratica|como costuma acontecer na prática)\b/.test(t)) {
+    return QUESTION_ANSWERS.treatmentDuration;
+  }
+
+  if (/\b(ajuda tambem na ansiedade|ajuda também na ansiedade|ajudar tambem na ansiedade|ajudar também na ansiedade|mais usado para sono e dor|mais focado em sono e dor|ansiedade e sono andam juntos|ansiedade e sono andam juntas|no meu caso os dois andam juntos)\b/.test(t)) {
+    return QUESTION_ANSWERS.anxietyAndSleepTogether;
+  }
 
   if (/\b(droga ou tratamento|isso e droga ou tratamento|isso é droga ou tratamento|qual e a diferenca entre droga e tratamento|qual é a diferença entre droga e tratamento)\b/.test(t)) {
     return QUESTION_ANSWERS.drugVsTreatment;
@@ -1733,6 +1772,11 @@ function getDirectAnswerOnly(flags, state, text) {
   else if (flags.asksPrivacy) answer = QUESTION_ANSWERS.privacy;
   else if (flags.asksStartNow) answer = QUESTION_ANSWERS.startNow;
   else if (flags.asksPayMethod) answer = QUESTION_ANSWERS.payMethod;
+  else if (flags.asksIfWorks) {
+    answer = /\b(ansiedade)\b/.test(norm(text)) && /\b(sono|dor)\b/.test(norm(text))
+      ? QUESTION_ANSWERS.anxietyAndSleepTogether
+      : QUESTION_ANSWERS.scientificProof;
+  }
   else if (flags.asksIfForMe) answer = QUESTION_ANSWERS.isForMe;
   else if (flags.asksDifferential) answer = QUESTION_ANSWERS.differential;
   else if (flags.asksWhatIncludes) {
@@ -1748,9 +1792,11 @@ function getDirectAnswerOnly(flags, state, text) {
 }
 
 function handleDirectQuestion(flags, state, text) {
-  const cta = getStageCTA(state);
   const answer = getDirectAnswerOnly(flags, state, text);
-  if (answer) return answer + cta;
+  if (answer) {
+    if (shouldHoldStageCTA(text, flags, state)) return answer;
+    return answer + getStageCTA(state);
+  }
   return null;
 }
 
@@ -1763,10 +1809,11 @@ function maybeHandleContextRepair(state, text) {
   if (!answer) return null;
 
   state.last_important_question = resolvedQuestion;
+  const resume = shouldHoldStageCTA(resolvedQuestion, resolvedFlags, state) ? "" : buildRepairResumeReply(state);
   return [
     buildRepairAcknowledgement(text, state),
     answer,
-    buildRepairResumeReply(state),
+    resume,
   ].filter(Boolean).join("\n\n");
 }
 
@@ -2068,6 +2115,9 @@ if (!IS_SIMULATOR_MODE) {
         const directAnswer = !reply && shouldRunCamada1 ? handleDirectQuestion(flags, state, incomingText) : null;
         if (directAnswer) {
           reply = directAnswer;
+          if (shouldTrackImportantQuestion(incomingText, flags) || shouldHoldStageCTA(incomingText, flags, state)) {
+            skipAntiRepeat = true;
+          }
           // Não muda stage — reconecta ao ponto atual
         }
 
@@ -2128,8 +2178,14 @@ if (!IS_SIMULATOR_MODE) {
             state.nome = nm;
             state.name_used_count = 0;
 
+            const directQAfterName = handleDirectQuestion(flags, state, incomingText);
+            if (directQAfterName) {
+              state.stage = state.problem_text ? "BRIDGE" : "ASK_PROBLEM";
+              reply = directQAfterName;
+            }
+
             // Se já temos problema detectado passivamente
-            if (state.problem_text) {
+            else if (state.problem_text) {
               // ▸ Lead quente ou emocional: encurtar
               if (state.lead_profile === "quente" || flags.wantsBook) {
                 state.stage = "ASK_DAY";
@@ -2175,15 +2231,23 @@ if (!IS_SIMULATOR_MODE) {
             state.problem_text = pb;
             state.condition = state.condition || detectCondition(pb) || state.focus || null;
 
-            // Triagem adaptativa
-            state.stage = "DIAGNOSTIC";
-            const nextQ = getNextDiagQuestion(state, incomingText);
-            if (nextQ) {
-              reply = nextQ;
-            } else {
-              // Paciente já contou tudo → bridge direto
+            const directQAfterProblem = handleDirectQuestion(flags, state, incomingText);
+            if (directQAfterProblem) {
               state.stage = "BRIDGE";
-              reply = bridgeReply(state);
+              reply = directQAfterProblem;
+            }
+
+            // Triagem adaptativa
+            if (!reply) {
+              state.stage = "DIAGNOSTIC";
+              const nextQ = getNextDiagQuestion(state, incomingText);
+              if (nextQ) {
+                reply = nextQ;
+              } else {
+                // Paciente já contou tudo → bridge direto
+                state.stage = "BRIDGE";
+                reply = bridgeReply(state);
+              }
             }
           } else {
             // Texto não parece problema — GPT tenta extrair
@@ -2510,16 +2574,23 @@ if (!IS_SIMULATOR_MODE) {
       if (state.payment?.status === "approved") {
         // OK — repetir afterPaidReply é comportamento correto
       } else if (!skipAntiRepeat && similar(reply, state.last_bot_reply)) {
-        // Tentar avançar para próximo passo lógico
-        if (!state.nome) reply = askNameIntroReply();
-        else if (!state.problem_text) reply = askProblemReply(state);
-        else if (!state.date_key) reply = await askDayReply();
-        else if (!state.slot_time && state.date_key) reply = await offerSlotsReply(state);
-        else if (!state.nome_completo) reply = askFullNameReply(state);
-        else if (!state.birthdate) reply = askBirthdateReply(state);
-        else if (!state.email) reply = askEmailReply();
-        else if (state.payment?.link) reply = pendingPaymentReply(state);
-        else reply = "Me conta: como posso te ajudar agora? 😊";
+        const userIsStillOnQuestion =
+          isRepairSignal(incomingText) ||
+          shouldTrackImportantQuestion(incomingText, flags) ||
+          shouldHoldStageCTA(incomingText, flags, state);
+
+        if (!userIsStillOnQuestion) {
+          // Tentar avançar para próximo passo lógico
+          if (!state.nome) reply = askNameIntroReply();
+          else if (!state.problem_text) reply = askProblemReply(state);
+          else if (!state.date_key) reply = await askDayReply();
+          else if (!state.slot_time && state.date_key) reply = await offerSlotsReply(state);
+          else if (!state.nome_completo) reply = askFullNameReply(state);
+          else if (!state.birthdate) reply = askBirthdateReply(state);
+          else if (!state.email) reply = askEmailReply();
+          else if (state.payment?.link) reply = pendingPaymentReply(state);
+          else reply = "Me conta: como posso te ajudar agora? 😊";
+        }
       }
 
       // Contar uso do nome
@@ -2823,9 +2894,6 @@ async function responderLIA_simulador(mensagem, contexto = {}) {
 
   const operationalCloseReply = await maybeHandleOperationalClose(state, flags, mensagem);
   if (operationalCloseReply) return operationalCloseReply;
-
-  const priorityAnswer = getPriorityTrustAnswer(state, mensagem);
-  if (priorityAnswer) return priorityAnswer + getStageCTA(state);
 
   if (flags.wantsPrice) {
     return "Hoje a consulta com o Dr. Alef tem duas modalidades principais: avaliação inicial por R$347 e acompanhamento com retorno por R$447. Se quiser, eu te explico rapidinho qual costuma fazer mais sentido para cada caso 😊";
