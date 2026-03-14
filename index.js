@@ -1,7 +1,9 @@
 /**
  * ═══════════════════════════════════════════════════════════════════
- * INDEX V17 — OPUS COM FECHAMENTO OPERACIONAL
+ * INDEX V23 — GPT
  * ═══════════════════════════════════════════════════════════════════
+ *
+ * Versão de produção, sem código do simulador.
  *
  * MUDANÇAS FUNDAMENTAIS vs V13:
  *
@@ -44,75 +46,16 @@
  * ═══════════════════════════════════════════════════════════════════
  */
 
-const IS_SIMULATOR_MODE = process.env.LIA_SIMULATOR_MODE === "1";
+const express = require("express");
+const bodyParser = require("body-parser");
+const twilio = require("twilio");
+const { Pool } = require("pg");
+const OpenAI = require("openai");
 
-function createNoopApp() {
-  return {
-    use() {},
-    get() {},
-    post() {},
-    listen() {},
-  };
-}
-
-let express;
-let bodyParser;
-let twilio;
-let Pool;
-let OpenAI;
-let app;
-
-if (IS_SIMULATOR_MODE) {
-  express = Object.assign(() => createNoopApp(), {
-    json: () => (_req, _res, next) => (typeof next === "function" ? next() : undefined),
-  });
-  bodyParser = {
-    urlencoded: () => (_req, _res, next) => (typeof next === "function" ? next() : undefined),
-  };
-  twilio = Object.assign(
-    () => ({
-      messages: { create: async () => ({ sid: "simulated" }) },
-    }),
-    {
-      twiml: {
-        MessagingResponse: class MessagingResponse {
-          toString() {
-            return "";
-          }
-        },
-      },
-    },
-  );
-  Pool = class PoolStub {
-    on() {}
-    async query() {
-      return { rows: [] };
-    }
-  };
-  OpenAI = class OpenAIStub {
-    constructor() {
-      this.chat = {
-        completions: {
-          create: async () => ({
-            choices: [{ message: { content: "" } }],
-          }),
-        },
-      };
-    }
-  };
-  app = createNoopApp();
-} else {
-  express = require("express");
-  bodyParser = require("body-parser");
-  twilio = require("twilio");
-  ({ Pool } = require("pg"));
-  OpenAI = require("openai");
-
-  app = express();
-  app.use(bodyParser.urlencoded({ extended: false }));
-  app.use(express.json());
-  app.use("/mp", express.json({ type: ["application/json", "text/json", "*/*"] }));
-}
+const app = express();
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(express.json());
+app.use("/mp", express.json({ type: ["application/json", "text/json", "*/*"] }));
 
 /* ═══════════════════════════════════════════════════════════════════
    ENV + CLIENTS
@@ -218,9 +161,7 @@ async function initDB() {
   `);
   console.log("✅ Tabelas prontas.");
 }
-if (!IS_SIMULATOR_MODE) {
-  initDB().catch((e) => console.error("❌ initDB erro:", e));
-}
+initDB().catch((e) => console.error("❌ initDB erro:", e));
 
 async function getUserState(phone) {
   const { rows } = await pool.query("SELECT state FROM wa_users WHERE phone=$1", [phone]);
@@ -1933,8 +1874,7 @@ function initializeState(state, bot) {
    ROUTES
    ═══════════════════════════════════════════════════════════════════ */
 
-if (!IS_SIMULATOR_MODE) {
-  app.get("/", (req, res) => res.send("OK"));
+app.get("/", (req, res) => res.send("OK"));
   app.get("/mp/thanks", (req, res) => res.send("OK"));
 
   // Webhook Mercado Pago (preservado da V13)
@@ -2619,305 +2559,10 @@ if (!IS_SIMULATOR_MODE) {
     }
   })();
   });
-}
 
 /* ═══════════════════════════════════════════════════════════════════
    SERVER
    ═══════════════════════════════════════════════════════════════════ */
 
 const PORT = process.env.PORT || 10000;
-if (!IS_SIMULATOR_MODE) {
-  app.listen(PORT, () => console.log(`🚀 LIA V17 rodando na porta ${PORT}`));
-}
-
-// =========================================
-// ADAPTER PARA SIMULADOR
-// =========================================
-
-async function responderLIA_simulador(mensagem, contexto = {}) {
-  const persona = contexto.persona || {};
-  const historico = Array.isArray(contexto.historico) ? contexto.historico : [];
-  const effectiveHistorico =
-    historico.length > 0 &&
-    historico[historico.length - 1]?.speaker === "patient" &&
-    norm(historico[historico.length - 1]?.text || "") === norm(mensagem)
-      ? historico.slice(0, -1)
-      : historico;
-  const flags = detectIntent(mensagem);
-  const personaCondition = detectCondition(persona.condicao_principal || "");
-  const messageCondition = detectCondition(mensagem);
-  const firstName = typeof persona.nome_ficticio === "string" ? persona.nome_ficticio.split(" ")[0] : null;
-  const normalizedMessage = norm(mensagem);
-
-  const state = {
-    nome: firstName,
-    condition: messageCondition || personaCondition || null,
-    focus: messageCondition || personaCondition || null,
-    problem_text: extractProblemText(mensagem) || persona.condicao_principal || null,
-    stage: null,
-    evidence_used_count: 0,
-    lead_profile: classifyLead(flags, mensagem, { problem_text: extractProblemText(mensagem) || persona.condicao_principal || null }),
-    date_key: null,
-    slot_time: null,
-    nome_completo: null,
-    birthdate: null,
-    email: null,
-    selected_plan_key: "basic",
-    payment: null,
-    last_user_message: null,
-    last_bot_reply: null,
-    last_important_question: null,
-    last_prepayment_question: null,
-  };
-
-  for (const item of effectiveHistorico) {
-    const text = String(item.text || "");
-    const low = norm(text);
-
-    if (item.speaker === "lia") {
-      state.last_bot_reply = text;
-      if (
-        text.includes("Essa semana ainda tenho horários disponíveis") ||
-        low.includes("horarios disponiveis desta semana") ||
-        low.includes("qual dia costuma ficar melhor") ||
-        low.includes("qual dia fica melhor para voce") ||
-        low.includes("qual dia fica melhor para você")
-      ) {
-        state.stage = "ASK_DAY";
-      } else if (text.startsWith("Para *") && text.includes("Qual fica melhor")) {
-        state.stage = "OFFER_SLOTS";
-      } else if (low.includes("nome completo") && low.includes("data de nascimento") && (low.includes("e-mail") || low.includes("email"))) {
-        state.stage = "ASK_CADASTRE";
-      } else if (low.includes("nome completo")) {
-        state.stage = "ASK_FULLNAME";
-      } else if (low.includes("data de nascimento")) {
-        state.stage = "ASK_BIRTHDATE";
-      } else if (low.includes("e-mail") || low.includes("email")) {
-        state.stage = "ASK_EMAIL";
-      } else if (low.includes("hoje trabalhamos com estas opcoes") || low.includes("duas modalidades principais")) {
-        state.stage = "ASK_PLAN";
-      } else if (low.includes("para confirmar sua consulta, e so finalizar aqui") || low.includes("para confirmar, e so finalizar aqui")) {
-        const linkMatch = text.match(/https?:\/\/\S+/i);
-        state.payment = {
-          status: "pending",
-          link: linkMatch ? linkMatch[0] : "https://pagamento.teste/lia",
-        };
-        state.stage = "WAIT_PAYMENT";
-      } else if (low.includes("pagamento confirmado") || low.includes("consulta esta marcada") || low.includes("consulta está marcada")) {
-        state.payment = state.payment || { link: "https://pagamento.teste/lia" };
-        state.payment.status = "approved";
-        state.stage = "CONFIRMED";
-      }
-      continue;
-    }
-
-    if (!state.date_key) {
-      const extractedDateKey = extractDateKey(text);
-      if (extractedDateKey) state.date_key = extractedDateKey;
-    }
-
-    state.last_user_message = text;
-    if (shouldTrackImportantQuestion(text, detectIntent(text))) {
-      state.last_important_question = extractReferencedQuestion(text, state);
-    }
-    if (state.payment?.link && isFinalClarificationQuestion(text, detectIntent(text), state)) {
-      state.last_prepayment_question = extractReferencedQuestion(text, state);
-    }
-
-    if (!state.slot_time) {
-      const extractedTime = extractHourOnly(text);
-      if (extractedTime) state.slot_time = extractedTime;
-    }
-
-    if (!state.nome_completo) {
-      const fullName = extractFullName(text);
-      if (fullName) state.nome_completo = fullName;
-    }
-
-    if (!state.birthdate) {
-      const extractedBirthdate = extractBirthDate(text);
-      if (extractedBirthdate) state.birthdate = extractedBirthdate;
-    }
-
-    if (!state.email) {
-      const extractedEmail = extractEmail(text);
-      if (extractedEmail) state.email = extractedEmail;
-    }
-
-    if (norm(text) === "aprovar_teste") {
-      state.payment = state.payment || { link: "https://pagamento.teste/lia" };
-      state.payment.status = "approved";
-      state.stage = "CONFIRMED";
-    }
-  }
-
-  const paymentWasRequested =
-    state.payment?.link ||
-    effectiveHistorico.some(
-      (item) =>
-        item.speaker === "lia" &&
-        (norm(item.text || "").includes("para confirmar sua consulta, e so finalizar aqui") ||
-          norm(item.text || "").includes("para confirmar, e so finalizar aqui") ||
-          /https?:\/\/\S+/i.test(String(item.text || ""))),
-    );
-
-  if ((state.stage === "WAIT_PAYMENT" || paymentWasRequested) && normalizedMessage === "aprovar_teste") {
-    state.payment = state.payment || { link: "https://pagamento.teste/lia" };
-    state.payment.status = "approved";
-    return afterPaidReply({
-      ...state,
-      date_key: state.date_key || "13-03",
-      slot_time: state.slot_time || "19h",
-    });
-  }
-
-  const prePaymentClarificationReply = maybeHandlePrePaymentClarification(state, flags, mensagem);
-  if (prePaymentClarificationReply) return prePaymentClarificationReply;
-
-  if (shouldTrackImportantQuestion(mensagem, flags)) {
-    state.last_important_question = extractReferencedQuestion(mensagem, state);
-  }
-
-  const contextRepairReply = maybeHandleContextRepair(state, mensagem);
-  if (contextRepairReply) return contextRepairReply;
-
-  if (state.stage === "ASK_DAY") {
-    let dateKey = extractDateKey(mensagem);
-    if (!dateKey) {
-      const numericChoice = extractNumericChoice(mensagem);
-      const suggested = await getSuggestedDayKeys();
-      if (numericChoice && suggested[numericChoice - 1]) dateKey = suggested[numericChoice - 1];
-    }
-
-    if (dateKey) {
-      state.date_key = dateKey;
-      return offerSlotsReply(state);
-    }
-
-    return await askDayReply();
-  }
-
-  if (state.stage === "OFFER_SLOTS") {
-    let slotTime = extractHourOnly(mensagem);
-
-    if (!slotTime) {
-      const numericChoice = extractNumericChoice(mensagem);
-      const best = await chooseBestSlotsForDate(state.date_key || "13-03", 3);
-      if (numericChoice && best[numericChoice - 1]) slotTime = best[numericChoice - 1];
-    }
-
-    if (slotTime) {
-      state.slot_time = slotTime;
-      return askCadastreBundleReply({
-        ...state,
-        date_key: state.date_key || "13-03",
-        slot_time: state.slot_time,
-      });
-    }
-
-    return offerSlotsReply({
-      ...state,
-      date_key: state.date_key || "13-03",
-    });
-  }
-
-  if (state.stage === "ASK_CADASTRE") {
-    const fullName = extractFullName(mensagem);
-    const birthdate = extractBirthDate(mensagem);
-    const email = extractEmail(mensagem);
-
-    if (fullName && birthdate && email) {
-      state.nome_completo = fullName;
-      state.birthdate = birthdate;
-      state.email = email;
-      const plan = PLANS[state.selected_plan_key || "basic"];
-      const fakeLink = `https://pagamento.teste/${persona.id || "lead"}-${state.date_key || "13-03"}-${state.slot_time || "19h"}`;
-      return paymentSentReply(plan, fakeLink, {
-        ...state,
-        date_key: state.date_key || "13-03",
-        slot_time: state.slot_time || "19h",
-      });
-    }
-
-    return askCadastreBundleReply({
-      ...state,
-      date_key: state.date_key || "13-03",
-      slot_time: state.slot_time || "19h",
-    });
-  }
-
-  if (state.stage === "ASK_FULLNAME") {
-    const fullName = extractFullName(mensagem);
-    if (fullName) {
-      state.nome_completo = fullName;
-      return askBirthdateReply({
-        ...state,
-        nome_completo: fullName,
-      });
-    }
-    return "Me manda seu *nome completo* certinho, por favor.";
-  }
-
-  if (state.stage === "ASK_BIRTHDATE") {
-    const birthdate = extractBirthDate(mensagem);
-    if (birthdate) {
-      state.birthdate = birthdate;
-      return askEmailReply();
-    }
-    return "Me manda sua *data de nascimento* no formato *dd/mm/aaaa*.";
-  }
-
-  if (state.stage === "ASK_EMAIL") {
-    const email = extractEmail(mensagem);
-    if (email) {
-      state.email = email;
-      const plan = PLANS[state.selected_plan_key || "basic"];
-      const fakeLink = `https://pagamento.teste/${persona.id || "lead"}-${state.date_key || "13-03"}-${state.slot_time || "19h"}`;
-      return paymentSentReply(plan, fakeLink, {
-        ...state,
-        date_key: state.date_key || "13-03",
-        slot_time: state.slot_time || "19h",
-      });
-    }
-    return askEmailReply();
-  }
-
-  if (state.stage === "WAIT_PAYMENT" && state.payment?.link) {
-    if (flags.intentPay || flags.asksPayMethod || normalizedMessage.includes("link")) {
-      return pendingPaymentReply({
-        ...state,
-        date_key: state.date_key || "13-03",
-        slot_time: state.slot_time || "19h",
-      });
-    }
-  }
-
-  const operationalCloseReply = await maybeHandleOperationalClose(state, flags, mensagem);
-  if (operationalCloseReply) return operationalCloseReply;
-
-  if (flags.wantsPrice) {
-    return "Hoje a consulta com o Dr. Alef tem duas modalidades principais: avaliação inicial por R$347 e acompanhamento com retorno por R$447. Se quiser, eu te explico rapidinho qual costuma fazer mais sentido para cada caso 😊";
-  }
-
-  const directAnswer = handleDirectQuestion(flags, state, mensagem);
-  if (directAnswer) return directAnswer;
-
-  const objectionAnswer = handleObjection(flags, state, mensagem);
-  if (objectionAnswer) return objectionAnswer;
-
-  if (flags.wantsBook || flags.asksHours || flags.confirms) {
-    return "Consigo sim 😊 A consulta é 100% online e eu posso te mostrar os horários disponíveis desta semana. Qual dia costuma ficar melhor para você?";
-  }
-
-  if (flags.asksIfWorks) {
-    return "Essa é uma dúvida muito comum. Muita gente procura o Dr. Alef justamente depois de já ter tentado outros caminhos. A consulta serve para avaliar com honestidade se existe indicação real para o seu caso, com segurança e sem promessa vazia.\n\nSe fizer sentido, eu posso te explicar como funciona a avaliação 😊";
-  }
-
-  if (state.problem_text || state.condition || persona.condicao_principal) {
-    return bridgeReply(state);
-  }
-
-  return `Entendi, ${state.nome || "tudo bem"} 😊 Antes de te orientar melhor, me conta rapidinho o que mais tem te incomodado hoje?`;
-}
-
-module.exports = { responderLIA_simulador };
+app.listen(PORT, () => console.log(`🚀 LIA V17 rodando na porta ${PORT}`));
