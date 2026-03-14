@@ -216,40 +216,6 @@ function similar(a, b) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   TRANSCRIÇÃO DE ÁUDIO (V24.1 — NOVO)
-   ═══════════════════════════════════════════════════════════════════ */
-
-async function transcribeWhatsAppAudio(mediaUrl) {
-  try {
-    const fetch = (await import("node-fetch")).default;
-    const authHeader = "Basic " + Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
-    const resp = await fetch(mediaUrl, {
-      headers: { Authorization: authHeader },
-      timeout: 15000,
-    });
-    if (!resp.ok) throw new Error(`Download falhou: ${resp.status} ${resp.statusText}`);
-
-    const buffer = Buffer.from(await resp.arrayBuffer());
-    if (buffer.length < 100) throw new Error("Áudio muito curto ou vazio");
-
-    const file = new File([buffer], "audio.ogg", { type: "audio/ogg" });
-    const transcription = await openai.audio.transcriptions.create({
-      model: "whisper-1",
-      file,
-      language: "pt",
-    });
-
-    const text = (transcription.text || "").trim();
-    if (!text || text.length < 2) return null;
-    console.log(`🎙️ Áudio transcrito (${buffer.length} bytes): "${text.slice(0, 120)}"`);
-    return text;
-  } catch (err) {
-    console.error("❌ Erro ao transcrever áudio:", err.message);
-    return null;
-  }
-}
-
-/* ═══════════════════════════════════════════════════════════════════
    DATE/SCHEDULE UTILS (preservado)
    ═══════════════════════════════════════════════════════════════════ */
 
@@ -322,46 +288,10 @@ function extractFirstName(text) {
 }
 
 function extractFullName(text) {
-  const raw = (text || "").trim();
-  if (!raw) return null;
-
-  // 1. Tentar extrair nome após padrões introdutórios
-  const introPatterns = [
-    /(?:nome\s+completo\s+(?:e|é)\s+)/i,
-    /(?:me\s+cham(?:a|o|e)\s+)/i,
-    /(?:(?:meu|o)\s+nome\s+(?:e|é)\s+)/i,
-    /(?:(?:eu\s+)?sou\s+(?:o|a)\s+)/i,
-    /(?:pode\s+(?:me\s+)?chamar?\s+(?:de\s+)?)/i,
-  ];
-
-  let candidate = null;
-  for (const p of introPatterns) {
-    const m = raw.match(p);
-    if (m) {
-      candidate = raw.slice(m.index + m[0].length).trim();
-      break;
-    }
-  }
-
-  // 2. Se não encontrou padrão, usar texto inteiro
-  if (!candidate) candidate = raw;
-
-  // 3. Limpar pontuação e pegar primeira sentença
-  candidate = candidate.split(/[.!?\n]/)[0].trim();
-  candidate = candidate.replace(/[^\p{L}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
-  if (!candidate) return null;
-
-  // 4. Filtrar stop-words iniciais
-  const stopWords = /^(claro|sim|ok|pode|certo|beleza|tudo|bem|obrigado|obrigada|é|e|o|a|meu|minha|com|certeza|bom|boa)$/i;
-  let parts = candidate.split(" ").filter(Boolean);
-  while (parts.length > 0 && stopWords.test(parts[0])) {
-    parts.shift();
-  }
-
+  const cleaned = (text || "").replace(/[^\p{L}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
+  if (!cleaned) return null;
+  const parts = cleaned.split(" ").filter(Boolean);
   if (parts.length < 2) return null;
-  // Limitar a 5 partes (nomes raramente têm mais)
-  if (parts.length > 5) parts = parts.slice(0, 5);
-
   return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(" ");
 }
 
@@ -914,7 +844,7 @@ function priceReply() {
 
 function paymentSentReply(plan, link, state) {
   return (
-    `Perfeito, pré-reserva feita ✅\n\n` +
+    `Perfeito, reserva confirmada ✅\n\n` +
     `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
     `Plano: *${plan.label}* — R$${plan.price}\n\n` +
     `Para confirmar sua consulta, é só finalizar aqui:\n${link}\n\n` +
@@ -925,7 +855,7 @@ function paymentSentReply(plan, link, state) {
 
 function pendingPaymentReply(state) {
   return (
-    `Seu horário está pré-reservado 😊\n\n` +
+    `Seu horário continua reservado 😊\n\n` +
     `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
     `Para confirmar, é só finalizar aqui:\n${state.payment.link}`
   );
@@ -989,7 +919,7 @@ function getStageCTA(state) {
   if (s === "ASK_BIRTHDATE") return "\n\nMe manda sua *data de nascimento* para eu prosseguir 😊";
   if (s === "ASK_EMAIL") return "\n\nMe passa seu *e-mail* para eu completar o cadastro 😊";
   if (s === "ASK_PLAN") return "\n\nQual dessas opções faz mais sentido? Me responde com *1, 2 ou 3* 😊";
-  if (s === "WAIT_PAYMENT" && state.payment?.link) return `\n\nSeu horário está pré-reservado e o link segue ativo:\n${state.payment.link}`;
+  if (s === "WAIT_PAYMENT" && state.payment?.link) return `\n\nSeu horário continua reservado e o link segue ativo:\n${state.payment.link}`;
   return "\n\nSe quiser, eu posso te mostrar os horários disponíveis 😊";
 }
 
@@ -1032,10 +962,6 @@ Você é humana, acolhedora, profissional, segura e experiente. Você acredita n
 4. SEM CTA AUTOMÁTICO: NÃO termine toda mensagem com "Se quiser, posso mostrar horários". Só conduza para agenda quando o paciente estiver pronto ou der sinal.
 
 5. MÁXIMO 7 LINHAS: Seja conciso. WhatsApp não é e-mail.
-
-6. VALIDAÇÃO EMOCIONAL: Quando o paciente compartilhar sofrimento (dor crônica, insônia, ansiedade prolongada, anos de tratamento sem resultado), ANTES de explicar o tratamento, valide com UMA frase curta e empática. Ex: "Conviver com isso por tanto tempo realmente pesa no dia a dia." / "Imagino como deve ser desgastante lidar com isso todo dia." Depois responda normalmente.
-
-7. PERGUNTA EXPLORATÓRIA: Quando o paciente descrever o problema pela PRIMEIRA vez (antes de você ter explicado o tratamento), ANTES de explicar, faça UMA pergunta curta de qualificação para demonstrar interesse genuíno. Ex: "Há quanto tempo você convive com isso?" / "Já tentou algum tratamento antes?" Isso cria conexão e personaliza a conversa.
 
 ═══ O QUE VOCÊ PODE ═══
 - Dizer "o que eu vejo aqui com frequência é que os pacientes melhoram"
@@ -1424,7 +1350,7 @@ app.post("/whatsapp", async (req, res) => {
       const bot = req.body.To || "";
       const phone = lead.replace("whatsapp:", "").trim();
       const phoneDigits = String(phone).replace(/\D/g, "");
-      let incomingText = (req.body.Body || "").trim();
+      const incomingText = (req.body.Body || "").trim();
 
       // ── Admin reset ──
       if (norm(incomingText) === "reset" && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
@@ -1449,38 +1375,17 @@ app.post("/whatsapp", async (req, res) => {
       // ── Load state ──
       let state = initializeState(await getUserState(phone), bot);
 
-      // ── Mídia: transcrição de áudio ou fallback ──
+      // ── Mídia sem texto ──
       const hasMedia = Number(req.body.NumMedia || 0) > 0;
-      if (hasMedia) {
-        const mediaType = (req.body.MediaContentType0 || "").toLowerCase();
-        const mediaUrl = req.body.MediaUrl0;
-
-        if (mediaType.startsWith("audio/") && mediaUrl) {
-          // Áudio do WhatsApp → transcrever via Whisper
-          const transcribed = await transcribeWhatsAppAudio(mediaUrl);
-          if (transcribed && transcribed.length >= 2) {
-            incomingText = transcribed;
-          } else {
-            const fallback = state.nome
-              ? `${state.nome}, não consegui entender bem o áudio 😅 Pode me mandar por texto?`
-              : "Não consegui entender bem o áudio 😅 Pode me mandar por texto?";
-            state.last_bot_reply = fallback;
-            state.last_sent_at = Date.now();
-            await saveUserState(phone, state);
-            await sendWhatsApp(lead, bot, fallback, randInt(1, 2));
-            return;
-          }
-        } else if (!incomingText || incomingText.length < 2) {
-          // Imagem, vídeo, sticker, etc. sem texto acompanhante
-          const mediaReply = state.nome
-            ? `${state.nome}, por enquanto eu só consigo ler mensagens de texto e áudio 😊 Me manda sua dúvida digitando que eu te ajudo.`
-            : "Por enquanto eu só consigo ler mensagens de texto e áudio 😊 Me manda sua dúvida digitando que eu te ajudo.";
-          state.last_bot_reply = mediaReply;
-          state.last_sent_at = Date.now();
-          await saveUserState(phone, state);
-          await sendWhatsApp(lead, bot, mediaReply, randInt(1, 2));
-          return;
-        }
+      if ((!incomingText || incomingText.length < 2) && hasMedia) {
+        const mediaReply = state.nome
+          ? `${state.nome}, por enquanto eu só consigo ler mensagens de texto 😊 Me manda sua dúvida digitando que eu te ajudo.`
+          : "Por enquanto eu só consigo ler mensagens de texto 😊 Me manda sua dúvida digitando que eu te ajudo.";
+        state.last_bot_reply = mediaReply;
+        state.last_sent_at = Date.now();
+        await saveUserState(phone, state);
+        await sendWhatsApp(lead, bot, mediaReply, randInt(1, 2));
+        return;
       }
 
       const flags = detectIntent(incomingText);
@@ -1548,12 +1453,7 @@ app.post("/whatsapp", async (req, res) => {
          CTA inteligente (só quando paciente está pronto).
          ═══════════════════════════════════════════════════════════════ */
 
-      else if (!reply && state.stage && hasQuestion(incomingText)
-        // V24.1 FIX: Não interceptar se estamos em ASK_DAY e paciente escolheu um dia
-        // (ex: "Quinta-feira parece melhor. Teria horário à noite?" deve ir pro state machine)
-        && !(state.stage === "ASK_DAY" && extractDateKey(incomingText))
-        && !(state.stage === "OFFER_SLOTS")
-      ) {
+      else if (!reply && state.stage && hasQuestion(incomingText)) {
         // Paciente fez pergunta em qualquer stage — responder via GPT
         const ctaHint = shouldShowCTA(state, flags, incomingText) ? getStageCTA(state).trim() : "";
         const ai = await runLia({
@@ -1833,7 +1733,7 @@ app.post("/whatsapp", async (req, res) => {
           if (em) {
             state.email = em;
             state.stage = "ASK_PLAN";
-            reply = `Obrigada 😊\n\nHorário pré-reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, sua reserva fica garantida 😊\n\n${priceReply()}`;
+            reply = `Obrigada 😊\n\nHorário reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\n${priceReply()}`;
           } else {
             reply = "Me manda seu *e-mail* certinho, por favor.";
           }
@@ -1897,7 +1797,7 @@ app.post("/whatsapp", async (req, res) => {
             if (flags.intentPay || flags.confirms) {
               reply = pendingPaymentReply(state);
             } else {
-              const ai = await runLia({ incomingText, state, flags, stageCTA: `Seu horário está pré-reservado. Para confirmar é só finalizar aqui: ${state.payment.link}` });
+              const ai = await runLia({ incomingText, state, flags, stageCTA: `Seu horário continua reservado. Para confirmar é só finalizar aqui: ${state.payment.link}` });
               if (ai.reply.startsWith("__")) {
                 reply = pendingPaymentReply(state);
               } else {
