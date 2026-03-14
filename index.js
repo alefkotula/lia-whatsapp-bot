@@ -1,6 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════════════
- * INDEX V24 — GPT-FIRST HUMANIZADO
+ * INDEX V24.2 — GPT-FIRST HUMANIZADO (CORREÇÃO DE REGRESSÃO)
  * ═══════════════════════════════════════════════════════════════════
  *
  * EVOLUÇÃO DA V23. MUDANÇAS FUNDAMENTAIS:
@@ -84,6 +84,12 @@ const MAX_DELAY = Number(MAX_DELAY_SEC || 4);
 const BASE_URL = (PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") || "http://localhost:10000";
 const HOLD_MINUTES = 15;
 const ADMIN_RESET_PHONE_DIGITS = "556581422637";
+
+// V24.2: Stages de coleta de dados — Camada 2 NÃO deve interceptar perguntas nestes stages
+const DATA_COLLECTION_STAGES = [
+  "ASK_DAY", "OFFER_SLOTS", "ASK_FULLNAME",
+  "ASK_BIRTHDATE", "ASK_EMAIL", "ASK_PLAN", "WAIT_PAYMENT"
+];
 
 /* ═══════════════════════════════════════════════════════════════════
    PLANS + SCHEDULE (preservado)
@@ -216,6 +222,40 @@ function similar(a, b) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   TRANSCRIÇÃO DE ÁUDIO (V24.1 — NOVO)
+   ═══════════════════════════════════════════════════════════════════ */
+
+async function transcribeWhatsAppAudio(mediaUrl) {
+  try {
+    const fetch = (await import("node-fetch")).default;
+    const authHeader = "Basic " + Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+    const resp = await fetch(mediaUrl, {
+      headers: { Authorization: authHeader },
+      timeout: 15000,
+    });
+    if (!resp.ok) throw new Error(`Download falhou: ${resp.status} ${resp.statusText}`);
+
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    if (buffer.length < 100) throw new Error("Áudio muito curto ou vazio");
+
+    const file = new File([buffer], "audio.ogg", { type: "audio/ogg" });
+    const transcription = await openai.audio.transcriptions.create({
+      model: "whisper-1",
+      file,
+      language: "pt",
+    });
+
+    const text = (transcription.text || "").trim();
+    if (!text || text.length < 2) return null;
+    console.log(`🎙️ Áudio transcrito (${buffer.length} bytes): "${text.slice(0, 120)}"`);
+    return text;
+  } catch (err) {
+    console.error("❌ Erro ao transcrever áudio:", err.message);
+    return null;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    DATE/SCHEDULE UTILS (preservado)
    ═══════════════════════════════════════════════════════════════════ */
 
@@ -288,10 +328,46 @@ function extractFirstName(text) {
 }
 
 function extractFullName(text) {
-  const cleaned = (text || "").replace(/[^\p{L}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
-  if (!cleaned) return null;
-  const parts = cleaned.split(" ").filter(Boolean);
+  const raw = (text || "").trim();
+  if (!raw) return null;
+
+  // 1. Tentar extrair nome após padrões introdutórios
+  const introPatterns = [
+    /(?:nome\s+completo\s+(?:e|é)\s+)/i,
+    /(?:me\s+cham(?:a|o|e)\s+)/i,
+    /(?:(?:meu|o)\s+nome\s+(?:e|é)\s+)/i,
+    /(?:(?:eu\s+)?sou\s+(?:o|a)\s+)/i,
+    /(?:pode\s+(?:me\s+)?chamar?\s+(?:de\s+)?)/i,
+  ];
+
+  let candidate = null;
+  for (const p of introPatterns) {
+    const m = raw.match(p);
+    if (m) {
+      candidate = raw.slice(m.index + m[0].length).trim();
+      break;
+    }
+  }
+
+  // 2. Se não encontrou padrão, usar texto inteiro
+  if (!candidate) candidate = raw;
+
+  // 3. Limpar pontuação e pegar primeira sentença
+  candidate = candidate.split(/[.!?\n]/)[0].trim();
+  candidate = candidate.replace(/[^\p{L}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
+  if (!candidate) return null;
+
+  // 4. Filtrar stop-words iniciais
+  const stopWords = /^(claro|sim|ok|pode|certo|beleza|tudo|bem|obrigado|obrigada|é|e|o|a|meu|minha|com|certeza|bom|boa)$/i;
+  let parts = candidate.split(" ").filter(Boolean);
+  while (parts.length > 0 && stopWords.test(parts[0])) {
+    parts.shift();
+  }
+
   if (parts.length < 2) return null;
+  // Limitar a 5 partes (nomes raramente têm mais)
+  if (parts.length > 5) parts = parts.slice(0, 5);
+
   return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(" ");
 }
 
@@ -416,7 +492,7 @@ function detectIntent(text) {
     asksIfForMe:      /\b(serve pra mim|serve para mim|é só para|e so para|é pra caso grave|serve pra quem|funciona pra quem|ajuda quem tem|ajudar quem tem|precisa ter diagnostico|precisa ter diagnóstico|mesmo sem diagnostico|mesmo sem diagnóstico|no meu caso|meu caso|casos como o meu|como o meu|indicado pra|indicado para|pra quem tem)\b/.test(t),
     asksDifferential: /\b(diferença|diferenca|diferencial|por que o dr|por que o doutor|o que muda|o que diferencia|comparando)\b/.test(t),
     asksWhatIncludes: /\b(inclui o que|o que inclui|o que ta incluido|o que tá incluído|o que vem|o que tem dentro|explica o plano|explica a opcao|explica a opção)\b/.test(t),
-    asksMedCost:      /\b(medicamento.*cust|remedio.*cust|remedío.*cust|caro.*depois|custo.*mensal|quanto.*mes|quanto.*mês|gast.*por mes|gast.*por mês|tratamento.*cust)\b/.test(t),
+    asksMedCost:      /\b(medicamento.*cust|remedio.*cust|remedío.*cust|caro.*depois|custo.*mensal|quanto.*mes|quanto.*mês|gast.*por mes|gast.*por mês|tratamento.*cust|oleo.*car|óleo.*car|oleo.*cust|óleo.*cust|frasco.*cust|frasco.*car|gota.*cust|gota.*car|quanto.*oleo|quanto.*óleo|quanto.*frasco|8.?000|oito mil)\b/.test(t),
     asksRecipe:       /\b(saio com receita|recebo receita|ja sai com|já sai com|prescrição|prescricao)\b/.test(t),
     asksCanReschedule:/\b(remarcar|reagendar|trocar.*horario|trocar.*horário|mudar.*data|cancelar.*consulta)\b/.test(t),
     asksPrivacy:      /\b(sigilo|sigiloso|ninguem fica sabendo|ninguém fica sabendo|privacidade|discreto)\b/.test(t),
@@ -724,6 +800,14 @@ FATOS SOBRE PAGAMENTO:
 - Pode remarcar com antecedência
 
 SIGILO: Total sigilo médico. Consulta individual por telemedicina.
+
+FATOS SOBRE CUSTO DO MEDICAMENTO:
+- O frasco de óleo medicinal custa em média entre R$150 e R$250 e dura de 2 a 3 meses (alguns pacientes usam por até 6 meses)
+- A duração depende da dose prescrita (quantas gotas por dia) — isso é definido na consulta
+- A medicina canábica evoluiu muito nos últimos anos. Hoje existem produtos fabricados no Brasil
+- Antigamente era mais caro porque dependia de importação. Recentemente os preços caíram bastante
+- NÃO é verdade que custa R$8.000 ou valores absurdos — isso era realidade de anos atrás com importação
+- O custo mensal real fica acessível para a maioria dos pacientes
 `;
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -844,7 +928,7 @@ function priceReply() {
 
 function paymentSentReply(plan, link, state) {
   return (
-    `Perfeito, reserva confirmada ✅\n\n` +
+    `Perfeito, pré-reserva feita ✅\n\n` +
     `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
     `Plano: *${plan.label}* — R$${plan.price}\n\n` +
     `Para confirmar sua consulta, é só finalizar aqui:\n${link}\n\n` +
@@ -855,7 +939,7 @@ function paymentSentReply(plan, link, state) {
 
 function pendingPaymentReply(state) {
   return (
-    `Seu horário continua reservado 😊\n\n` +
+    `Seu horário está pré-reservado 😊\n\n` +
     `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
     `Para confirmar, é só finalizar aqui:\n${state.payment.link}`
   );
@@ -882,6 +966,12 @@ function hasQuestion(text) {
   return text.includes("?") || /\b(queria saber|queria entender|quero entender|quero saber|posso tirar|uma duvida|uma dúvida|deixa eu perguntar|antes de|antes disso)\b/.test(norm(text));
 }
 
+// V24.2: Detecta perguntas substantivas que DEVEM ser respondidas antes de qualquer CTA
+function isSubstantiveQuestion(text) {
+  const t = norm(text);
+  return /\b(como funciona|como e a consulta|como é a consulta|o que acontece|o que inclui|qual a diferenca|qual a diferença|diferencial|e online|é online|precisa de receita|receita|saio com receita|e legal|é legal|anvisa|como consigo|como acesso|como compro|proximo passo|próximo passo|o que eu faco|o que eu faço|por que funciona|por que ajuda|causa|porque acontece|o que causa|qual o tratamento|como trata|como tratar|como e o acompanhamento|como é o acompanhamento|quanto tempo demora|quanto tempo leva|tem efeito colateral|efeito colateral|contraindicacao|contraindicação|posso tomar junto|interacao|interação|quem e o doutor|quem é o doutor|quem e o dr|quem é o dr|formacao|formação)\b/.test(t);
+}
+
 function extractMainQuestion(text) {
   const sentences = text.split(/[.!?\n]+/).map(s => s.trim()).filter(Boolean);
   // Priorizar frases com "?"
@@ -902,10 +992,12 @@ function shouldShowCTA(state, flags, text) {
   if (flags.wantsBook || flags.asksHours || flags.confirms || flags.intentPay) return true;
   // Não mostrar CTA se paciente está no meio de perguntas
   if (hasQuestion(text)) return false;
+  // V24.2: Não mostrar CTA quando paciente fez pergunta substantiva (responda primeiro)
+  if (isSubstantiveQuestion(text)) return false;
   if (isRepairSignal(text)) return false;
-  // Mostrar CTA se já respondemos >= 2 perguntas sem CTA
+  // V24.2: Mostrar CTA se já respondemos >= 3 perguntas sem CTA (antes era 2, muito cedo)
   const answered = Number(state.questions_answered_since_last_cta || 0);
-  if (answered >= 2) return true;
+  if (answered >= 3) return true;
   // Nos stages avançados, mostrar CTA
   if (["ASK_FULLNAME", "ASK_BIRTHDATE", "ASK_EMAIL", "ASK_PLAN", "WAIT_PAYMENT"].includes(state.stage)) return true;
   return false;
@@ -919,7 +1011,9 @@ function getStageCTA(state) {
   if (s === "ASK_BIRTHDATE") return "\n\nMe manda sua *data de nascimento* para eu prosseguir 😊";
   if (s === "ASK_EMAIL") return "\n\nMe passa seu *e-mail* para eu completar o cadastro 😊";
   if (s === "ASK_PLAN") return "\n\nQual dessas opções faz mais sentido? Me responde com *1, 2 ou 3* 😊";
-  if (s === "WAIT_PAYMENT" && state.payment?.link) return `\n\nSeu horário continua reservado e o link segue ativo:\n${state.payment.link}`;
+  if (s === "WAIT_PAYMENT" && state.payment?.link) return `\n\nSeu horário está pré-reservado e o link segue ativo:\n${state.payment.link}`;
+  // V24.2: Não mostrar CTA genérico em stages iniciais
+  if (["ASK_NAME", "ASK_PROBLEM", "DIAGNOSTIC"].includes(s) || !s) return "";
   return "\n\nSe quiser, eu posso te mostrar os horários disponíveis 😊";
 }
 
@@ -962,6 +1056,8 @@ Você é humana, acolhedora, profissional, segura e experiente. Você acredita n
 4. SEM CTA AUTOMÁTICO: NÃO termine toda mensagem com "Se quiser, posso mostrar horários". Só conduza para agenda quando o paciente estiver pronto ou der sinal.
 
 5. MÁXIMO 7 LINHAS: Seja conciso. WhatsApp não é e-mail.
+
+6. VALIDAÇÃO EMOCIONAL: Quando o paciente compartilhar sofrimento (dor crônica, insônia, ansiedade prolongada, anos de tratamento sem resultado), ANTES de explicar o tratamento, valide com UMA frase curta e empática. Ex: "Conviver com isso por tanto tempo realmente pesa no dia a dia." / "Imagino como deve ser desgastante lidar com isso todo dia." Depois responda normalmente.
 
 ═══ O QUE VOCÊ PODE ═══
 - Dizer "o que eu vejo aqui com frequência é que os pacientes melhoram"
@@ -1350,7 +1446,7 @@ app.post("/whatsapp", async (req, res) => {
       const bot = req.body.To || "";
       const phone = lead.replace("whatsapp:", "").trim();
       const phoneDigits = String(phone).replace(/\D/g, "");
-      const incomingText = (req.body.Body || "").trim();
+      let incomingText = (req.body.Body || "").trim();
 
       // ── Admin reset ──
       if (norm(incomingText) === "reset" && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
@@ -1375,17 +1471,38 @@ app.post("/whatsapp", async (req, res) => {
       // ── Load state ──
       let state = initializeState(await getUserState(phone), bot);
 
-      // ── Mídia sem texto ──
+      // ── Mídia: transcrição de áudio ou fallback ──
       const hasMedia = Number(req.body.NumMedia || 0) > 0;
-      if ((!incomingText || incomingText.length < 2) && hasMedia) {
-        const mediaReply = state.nome
-          ? `${state.nome}, por enquanto eu só consigo ler mensagens de texto 😊 Me manda sua dúvida digitando que eu te ajudo.`
-          : "Por enquanto eu só consigo ler mensagens de texto 😊 Me manda sua dúvida digitando que eu te ajudo.";
-        state.last_bot_reply = mediaReply;
-        state.last_sent_at = Date.now();
-        await saveUserState(phone, state);
-        await sendWhatsApp(lead, bot, mediaReply, randInt(1, 2));
-        return;
+      if (hasMedia) {
+        const mediaType = (req.body.MediaContentType0 || "").toLowerCase();
+        const mediaUrl = req.body.MediaUrl0;
+
+        if (mediaType.startsWith("audio/") && mediaUrl) {
+          // Áudio do WhatsApp → transcrever via Whisper
+          const transcribed = await transcribeWhatsAppAudio(mediaUrl);
+          if (transcribed && transcribed.length >= 2) {
+            incomingText = transcribed;
+          } else {
+            const fallback = state.nome
+              ? `${state.nome}, não consegui entender bem o áudio 😅 Pode me mandar por texto?`
+              : "Não consegui entender bem o áudio 😅 Pode me mandar por texto?";
+            state.last_bot_reply = fallback;
+            state.last_sent_at = Date.now();
+            await saveUserState(phone, state);
+            await sendWhatsApp(lead, bot, fallback, randInt(1, 2));
+            return;
+          }
+        } else if (!incomingText || incomingText.length < 2) {
+          // Imagem, vídeo, sticker, etc. sem texto acompanhante
+          const mediaReply = state.nome
+            ? `${state.nome}, por enquanto eu só consigo ler mensagens de texto e áudio 😊 Me manda sua dúvida digitando que eu te ajudo.`
+            : "Por enquanto eu só consigo ler mensagens de texto e áudio 😊 Me manda sua dúvida digitando que eu te ajudo.";
+          state.last_bot_reply = mediaReply;
+          state.last_sent_at = Date.now();
+          await saveUserState(phone, state);
+          await sendWhatsApp(lead, bot, mediaReply, randInt(1, 2));
+          return;
+        }
       }
 
       const flags = detectIntent(incomingText);
@@ -1453,7 +1570,11 @@ app.post("/whatsapp", async (req, res) => {
          CTA inteligente (só quando paciente está pronto).
          ═══════════════════════════════════════════════════════════════ */
 
-      else if (!reply && state.stage && hasQuestion(incomingText)) {
+      else if (!reply && state.stage && hasQuestion(incomingText)
+        // V24.2 FIX: Não interceptar em NENHUM stage de coleta de dados
+        // (cada stage já tem seu próprio handler de perguntas na Camada 3)
+        && !DATA_COLLECTION_STAGES.includes(state.stage)
+      ) {
         // Paciente fez pergunta em qualquer stage — responder via GPT
         const ctaHint = shouldShowCTA(state, flags, incomingText) ? getStageCTA(state).trim() : "";
         const ai = await runLia({
@@ -1478,8 +1599,11 @@ app.post("/whatsapp", async (req, res) => {
         } else {
           reply = ai.reply;
           state = mergeState(state, ai.updates);
-          // Adicionar CTA inteligente se GPT não incluiu direção
-          if (shouldShowCTA(state, flags, incomingText) && !/(horários|horario|marcar|agendar|disponíveis|disponivel)/i.test(reply)) {
+          // V24.2: Adicionar CTA inteligente — mas NÃO em stages iniciais nem após pergunta substantiva
+          if (shouldShowCTA(state, flags, incomingText)
+              && !/(horários|horario|marcar|agendar|disponíveis|disponivel)/i.test(reply)
+              && !["ASK_NAME","ASK_PROBLEM","DIAGNOSTIC"].includes(state.stage)
+              && !isSubstantiveQuestion(incomingText)) {
             reply += getSmartCTA(state, flags, incomingText);
           } else {
             state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
@@ -1733,7 +1857,7 @@ app.post("/whatsapp", async (req, res) => {
           if (em) {
             state.email = em;
             state.stage = "ASK_PLAN";
-            reply = `Obrigada 😊\n\nHorário reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\n${priceReply()}`;
+            reply = `Obrigada 😊\n\nHorário pré-reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, sua reserva fica garantida 😊\n\n${priceReply()}`;
           } else {
             reply = "Me manda seu *e-mail* certinho, por favor.";
           }
@@ -1797,7 +1921,7 @@ app.post("/whatsapp", async (req, res) => {
             if (flags.intentPay || flags.confirms) {
               reply = pendingPaymentReply(state);
             } else {
-              const ai = await runLia({ incomingText, state, flags, stageCTA: `Seu horário continua reservado. Para confirmar é só finalizar aqui: ${state.payment.link}` });
+              const ai = await runLia({ incomingText, state, flags, stageCTA: `Seu horário está pré-reservado. Para confirmar é só finalizar aqui: ${state.payment.link}` });
               if (ai.reply.startsWith("__")) {
                 reply = pendingPaymentReply(state);
               } else {
@@ -1835,6 +1959,13 @@ app.post("/whatsapp", async (req, res) => {
 
         else if (flags.refuses) {
           reply = "Tranquilo, sem problema 😊 Se quiser tirar qualquer dúvida ou entender melhor como funciona, estou aqui.";
+        }
+
+        // V24.2: Resposta direta sobre custo de medicamento/óleos
+        else if (flags.asksMedCost || (flags.saysExpensive && /(oleo|óleo|frasco|gota|medicamento|remedio|remédio|depois|mensal)/i.test(incomingText))) {
+          const nome = state.nome ? `, ${state.nome}` : "";
+          reply = `Boa pergunta${nome} 😊\n\nO frasco do óleo medicinal custa em média entre R$150 e R$250, e dura de 2 a 3 meses — alguns pacientes usam por até 6 meses.\n\nDepende de quantas gotas o Dr. Alef vai prescrever para você e de quantas vezes por dia. Isso é avaliado na consulta.\n\nA medicina canábica evoluiu muito. Hoje temos produtos fabricados no Brasil. Antigamente era mais caro porque dependia de importação, mas recentemente os preços caíram bastante.`;
+          state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
         }
 
         /* ═══════════════════════════════════════════════════════════════
