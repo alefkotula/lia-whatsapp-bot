@@ -418,6 +418,44 @@ function extractHourOnly(text) {
   return null;
 }
 
+function extractSchedulePreference(text) {
+  const t = norm(text);
+  const afterHour = t.match(/(?:depois|apos|após)\s+das?\s*([01]?\d|2[0-3])\s*h?/);
+  if (afterHour) {
+    const minHour = Number(afterHour[1]);
+    return { minHour, label: `depois das ${minHour}h` };
+  }
+  if (/\b(noite|a noite|à noite|periodo da noite|período da noite)\b/.test(t)) {
+    return { minHour: 18, label: "à noite" };
+  }
+  if (/\b(fim da tarde|final da tarde)\b/.test(t)) {
+    return { minHour: 17, maxHour: 20, label: "no fim da tarde" };
+  }
+  if (/\b(manha|manhã|periodo da manha|período da manhã)\b/.test(t)) {
+    return { maxHour: 12, label: "de manhã" };
+  }
+  if (/\b(tarde|periodo da tarde|período da tarde)\b/.test(t)) {
+    return { minHour: 13, maxHour: 18, label: "à tarde" };
+  }
+  return null;
+}
+
+function getHourFromSlot(slot) {
+  const m = String(slot || "").match(/(\d{1,2})/);
+  return m ? Number(m[1]) : null;
+}
+
+function filterSlotsBySchedulePreference(slots, preference) {
+  if (!preference) return slots;
+  return (slots || []).filter((slot) => {
+    const hh = getHourFromSlot(slot);
+    if (hh === null) return true;
+    if (preference.minHour != null && hh < preference.minHour) return false;
+    if (preference.maxHour != null && hh > preference.maxHour) return false;
+    return true;
+  });
+}
+
 function extractNumericChoice(text) {
   const t = norm(text);
   if (/\b1\b|primeiro|primeira/.test(t)) return 1;
@@ -480,7 +518,7 @@ function detectIntent(text) {
     intentPay:        /\b(como (pagar|fa[cç]o para pagar)|pagamento|pix|cartao|cartão|credito|crédito|debito|débito|boleto|link|parcel|parcela|quero pagar|posso pagar|manda o link|me manda o link)\b/.test(t)
                       && !/\b(nao tenho condicao de pagar|não tenho condição de pagar|nao consigo pagar|não consigo pagar|caro demais para pagar|muito caro para pagar)\b/.test(t),
     wantsBook:        /\b(quero marcar|quero agendar|vou marcar|vou agendar|queria marcar|queria agendar|gostaria de (marcar|agendar)|posso (marcar|agendar)|preciso (marcar|agendar)|bora (marcar|agendar)|confirmar consulta|quero consulta|quero uma vaga|me agenda|tem horario|tem horário)\b/.test(t),
-    asksHours:        /\b(horarios|horário|horario|que horas|vagas|disponibilidade)\b/.test(t),
+    asksHours:        /\b(horarios|horário|horario|que horas|vagas|disponibilidade|depois das?\s*\d{1,2}\s*h?|apos as?\s*\d{1,2}\s*h?|após as?\s*\d{1,2}\s*h?|a noite|à noite|fim da tarde|final da tarde)\b/.test(t),
     confirms:         /\b(sim|ok|beleza|confirmo|fechado|vamos|pode ser|confirmar|bora|vamos la|vamos lá|com certeza|claro que sim)\b/.test(t),
     refuses:          /\b(nao quero|não quero|pare|para|chega|desisto|cancela)\b/.test(t),
     asksHowConsultWorks: /\b(como funciona|como e a consulta|como é a consulta|o que acontece na consulta)\b/.test(t),
@@ -492,7 +530,7 @@ function detectIntent(text) {
     asksIfForMe:      /\b(serve pra mim|serve para mim|é só para|e so para|é pra caso grave|serve pra quem|funciona pra quem|ajuda quem tem|ajudar quem tem|precisa ter diagnostico|precisa ter diagnóstico|mesmo sem diagnostico|mesmo sem diagnóstico|no meu caso|meu caso|casos como o meu|como o meu|indicado pra|indicado para|pra quem tem)\b/.test(t),
     asksDifferential: /\b(diferença|diferenca|diferencial|por que o dr|por que o doutor|o que muda|o que diferencia|comparando)\b/.test(t),
     asksWhatIncludes: /\b(inclui o que|o que inclui|o que ta incluido|o que tá incluído|o que vem|o que tem dentro|explica o plano|explica a opcao|explica a opção)\b/.test(t),
-    asksMedCost:      /\b(medicamento.*cust|remedio.*cust|remedío.*cust|caro.*depois|custo.*mensal|quanto.*mes|quanto.*mês|gast.*por mes|gast.*por mês|tratamento.*cust|oleo.*car|óleo.*car|oleo.*cust|óleo.*cust|frasco.*cust|frasco.*car|gota.*cust|gota.*car|quanto.*oleo|quanto.*óleo|quanto.*frasco|8.?000|oito mil)\b/.test(t),
+    asksMedCost:      /\b(medicamento.*cust|remedio.*cust|remedío.*cust|caro.*depois|custo.*mensal|quanto.*mes|quanto.*mês|gast.*por mes|gast.*por mês|tratamento.*cust|tratamento.*mes|tratamento.*mês|oleo.*car|óleo.*car|oleo.*cust|óleo.*cust|frasco.*cust|frasco.*car|gota.*cust|gota.*car|quanto.*oleo|quanto.*óleo|quanto.*frasco|depois da consulta.*(gasto|custo|valor)|cabe no orcamento|cabe no orçamento|faixa.*(valor|preco|preço)|800|1000|8.?000|oito mil)\b/.test(t),
     asksRecipe:       /\b(saio com receita|recebo receita|ja sai com|já sai com|prescrição|prescricao)\b/.test(t),
     asksCanReschedule:/\b(remarcar|reagendar|trocar.*horario|trocar.*horário|mudar.*data|cancelar.*consulta)\b/.test(t),
     asksPrivacy:      /\b(sigilo|sigiloso|ninguem fica sabendo|ninguém fica sabendo|privacidade|discreto)\b/.test(t),
@@ -896,11 +934,20 @@ async function askDayReply() {
   return `Essa semana ainda tenho horários disponíveis:\n\n${opts}\n\nQual fica melhor para você?`;
 }
 
-async function offerSlotsReply(state) {
+async function offerSlotsReply(state, options = {}) {
   const dateKey = state.date_key;
-  const best = await chooseBestSlotsForDate(dateKey, 3);
+  const schedulePreference = options.schedulePreference || null;
+  const available = sortSlotsSmart(await getAvailableSlotsForDate(dateKey));
+  const preferred = filterSlotsBySchedulePreference(available, schedulePreference);
+  const best = (preferred.length ? preferred : available).slice(0, 3);
   if (!best.length) return "Esse dia acabou de ficar sem vagas 😕 Quer que eu te mostre outra data?";
   state.offered_slots = best;
+  if (schedulePreference && preferred.length) {
+    return `Para *${formatDatePt(dateKey)}*, ${schedulePreference.label}, eu tenho:\n\n${best.map((s, i) => `${i + 1}) *${s}*`).join("\n")}\n\nQual fica melhor para você?`;
+  }
+  if (schedulePreference && !preferred.length) {
+    return `Nesse dia eu não tenho vaga ${schedulePreference.label} 😕 O mais próximo que consigo é:\n\n${best.map((s, i) => `${i + 1}) *${s}*`).join("\n")}\n\nQual fica melhor para você?`;
+  }
   return `Para *${formatDatePt(dateKey)}* tenho:\n\n${best.map((s, i) => `${i + 1}) *${s}*`).join("\n")}\n\nQual fica melhor para você?`;
 }
 
@@ -970,6 +1017,22 @@ function hasQuestion(text) {
 function isSubstantiveQuestion(text) {
   const t = norm(text);
   return /\b(como funciona|como e a consulta|como é a consulta|o que acontece|o que inclui|qual a diferenca|qual a diferença|diferencial|e online|é online|precisa de receita|receita|saio com receita|e legal|é legal|anvisa|como consigo|como acesso|como compro|proximo passo|próximo passo|o que eu faco|o que eu faço|por que funciona|por que ajuda|causa|porque acontece|o que causa|qual o tratamento|como trata|como tratar|como e o acompanhamento|como é o acompanhamento|quanto tempo demora|quanto tempo leva|tem efeito colateral|efeito colateral|contraindicacao|contraindicação|posso tomar junto|interacao|interação|quem e o doutor|quem é o doutor|quem e o dr|quem é o dr|formacao|formação)\b/.test(t);
+}
+
+function isTreatmentCostQuestion(text, flags) {
+  if (flags?.asksMedCost) return true;
+  const t = norm(text);
+  return /\b(oleo|óleo|frasco|gota|medicamento|remedio|remédio|tratamento)\b/.test(t) &&
+    /\b(caro|custa|custo|gasto|valor|faixa|mes|mês|por mes|por mês|orcamento|orçamento|800|1000|8000|oito mil|depois da consulta|depois)\b/.test(t);
+}
+
+function buildTreatmentCostReply(state) {
+  const nome = state.nome ? `, ${state.nome}` : "";
+  return `Boa pergunta${nome}.\n\n` +
+    `No geral, o frasco do óleo medicinal costuma ficar em média entre R$150 e R$250 e normalmente dura de 2 a 3 meses.\n\n` +
+    `Em alguns casos pode durar mais, dependendo da dose, da quantidade de gotas e da frequência prescrita.\n\n` +
+    `Hoje já existem produtos brasileiros e os preços caíram bastante em comparação com anos atrás.\n\n` +
+    `Então não é o padrão ficar em valores absurdos. A consulta serve justamente para definir dose e estratégia que façam sentido no seu caso, inclusive no orçamento.`;
 }
 
 function extractMainQuestion(text) {
@@ -1535,6 +1598,11 @@ app.post("/whatsapp", async (req, res) => {
       else if (flags.urgency) {
         reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Por favor, procure um pronto-socorro ou ligue para o SAMU (192) agora. Quando estiver seguro(a), me chama aqui 😊";
       }
+      // V24.3 FIX (bug custo): prioridade alta para custo de tratamento após consulta
+      else if (isTreatmentCostQuestion(incomingText, flags)) {
+        reply = buildTreatmentCostReply(state);
+        state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
+      }
 
       /* ═══════════════════════════════════════════════════════════════
          [CAMADA 1] — REPARO CONVERSACIONAL (V24 NOVO)
@@ -1752,10 +1820,11 @@ app.post("/whatsapp", async (req, res) => {
 
         // ── Escolher dia ──
         else if (state.stage === "ASK_DAY") {
+          const schedulePreference = extractSchedulePreference(incomingText);
           // V24 FIX: Se já tem date_key, pular para OFFER_SLOTS
           if (state.date_key && !state.slot_time) {
             state.stage = "OFFER_SLOTS";
-            reply = await offerSlotsReply(state);
+            reply = await offerSlotsReply(state, { schedulePreference });
           } else {
             const dayChoice = extractNumericChoice(incomingText);
             const explicitDate = extractDateKey(incomingText);
@@ -1764,15 +1833,17 @@ app.post("/whatsapp", async (req, res) => {
             if (dayChoice && suggested[dayChoice - 1]) {
               state.date_key = suggested[dayChoice - 1];
               state.stage = "OFFER_SLOTS";
-              reply = await offerSlotsReply(state);
+              reply = await offerSlotsReply(state, { schedulePreference });
             } else if (explicitDate) {
               const avail = await getAvailableSlotsForDate(explicitDate);
               if (!avail.length) { reply = "Esse dia está sem vagas no momento 😕 Quer que eu te mostre outra data?"; }
-              else { state.date_key = explicitDate; state.stage = "OFFER_SLOTS"; reply = await offerSlotsReply(state); }
+              else { state.date_key = explicitDate; state.stage = "OFFER_SLOTS"; reply = await offerSlotsReply(state, { schedulePreference }); }
             } else if (flags.confirms && suggested.length) {
               state.date_key = suggested[0];
               state.stage = "OFFER_SLOTS";
-              reply = await offerSlotsReply(state);
+              reply = await offerSlotsReply(state, { schedulePreference });
+            } else if (schedulePreference) {
+              reply = `Consigo sim ${schedulePreference.label} 😊\n\n${await askDayReply()}`;
             } else if (hasQuestion(incomingText)) {
               const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dia fica melhor para você?" });
               if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceReply(); state.stage = "ASK_PLAN"; }
@@ -1789,6 +1860,7 @@ app.post("/whatsapp", async (req, res) => {
           const best = state.offered_slots?.length ? state.offered_slots : await chooseBestSlotsForDate(state.date_key, 3);
           const choiceNum = extractNumericChoice(incomingText);
           const requestedTime = extractHourOnly(incomingText);
+          const schedulePreference = extractSchedulePreference(incomingText);
 
           let chosen = null;
           if (choiceNum && best[choiceNum - 1]) chosen = best[choiceNum - 1];
@@ -1801,6 +1873,9 @@ app.post("/whatsapp", async (req, res) => {
             }
           } else if (/\b(outro|nenhum|tem mais)\b/.test(norm(incomingText))) {
             reply = `Sem problema 😊 Que horário em *${formatDatePt(state.date_key)}* funciona melhor para você?`;
+          } else if (schedulePreference) {
+            // V24.3 FIX (bug agenda): preferência por período deve cair no handler operacional
+            reply = await offerSlotsReply(state, { schedulePreference });
           }
 
           if (chosen && !reply) {
@@ -1939,7 +2014,10 @@ app.post("/whatsapp", async (req, res) => {
           if (!state.nome) { state.stage = "ASK_NAME"; reply = askNameIntroReply(); }
           else if (!state.problem_text) { state.stage = "ASK_PROBLEM"; reply = askProblemReply(state); }
           else if (!state.date_key) { state.stage = "ASK_DAY"; reply = await askDayReply(); }
-          else if (!state.slot_time) { state.stage = "OFFER_SLOTS"; reply = await offerSlotsReply(state); }
+          else if (!state.slot_time) {
+            state.stage = "OFFER_SLOTS";
+            reply = await offerSlotsReply(state, { schedulePreference: extractSchedulePreference(incomingText) });
+          }
           else { state.stage = "ASK_PLAN"; reply = priceReply(); }
         }
 
@@ -1959,13 +2037,6 @@ app.post("/whatsapp", async (req, res) => {
 
         else if (flags.refuses) {
           reply = "Tranquilo, sem problema 😊 Se quiser tirar qualquer dúvida ou entender melhor como funciona, estou aqui.";
-        }
-
-        // V24.2: Resposta direta sobre custo de medicamento/óleos
-        else if (flags.asksMedCost || (flags.saysExpensive && /(oleo|óleo|frasco|gota|medicamento|remedio|remédio|depois|mensal)/i.test(incomingText))) {
-          const nome = state.nome ? `, ${state.nome}` : "";
-          reply = `Boa pergunta${nome} 😊\n\nO frasco do óleo medicinal custa em média entre R$150 e R$250, e dura de 2 a 3 meses — alguns pacientes usam por até 6 meses.\n\nDepende de quantas gotas o Dr. Alef vai prescrever para você e de quantas vezes por dia. Isso é avaliado na consulta.\n\nA medicina canábica evoluiu muito. Hoje temos produtos fabricados no Brasil. Antigamente era mais caro porque dependia de importação, mas recentemente os preços caíram bastante.`;
-          state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
         }
 
         /* ═══════════════════════════════════════════════════════════════
