@@ -1182,21 +1182,27 @@ function violatesNoPriceNoLink(text) {
 }
 
 async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = false }) {
-  const resp = await anthropic.messages.create({
-    model: CHAT_MODEL,
-    max_tokens: 1024,
-    temperature: 0.6,
-    system: buildSystemPrompt(state),
-    messages: [
-      { role: "user", content: buildUserPrompt({ incomingText, state, flags, stageCTA, isRepair }) },
-    ],
-  });
+  let resp;
+  try {
+    resp = await anthropic.messages.create({
+      model: CHAT_MODEL,
+      max_tokens: 1024,
+      system: buildSystemPrompt(state),
+      messages: [
+        { role: "user", content: buildUserPrompt({ incomingText, state, flags, stageCTA, isRepair }) },
+      ],
+    });
+  } catch (apiErr) {
+    console.error("❌ Anthropic API erro:", apiErr?.status, apiErr?.message, JSON.stringify(apiErr?.error || {}));
+    return { reply: "Me conta mais sobre o que está te incomodando 😊", updates: {} };
+  }
 
   const content = resp.content?.[0]?.text?.trim() || "";
   let parsed = null;
   try { parsed = JSON.parse(content); } catch { parsed = null; }
 
   if (!parsed || typeof parsed !== "object" || !parsed.reply) {
+    console.warn("⚠️ Claude retornou resposta fora do formato JSON. Conteúdo:", content.slice(0, 200));
     return { reply: "Me conta mais sobre o que está te incomodando 😊", updates: {} };
   }
 
