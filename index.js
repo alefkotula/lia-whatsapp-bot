@@ -46,7 +46,8 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const twilio = require("twilio");
 const { Pool } = require("pg");
-const OpenAI = require("openai");
+const OpenAI = require("openai");          // mantido APENAS para Whisper (transcrição de áudio)
+const Anthropic = require("@anthropic-ai/sdk"); // LIA usa Claude para respostas
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -58,7 +59,8 @@ app.use("/mp", express.json({ type: ["application/json", "text/json", "*/*"] }))
    ═══════════════════════════════════════════════════════════════════ */
 
 const {
-  OPENAI_API_KEY,
+  OPENAI_API_KEY,       // usado APENAS para Whisper (transcrição de áudio)
+  ANTHROPIC_API_KEY,    // usado para respostas da LIA
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
   DATABASE_URL,
@@ -69,16 +71,18 @@ const {
   PUBLIC_BASE_URL,
 } = process.env;
 
-if (!OPENAI_API_KEY) console.error("❌ Falta OPENAI_API_KEY");
+if (!OPENAI_API_KEY) console.warn("⚠️ OPENAI_API_KEY ausente — transcrição de áudio desabilitada.");
+if (!ANTHROPIC_API_KEY) console.error("❌ Falta ANTHROPIC_API_KEY");
 if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) console.error("❌ Falta TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN");
 if (!DATABASE_URL) console.error("❌ Falta DATABASE_URL");
 if (!MP_ACCESS_TOKEN) console.error("❌ Falta MP_ACCESS_TOKEN");
 if (!PUBLIC_BASE_URL) console.warn("⚠️ PUBLIC_BASE_URL não definido.");
 
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });         // só para Whisper
+const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY }); // para respostas da LIA
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-const CHAT_MODEL = MODEL_CHAT || "gpt-4.1";
+const CHAT_MODEL = MODEL_CHAT || "claude-opus-4-5";
 const MIN_DELAY = Number(MIN_DELAY_SEC || 1);
 const MAX_DELAY = Number(MAX_DELAY_SEC || 4);
 const BASE_URL = (PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") || "http://localhost:10000";
@@ -1178,16 +1182,17 @@ function violatesNoPriceNoLink(text) {
 }
 
 async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = false }) {
-  const resp = await openai.chat.completions.create({
+  const resp = await anthropic.messages.create({
     model: CHAT_MODEL,
+    max_tokens: 1024,
     temperature: 0.6,
+    system: buildSystemPrompt(state),
     messages: [
-      { role: "system", content: buildSystemPrompt(state) },
       { role: "user", content: buildUserPrompt({ incomingText, state, flags, stageCTA, isRepair }) },
     ],
   });
 
-  const content = resp.choices?.[0]?.message?.content?.trim() || "";
+  const content = resp.content?.[0]?.text?.trim() || "";
   let parsed = null;
   try { parsed = JSON.parse(content); } catch { parsed = null; }
 
@@ -1213,7 +1218,7 @@ async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = fa
 /* ═══════════════════════════════════════════════════════════════════
    ANTI-LOOP SYSTEM — V24 NOVO
    ═══════════════════════════════════════════════════════════════════
-   Detecta respostas repetidas e regenera via GPT.
+   Detecta respostas repetidas e regenera via Claude.
    ═══════════════════════════════════════════════════════════════════ */
 
 async function ensureNoRepeat(reply, state, incomingText, flags) {
