@@ -67,6 +67,8 @@ const {
   MAX_DELAY_SEC,
   MP_ACCESS_TOKEN,
   PUBLIC_BASE_URL,
+  TWILIO_WHATSAPP_NUMBER,
+  MANUAL_SEND_SECRET,
 } = process.env;
 
 if (!OPENAI_API_KEY) console.error("❌ Falta OPENAI_API_KEY");
@@ -2105,6 +2107,43 @@ app.post("/whatsapp", async (req, res) => {
       } catch {}
     }
   })();
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   ENVIO MANUAL — ETAPA 1 SUPERVISÃO
+   Endpoint para o Dr. Alef enviar mensagem manual a qualquer paciente
+   sem interferir no fluxo automático da LIA.
+   ═══════════════════════════════════════════════════════════════════ */
+
+app.post("/send-manual", async (req, res) => {
+  const { to, message, secret } = req.body || {};
+
+  if (!MANUAL_SEND_SECRET) return res.status(500).json({ ok: false, error: "MANUAL_SEND_SECRET não configurado no servidor" });
+  if (secret !== MANUAL_SEND_SECRET) return res.status(401).json({ ok: false, error: "secret inválido" });
+  if (!to || !message) return res.status(400).json({ ok: false, error: "campos 'to' e 'message' são obrigatórios" });
+
+  // Normalizar número: aceita "5565...", "+5565...", "whatsapp:+5565..."
+  let phone = String(to).replace(/\D/g, "");
+  if (!phone || phone.length < 10) return res.status(400).json({ ok: false, error: "número inválido" });
+  const toWhatsApp = `whatsapp:+${phone}`;
+
+  // Usar TWILIO_WHATSAPP_NUMBER se configurado, senão fallback do webhook
+  const fromNumber = TWILIO_WHATSAPP_NUMBER || "";
+  if (!fromNumber) return res.status(500).json({ ok: false, error: "TWILIO_WHATSAPP_NUMBER não configurado" });
+  const fromWhatsApp = fromNumber.startsWith("whatsapp:") ? fromNumber : `whatsapp:${fromNumber}`;
+
+  try {
+    const sent = await twilioClient.messages.create({
+      to: toWhatsApp,
+      from: fromWhatsApp,
+      body: message,
+    });
+    console.log(`📤 Manual → ${toWhatsApp}: "${message.slice(0, 80)}..." (sid: ${sent.sid})`);
+    return res.status(200).json({ ok: true, sid: sent.sid, to: toWhatsApp });
+  } catch (err) {
+    console.error("❌ Erro envio manual:", err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 /* ═══════════════════════════════════════════════════════════════════
