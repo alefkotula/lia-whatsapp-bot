@@ -78,8 +78,7 @@ if (!PUBLIC_BASE_URL) console.warn("⚠️ PUBLIC_BASE_URL não definido.");
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-const MODEL_SMART = "gpt-5.4";   // respostas que exigem empatia, persuasão, objeções
-const MODEL_FAST  = "gpt-4.1";   // tarefas simples: coleta de dados, fallbacks, reformulação
+const CHAT_MODEL = MODEL_CHAT || "gpt-4.1";
 const MIN_DELAY = Number(MIN_DELAY_SEC || 1);
 const MAX_DELAY = Number(MAX_DELAY_SEC || 4);
 const BASE_URL = (PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") || "http://localhost:10000";
@@ -1178,9 +1177,9 @@ function violatesNoPriceNoLink(text) {
   return false;
 }
 
-async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = false, model = MODEL_SMART }) {
+async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = false }) {
   const resp = await openai.chat.completions.create({
-    model,
+    model: CHAT_MODEL,
     temperature: 0.6,
     messages: [
       { role: "system", content: buildSystemPrompt(state) },
@@ -1225,14 +1224,13 @@ async function ensureNoRepeat(reply, state, incomingText, flags) {
 
   if (!isSimilar) return reply;
 
-  // Resposta é repetida — regenerar via GPT (fast: só reformulação)
+  // Resposta é repetida — regenerar via GPT
   const ai = await runLia({
     incomingText,
     state,
     flags,
     stageCTA: "",
-    isRepair: true,
-    model: MODEL_FAST,
+    isRepair: true, // Força o GPT a gerar algo diferente
   });
 
   if (ai.reply.startsWith("__") || similar(ai.reply, state.last_bot_reply)) {
@@ -1677,8 +1675,8 @@ app.post("/whatsapp", async (req, res) => {
         // ── Abertura: sem stage e sem nome ──
         if (!state.stage && !state.nome) {
           if (hasQuestion(incomingText)) {
-            // Primeira mensagem tem pergunta — responder via GPT + pedir nome (fast)
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "", model: MODEL_FAST });
+            // Primeira mensagem tem pergunta — responder via GPT + pedir nome
+            const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
             if (!ai.reply.startsWith("__")) {
               reply = ai.reply + "\n\nAntes de mais nada, qual é o seu *primeiro nome*? 😊";
               state = mergeState(state, ai.updates);
@@ -1732,9 +1730,9 @@ app.post("/whatsapp", async (req, res) => {
                 reply = askProblemReply(state);
               }
             } else {
-              // Não extraiu nome — pode ser pergunta, responder via GPT (fast)
+              // Não extraiu nome — pode ser pergunta, responder via GPT
               if (hasQuestion(incomingText)) {
-                const ai = await runLia({ incomingText, state, flags, stageCTA: "", model: MODEL_FAST });
+                const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
                 if (!ai.reply.startsWith("__")) {
                   reply = ai.reply + "\n\nAntes de seguir, me diz seu *primeiro nome* 😊";
                   state = mergeState(state, ai.updates);
@@ -1764,7 +1762,7 @@ app.post("/whatsapp", async (req, res) => {
               reply = bridgeReply(state);
             }
           } else {
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "Me conta: o que tem te incomodado mais?", model: MODEL_FAST });
+            const ai = await runLia({ incomingText, state, flags, stageCTA: "Me conta: o que tem te incomodado mais?" });
             if (ai.reply.startsWith("__")) {
               reply = askProblemReply(state);
             } else {
@@ -1881,7 +1879,7 @@ app.post("/whatsapp", async (req, res) => {
 
           if (!reply) {
             if (hasQuestion(incomingText)) {
-              const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual desses horários funciona melhor?", model: MODEL_FAST });
+              const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual desses horários funciona melhor?" });
               if (ai.reply.startsWith("__")) { reply = await offerSlotsReply(state); }
               else { reply = ai.reply; state = mergeState(state, ai.updates); }
             } else {
@@ -1898,7 +1896,7 @@ app.post("/whatsapp", async (req, res) => {
             state.stage = "ASK_BIRTHDATE";
             reply = askBirthdateReply(state);
           } else if (hasQuestion(incomingText)) {
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "Me passa seu nome completo para finalizar a reserva", model: MODEL_FAST });
+            const ai = await runLia({ incomingText, state, flags, stageCTA: "Me passa seu nome completo para finalizar a reserva" });
             if (!ai.reply.startsWith("__")) { reply = ai.reply + "\n\nMe passa seu *nome completo* 😊"; state = mergeState(state, ai.updates); }
             else { reply = "Me manda seu *nome completo* certinho, por favor."; }
           } else {
@@ -1972,7 +1970,7 @@ app.post("/whatsapp", async (req, res) => {
             reply = medCostReply(state);
             state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
           } else {
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dessas opções faz mais sentido? Me responde com 1, 2 ou 3", model: MODEL_FAST });
+            const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dessas opções faz mais sentido? Me responde com 1, 2 ou 3" });
             if (ai.reply.startsWith("__")) {
               reply = "Se quiser, eu posso te explicar a diferença entre as opções. Qual faz mais sentido: *1, 2 ou 3*?";
             } else {
@@ -1988,7 +1986,7 @@ app.post("/whatsapp", async (req, res) => {
             if (flags.intentPay || flags.confirms) {
               reply = pendingPaymentReply(state);
             } else {
-              const ai = await runLia({ incomingText, state, flags, stageCTA: `Seu horário está pré-reservado. Para confirmar é só finalizar aqui: ${state.payment.link}`, model: MODEL_FAST });
+              const ai = await runLia({ incomingText, state, flags, stageCTA: `Seu horário está pré-reservado. Para confirmar é só finalizar aqui: ${state.payment.link}` });
               if (ai.reply.startsWith("__")) {
                 reply = pendingPaymentReply(state);
               } else {
