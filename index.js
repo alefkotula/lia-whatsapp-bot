@@ -46,8 +46,7 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const twilio = require("twilio");
 const { Pool } = require("pg");
-const OpenAI = require("openai");          // mantido APENAS para Whisper (transcrição de áudio)
-const Anthropic = require("@anthropic-ai/sdk"); // LIA usa Claude para respostas
+const OpenAI = require("openai");
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -59,8 +58,7 @@ app.use("/mp", express.json({ type: ["application/json", "text/json", "*/*"] }))
    ═══════════════════════════════════════════════════════════════════ */
 
 const {
-  OPENAI_API_KEY,       // usado APENAS para Whisper (transcrição de áudio)
-  ANTHROPIC_API_KEY,    // usado para respostas da LIA
+  OPENAI_API_KEY,
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
   DATABASE_URL,
@@ -71,18 +69,17 @@ const {
   PUBLIC_BASE_URL,
 } = process.env;
 
-if (!OPENAI_API_KEY) console.warn("⚠️ OPENAI_API_KEY ausente — transcrição de áudio desabilitada.");
-if (!ANTHROPIC_API_KEY) console.error("❌ Falta ANTHROPIC_API_KEY");
+if (!OPENAI_API_KEY) console.error("❌ Falta OPENAI_API_KEY");
 if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) console.error("❌ Falta TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN");
 if (!DATABASE_URL) console.error("❌ Falta DATABASE_URL");
 if (!MP_ACCESS_TOKEN) console.error("❌ Falta MP_ACCESS_TOKEN");
 if (!PUBLIC_BASE_URL) console.warn("⚠️ PUBLIC_BASE_URL não definido.");
 
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });         // só para Whisper
-const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY }); // para respostas da LIA
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-const CHAT_MODEL = MODEL_CHAT || "claude-opus-4-5";
+const MODEL_SMART = "gpt-5.4";   // respostas que exigem empatia, persuasão, objeções
+const MODEL_FAST  = "gpt-4.1";   // tarefas simples: coleta de dados, fallbacks, reformulação
 const MIN_DELAY = Number(MIN_DELAY_SEC || 1);
 const MAX_DELAY = Number(MAX_DELAY_SEC || 4);
 const BASE_URL = (PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") || "http://localhost:10000";
@@ -1181,28 +1178,21 @@ function violatesNoPriceNoLink(text) {
   return false;
 }
 
-async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = false }) {
-  let resp;
-  try {
-    resp = await anthropic.messages.create({
-      model: CHAT_MODEL,
-      max_tokens: 1024,
-      system: buildSystemPrompt(state),
-      messages: [
-        { role: "user", content: buildUserPrompt({ incomingText, state, flags, stageCTA, isRepair }) },
-      ],
-    });
-  } catch (apiErr) {
-    console.error("❌ Anthropic API erro:", apiErr?.status, apiErr?.message, JSON.stringify(apiErr?.error || {}));
-    return { reply: "Me conta mais sobre o que está te incomodando 😊", updates: {} };
-  }
+async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = false, model = MODEL_SMART }) {
+  const resp = await openai.chat.completions.create({
+    model,
+    temperature: 0.6,
+    messages: [
+      { role: "system", content: buildSystemPrompt(state) },
+      { role: "user", content: buildUserPrompt({ incomingText, state, flags, stageCTA, isRepair }) },
+    ],
+  });
 
-  const content = resp.content?.[0]?.text?.trim() || "";
+  const content = resp.choices?.[0]?.message?.content?.trim() || "";
   let parsed = null;
   try { parsed = JSON.parse(content); } catch { parsed = null; }
 
   if (!parsed || typeof parsed !== "object" || !parsed.reply) {
-    console.warn("⚠️ Claude retornou resposta fora do formato JSON. Conteúdo:", content.slice(0, 200));
     return { reply: "Me conta mais sobre o que está te incomodando 😊", updates: {} };
   }
 
@@ -1224,7 +1214,7 @@ async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = fa
 /* ═══════════════════════════════════════════════════════════════════
    ANTI-LOOP SYSTEM — V24 NOVO
    ═══════════════════════════════════════════════════════════════════
-   Detecta respostas repetidas e regenera via Claude.
+   Detecta respostas repetidas e regenera via GPT.
    ═══════════════════════════════════════════════════════════════════ */
 
 async function ensureNoRepeat(reply, state, incomingText, flags) {
@@ -1235,13 +1225,14 @@ async function ensureNoRepeat(reply, state, incomingText, flags) {
 
   if (!isSimilar) return reply;
 
-  // Resposta é repetida — regenerar via GPT
+  // Resposta é repetida — regenerar via GPT (fast: só reformulação)
   const ai = await runLia({
     incomingText,
     state,
     flags,
     stageCTA: "",
-    isRepair: true, // Força o GPT a gerar algo diferente
+    isRepair: true,
+    model: MODEL_FAST,
   });
 
   if (ai.reply.startsWith("__") || similar(ai.reply, state.last_bot_reply)) {
@@ -1686,8 +1677,8 @@ app.post("/whatsapp", async (req, res) => {
         // ── Abertura: sem stage e sem nome ──
         if (!state.stage && !state.nome) {
           if (hasQuestion(incomingText)) {
-            // Primeira mensagem tem pergunta — responder via GPT + pedir nome
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
+            // Primeira mensagem tem pergunta — responder via GPT + pedir nome (fast)
+            const ai = await runLia({ incomingText, state, flags, stageCTA: "", model: MODEL_FAST });
             if (!ai.reply.startsWith("__")) {
               reply = ai.reply + "\n\nAntes de mais nada, qual é o seu *primeiro nome*? 😊";
               state = mergeState(state, ai.updates);
@@ -1741,9 +1732,9 @@ app.post("/whatsapp", async (req, res) => {
                 reply = askProblemReply(state);
               }
             } else {
-              // Não extraiu nome — pode ser pergunta, responder via GPT
+              // Não extraiu nome — pode ser pergunta, responder via GPT (fast)
               if (hasQuestion(incomingText)) {
-                const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
+                const ai = await runLia({ incomingText, state, flags, stageCTA: "", model: MODEL_FAST });
                 if (!ai.reply.startsWith("__")) {
                   reply = ai.reply + "\n\nAntes de seguir, me diz seu *primeiro nome* 😊";
                   state = mergeState(state, ai.updates);
@@ -1773,7 +1764,7 @@ app.post("/whatsapp", async (req, res) => {
               reply = bridgeReply(state);
             }
           } else {
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "Me conta: o que tem te incomodado mais?" });
+            const ai = await runLia({ incomingText, state, flags, stageCTA: "Me conta: o que tem te incomodado mais?", model: MODEL_FAST });
             if (ai.reply.startsWith("__")) {
               reply = askProblemReply(state);
             } else {
@@ -1890,7 +1881,7 @@ app.post("/whatsapp", async (req, res) => {
 
           if (!reply) {
             if (hasQuestion(incomingText)) {
-              const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual desses horários funciona melhor?" });
+              const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual desses horários funciona melhor?", model: MODEL_FAST });
               if (ai.reply.startsWith("__")) { reply = await offerSlotsReply(state); }
               else { reply = ai.reply; state = mergeState(state, ai.updates); }
             } else {
@@ -1907,7 +1898,7 @@ app.post("/whatsapp", async (req, res) => {
             state.stage = "ASK_BIRTHDATE";
             reply = askBirthdateReply(state);
           } else if (hasQuestion(incomingText)) {
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "Me passa seu nome completo para finalizar a reserva" });
+            const ai = await runLia({ incomingText, state, flags, stageCTA: "Me passa seu nome completo para finalizar a reserva", model: MODEL_FAST });
             if (!ai.reply.startsWith("__")) { reply = ai.reply + "\n\nMe passa seu *nome completo* 😊"; state = mergeState(state, ai.updates); }
             else { reply = "Me manda seu *nome completo* certinho, por favor."; }
           } else {
@@ -1981,7 +1972,7 @@ app.post("/whatsapp", async (req, res) => {
             reply = medCostReply(state);
             state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
           } else {
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dessas opções faz mais sentido? Me responde com 1, 2 ou 3" });
+            const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dessas opções faz mais sentido? Me responde com 1, 2 ou 3", model: MODEL_FAST });
             if (ai.reply.startsWith("__")) {
               reply = "Se quiser, eu posso te explicar a diferença entre as opções. Qual faz mais sentido: *1, 2 ou 3*?";
             } else {
@@ -1997,7 +1988,7 @@ app.post("/whatsapp", async (req, res) => {
             if (flags.intentPay || flags.confirms) {
               reply = pendingPaymentReply(state);
             } else {
-              const ai = await runLia({ incomingText, state, flags, stageCTA: `Seu horário está pré-reservado. Para confirmar é só finalizar aqui: ${state.payment.link}` });
+              const ai = await runLia({ incomingText, state, flags, stageCTA: `Seu horário está pré-reservado. Para confirmar é só finalizar aqui: ${state.payment.link}`, model: MODEL_FAST });
               if (ai.reply.startsWith("__")) {
                 reply = pendingPaymentReply(state);
               } else {
