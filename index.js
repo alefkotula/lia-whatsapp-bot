@@ -69,6 +69,7 @@ const {
   PUBLIC_BASE_URL,
   TWILIO_WHATSAPP_NUMBER,
   MANUAL_SEND_SECRET,
+  ADMIN_READ_SECRET,
 } = process.env;
 
 if (!OPENAI_API_KEY) console.error("❌ Falta OPENAI_API_KEY");
@@ -159,6 +160,16 @@ async function initDB() {
       paid_at TIMESTAMPTZ
     );
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id SERIAL PRIMARY KEY,
+      from_number TEXT,
+      to_number TEXT,
+      body TEXT,
+      direction TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
   console.log("✅ Tabelas prontas.");
 }
 initDB().catch((e) => console.error("❌ initDB erro:", e));
@@ -180,6 +191,15 @@ async function saveUserState(phone, newState) {
      ON CONFLICT (phone) DO UPDATE SET state=$2::jsonb, updated_at=NOW()`,
     [phone, JSON.stringify(newState)]
   );
+}
+
+async function logMessage(from, to, body, direction) {
+  try {
+    await pool.query(
+      `INSERT INTO messages (from_number, to_number, body, direction) VALUES ($1, $2, $3, $4)`,
+      [from, to, (body || "").slice(0, 4000), direction]
+    );
+  } catch (err) { console.error("❌ logMessage erro:", err.message); }
 }
 
 function mergeState(oldState, updates) {
@@ -1556,6 +1576,9 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
+      // Salvar mensagem inbound
+      logMessage(lead, bot, incomingText, "inbound");
+
       const flags = detectIntent(incomingText);
 
       // Atualizar focus/condition/problem passivamente
@@ -2094,6 +2117,7 @@ app.post("/whatsapp", async (req, res) => {
 
       await saveUserState(phone, state);
       await sendWhatsApp(lead, bot, reply, delaySec);
+      logMessage(bot, lead, reply, "outbound");
 
     } catch (err) {
       console.error("❌ Erro no processamento:", err);
@@ -2139,11 +2163,75 @@ app.post("/send-manual", async (req, res) => {
       body: message,
     });
     console.log(`📤 Manual → ${toWhatsApp}: "${message.slice(0, 80)}..." (sid: ${sent.sid})`);
+    logMessage(fromWhatsApp, toWhatsApp, message, "outbound_manual");
     return res.status(200).json({ ok: true, sid: sent.sid, to: toWhatsApp });
   } catch (err) {
     console.error("❌ Erro envio manual:", err.message);
     return res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   ADMIN API — ENDPOINTS PARA RETOOL / PAINEL
+   ═══════════════════════════════════════════════════════════════════ */
+
+function adminAuth(req, res) {
+  const secret = req.query.secret || req.headers["x-admin-secret"];
+  if (!ADMIN_READ_SECRET) { res.status(500).json({ ok: false, error: "ADMIN_READ_SECRET não configurado" }); return false; }
+  if (secret !== ADMIN_READ_SECRET) { res.status(401).json({ ok: false, error: "secret inválido" }); return false; }
+  return true;
+}
+
+// Listar últimas 200 mensagens
+app.get("/admin/messages", async (req, res) => {
+  if (!adminAuth(req, res)) return;
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, from_number, to_number, body, direction, created_at FROM messages ORDER BY created_at DESC LIMIT 200`
+    );
+    return res.json({ ok: true, count: rows.length, messages: rows });
+  } catch (err) { return res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Listar conversas agrupadas por contato
+app.get("/admin/conversations", async (req, res) => {
+  if (!adminAuth(req, res)) return;
+  try {
+    const botNum = TWILIO_WHATSAPP_NUMBER || "";
+    const { rows } = await pool.query(`
+      SELECT
+        CASE WHEN from_number = $1 THEN to_number ELSE from_number END AS contact_number,
+        MAX(body) FILTER (WHERE created_at = sub.last_at) AS last_message,
+        MAX(created_at) AS last_message_at,
+        COUNT(*)::int AS total_messages
+      FROM messages,
+        LATERAL (SELECT MAX(created_at) AS last_at FROM messages m2
+          WHERE CASE WHEN m2.from_number = $1 THEN m2.to_number ELSE m2.from_number END
+              = CASE WHEN messages.from_number = $1 THEN messages.to_number ELSE messages.from_number END
+        ) sub
+      GROUP BY contact_number
+      ORDER BY last_message_at DESC
+      LIMIT 100
+    `, [botNum.startsWith("whatsapp:") ? botNum : `whatsapp:${botNum}`]);
+    return res.json({ ok: true, count: rows.length, conversations: rows });
+  } catch (err) { return res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Ver conversa de um número específico
+app.get("/admin/messages/:phone", async (req, res) => {
+  if (!adminAuth(req, res)) return;
+  try {
+    const phone = String(req.params.phone).replace(/\D/g, "");
+    if (!phone || phone.length < 10) return res.status(400).json({ ok: false, error: "número inválido" });
+    const pattern = `%${phone}%`;
+    const { rows } = await pool.query(
+      `SELECT id, from_number, to_number, body, direction, created_at
+       FROM messages WHERE from_number LIKE $1 OR to_number LIKE $1
+       ORDER BY created_at ASC`,
+      [pattern]
+    );
+    return res.json({ ok: true, count: rows.length, phone, messages: rows });
+  } catch (err) { return res.status(500).json({ ok: false, error: err.message }); }
 });
 
 /* ═══════════════════════════════════════════════════════════════════
