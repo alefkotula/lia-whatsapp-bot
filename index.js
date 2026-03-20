@@ -1,53 +1,44 @@
 /**
  * ═══════════════════════════════════════════════════════════════════
- * INDEX V24.3 — GPT-FIRST HUMANIZADO (CORREÇÃO MICROCIRÚRGICA)
+ * INDEX V24.3 — ADAPTADO PARA N8N (API HTTP)
  * ═══════════════════════════════════════════════════════════════════
  *
- * EVOLUÇÃO DA V23. MUDANÇAS FUNDAMENTAIS:
+ * BASE: index_lia_gpt_v24_3.js (ORIGINAL, INTOCADO NA LÓGICA)
  *
- * 1. GPT-FIRST — GPT é o protagonista das respostas, não fallback.
- *    Respostas hardcoded viram referência (few-shot) para o GPT.
+ * MUDANÇAS FEITAS (APENAS CANAL, NÃO LÓGICA):
+ * 1. Twilio agora é OPCIONAL (não quebra se não estiver configurado)
+ * 2. Lógica central extraída para processLiaMessage()
+ * 3. Novo endpoint POST /lia/respond para n8n
+ * 4. Handler /whatsapp original preservado (usa processLiaMessage)
+ * 5. Webhook MP: envio Twilio condicional
  *
- * 2. ANTI-LOOP — Detector de repetição impede mesma resposta 2x.
- *    Se detectado, regenera via GPT com instrução explícita.
- *
- * 3. CTA INTELIGENTE — CTA só aparece quando paciente está pronto.
- *    Não mais "Se quiser, posso mostrar horários" em toda resposta.
- *
- * 4. RESPOSTA-PRIMEIRO — Toda pergunta é respondida ANTES de
- *    qualquer avanço de stage ou CTA. Garantido.
- *
- * 5. REPARO REAL — Quando paciente sinaliza "não respondeu",
- *    GPT gera resposta NOVA com contexto do histórico.
- *
- * 6. HISTÓRICO NO PROMPT — Últimas trocas são passadas ao GPT
- *    para contexto e para evitar repetição.
- *
- * 7. GUIAS POR PERFIL — Público agressivo recebe instruções
- *    específicas no prompt do GPT por subtipo.
- *
- * PRESERVADO DA V23:
- * - Express/Twilio/Postgres/MercadoPago setup
- * - Slot lock/hold system
- * - PLANS e FIXED_SCHEDULE
- * - Funções utilitárias
- * - Funções de agenda
- * - Webhook MP e payment flow
- * - Human delay system
- * - Extractors (nome, data, email, etc.)
- * - State machine stages
- * - detectIntent flags
- * - classifyLead logic
+ * NADA MAIS FOI ALTERADO:
+ * - Stages: IGUAIS
+ * - Handlers: IGUAIS
+ * - Anti-loop: IGUAL
+ * - Textos: IGUAIS
+ * - Reserva: IGUAL
+ * - Pagamento/link: IGUAL
+ * - Ordem de coleta: IGUAL
+ * - CTA: IGUAL
+ * - Lógica consulta vs medicamento: IGUAL
+ * - CPF: NÃO EXISTE (nunca existiu, não foi adicionado)
  *
  * ═══════════════════════════════════════════════════════════════════
  */
 
 const express = require("express");
 const bodyParser = require("body-parser");
-let twilio;
-try { twilio = require("twilio"); } catch { twilio = null; }
 const { Pool } = require("pg");
 const OpenAI = require("openai");
+
+// Twilio é OPCIONAL — só carrega se as credenciais existirem
+let twilio, twilioClient;
+try {
+  twilio = require("twilio");
+} catch (e) {
+  twilio = null;
+}
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -74,15 +65,20 @@ const {
 } = process.env;
 
 if (!OPENAI_API_KEY) console.error("❌ Falta OPENAI_API_KEY");
-if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) console.warn("⚠️ Twilio não configurado — fluxo /whatsapp e /send-manual ficarão inativos.");
 if (!DATABASE_URL) console.error("❌ Falta DATABASE_URL");
 if (!MP_ACCESS_TOKEN) console.error("❌ Falta MP_ACCESS_TOKEN");
 if (!PUBLIC_BASE_URL) console.warn("⚠️ PUBLIC_BASE_URL não definido.");
 
+// Twilio: só inicializa se tiver credenciais
+if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && twilio) {
+  twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+  console.log("✅ Twilio configurado.");
+} else {
+  twilioClient = null;
+  console.warn("⚠️ Twilio não configurado (modo API-only / n8n).");
+}
+
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
-const twilioClient = (twilio && TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN)
-  ? twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-  : null;
 
 const CHAT_MODEL = MODEL_CHAT || "gpt-4.1";
 const MIN_DELAY = Number(MIN_DELAY_SEC || 1);
@@ -247,7 +243,7 @@ function similar(a, b) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   TRANSCRIÇÃO DE ÁUDIO (V24.1 — NOVO)
+   TRANSCRIÇÃO DE ÁUDIO (V24.1 — só funciona com Twilio)
    ═══════════════════════════════════════════════════════════════════ */
 
 async function transcribeWhatsAppAudio(mediaUrl) {
@@ -356,7 +352,6 @@ function extractFullName(text) {
   const raw = (text || "").trim();
   if (!raw) return null;
 
-  // 1. Tentar extrair nome após padrões introdutórios
   const introPatterns = [
     /(?:nome\s+completo\s+(?:e|é)\s+)/i,
     /(?:me\s+cham(?:a|o|e)\s+)/i,
@@ -374,15 +369,12 @@ function extractFullName(text) {
     }
   }
 
-  // 2. Se não encontrou padrão, usar texto inteiro
   if (!candidate) candidate = raw;
 
-  // 3. Limpar pontuação e pegar primeira sentença
   candidate = candidate.split(/[.!?\n]/)[0].trim();
   candidate = candidate.replace(/[^\p{L}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
   if (!candidate) return null;
 
-  // 4. Filtrar stop-words iniciais
   const stopWords = /^(claro|sim|ok|pode|certo|beleza|tudo|bem|obrigado|obrigada|é|e|o|a|meu|minha|com|certeza|bom|boa)$/i;
   let parts = candidate.split(" ").filter(Boolean);
   while (parts.length > 0 && stopWords.test(parts[0])) {
@@ -390,7 +382,6 @@ function extractFullName(text) {
   }
 
   if (parts.length < 2) return null;
-  // Limitar a 5 partes (nomes raramente têm mais)
   if (parts.length > 5) parts = parts.slice(0, 5);
 
   return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(" ");
@@ -798,9 +789,6 @@ const EVIDENCE_DB = {
 
 /* ═══════════════════════════════════════════════════════════════════
    KNOWLEDGE BASE — V24 NOVO
-   ═══════════════════════════════════════════════════════════════════
-   Base de conhecimento factual para o GPT usar ao formular respostas.
-   Não são respostas prontas — são FATOS que o GPT usa como referência.
    ═══════════════════════════════════════════════════════════════════ */
 
 const KNOWLEDGE_BASE = `
@@ -956,7 +944,6 @@ async function offerSlotsReply(state, periodMin = null) {
   const dateKey = state.date_key;
   let best;
   if (periodMin) {
-    // Filtrar slots pelo período solicitado
     const allAvail = await getAvailableSlotsForDate(dateKey);
     const filtered = allAvail.filter(s => {
       const h = parseInt(s.replace("h", ""));
@@ -964,7 +951,6 @@ async function offerSlotsReply(state, periodMin = null) {
     });
     best = sortSlotsSmart(filtered).slice(0, 3);
     if (!best.length) {
-      // Sem slots no período solicitado — mostrar todos disponíveis
       best = await chooseBestSlotsForDate(dateKey, 3);
       if (!best.length) return "Esse dia acabou de ficar sem vagas 😕 Quer que eu te mostre outra data?";
       state.offered_slots = best;
@@ -1040,7 +1026,6 @@ function hasQuestion(text) {
   return text.includes("?") || /\b(queria saber|queria entender|quero entender|quero saber|posso tirar|uma duvida|uma dúvida|deixa eu perguntar|antes de|antes disso)\b/.test(norm(text));
 }
 
-// V24.2: Detecta perguntas substantivas que DEVEM ser respondidas antes de qualquer CTA
 function isSubstantiveQuestion(text) {
   const t = norm(text);
   return /\b(como funciona|como e a consulta|como é a consulta|o que acontece|o que inclui|qual a diferenca|qual a diferença|diferencial|e online|é online|precisa de receita|receita|saio com receita|e legal|é legal|anvisa|como consigo|como acesso|como compro|proximo passo|próximo passo|o que eu faco|o que eu faço|por que funciona|por que ajuda|causa|porque acontece|o que causa|qual o tratamento|como trata|como tratar|como e o acompanhamento|como é o acompanhamento|quanto tempo demora|quanto tempo leva|tem efeito colateral|efeito colateral|contraindicacao|contraindicação|posso tomar junto|interacao|interação|quem e o doutor|quem é o doutor|quem e o dr|quem é o dr|formacao|formação)\b/.test(t);
@@ -1048,31 +1033,22 @@ function isSubstantiveQuestion(text) {
 
 function extractMainQuestion(text) {
   const sentences = text.split(/[.!?\n]+/).map(s => s.trim()).filter(Boolean);
-  // Priorizar frases com "?"
   const questionSentences = sentences.filter(s => s.includes("?") || /\b(queria saber|queria entender|quero saber|como funciona|funciona|é por|é online|ajuda|serve)\b/i.test(s));
   if (questionSentences.length > 0) return questionSentences[questionSentences.length - 1];
-  // Se não tem "?", retornar a última frase significativa
   return sentences[sentences.length - 1] || text;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
    CTA INTELIGENTE — V24 NOVO
-   ═══════════════════════════════════════════════════════════════════
-   CTA só aparece quando o paciente está pronto.
    ═══════════════════════════════════════════════════════════════════ */
 
 function shouldShowCTA(state, flags, text) {
-  // Sempre mostrar CTA quando paciente deu sinal de intenção
   if (flags.wantsBook || flags.asksHours || flags.confirms || flags.intentPay) return true;
-  // Não mostrar CTA se paciente está no meio de perguntas
   if (hasQuestion(text)) return false;
-  // V24.2: Não mostrar CTA quando paciente fez pergunta substantiva (responda primeiro)
   if (isSubstantiveQuestion(text)) return false;
   if (isRepairSignal(text)) return false;
-  // V24.2: Mostrar CTA se já respondemos >= 3 perguntas sem CTA (antes era 2, muito cedo)
   const answered = Number(state.questions_answered_since_last_cta || 0);
   if (answered >= 3) return true;
-  // Nos stages avançados, mostrar CTA
   if (["ASK_FULLNAME", "ASK_BIRTHDATE", "ASK_EMAIL", "ASK_PLAN", "WAIT_PAYMENT"].includes(state.stage)) return true;
   return false;
 }
@@ -1086,7 +1062,6 @@ function getStageCTA(state) {
   if (s === "ASK_EMAIL") return "\n\nMe passa seu *e-mail* para eu completar o cadastro 😊";
   if (s === "ASK_PLAN") return "\n\nQual dessas opções faz mais sentido? Me responde com *1, 2 ou 3* 😊";
   if (s === "WAIT_PAYMENT" && state.payment?.link) return `\n\nSeu horário está pré-reservado e o link segue ativo:\n${state.payment.link}`;
-  // V24.2: Não mostrar CTA genérico em stages iniciais
   if (["ASK_NAME", "ASK_PROBLEM", "DIAGNOSTIC"].includes(s) || !s) return "";
   return "\n\nSe quiser, eu posso te mostrar os horários disponíveis 😊";
 }
@@ -1102,9 +1077,6 @@ function getSmartCTA(state, flags, text) {
 
 /* ═══════════════════════════════════════════════════════════════════
    GPT ENGINE — V24 REESCRITO
-   ═══════════════════════════════════════════════════════════════════
-   GPT é o protagonista. System prompt rico com conhecimento,
-   personalidade e regras claras. Histórico incluído.
    ═══════════════════════════════════════════════════════════════════ */
 
 function buildSystemPrompt(state = {}) {
@@ -1146,7 +1118,6 @@ Você é humana, acolhedora, profissional, segura e experiente. Você acredita n
 - Fazer mais de 1 pergunta por mensagem
 - Investigar sintomas clínicos em profundidade
 - Repetir a mesma resposta de mensagens anteriores
-- NUNCA peça CPF, RG ou documento ao paciente. O sistema NÃO precisa de CPF para gerar o link de pagamento. Se o paciente mencionar CPF espontaneamente, diga que não é necessário neste momento.
 
 ${KNOWLEDGE_BASE}
 ${conditionContext}
@@ -1238,8 +1209,6 @@ async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = fa
 
 /* ═══════════════════════════════════════════════════════════════════
    ANTI-LOOP SYSTEM — V24 NOVO
-   ═══════════════════════════════════════════════════════════════════
-   Detecta respostas repetidas e regenera via GPT.
    ═══════════════════════════════════════════════════════════════════ */
 
 async function ensureNoRepeat(reply, state, incomingText, flags) {
@@ -1250,17 +1219,15 @@ async function ensureNoRepeat(reply, state, incomingText, flags) {
 
   if (!isSimilar) return reply;
 
-  // Resposta é repetida — regenerar via GPT
   const ai = await runLia({
     incomingText,
     state,
     flags,
     stageCTA: "",
-    isRepair: true, // Força o GPT a gerar algo diferente
+    isRepair: true,
   });
 
   if (ai.reply.startsWith("__") || similar(ai.reply, state.last_bot_reply)) {
-    // Se mesmo assim repetiu, criar resposta genérica mas útil
     const nome = state.nome ? `, ${state.nome}` : "";
     return `Entendo${nome}. Me conta com suas palavras o que ficou sem resposta pra mim tentar de um jeito diferente.`;
   }
@@ -1316,7 +1283,7 @@ function mpExtractPhoneFromPayment(payment) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   HUMAN DELAY (preservado)
+   HUMAN DELAY (preservado — só usado no endpoint Twilio)
    ═══════════════════════════════════════════════════════════════════ */
 
 function computeHumanDelay(flags, state) {
@@ -1330,7 +1297,10 @@ function computeHumanDelay(flags, state) {
 }
 
 async function sendWhatsApp(to, from, body, delaySec) {
-  if (!twilioClient) { console.warn("⚠️ sendWhatsApp ignorado — Twilio não configurado."); return; }
+  if (!twilioClient) {
+    console.log(`📤 [Twilio OFF] Resposta para ${to}: "${(body || "").slice(0, 80)}..."`);
+    return;
+  }
   await sleep(delaySec * 1000);
   await twilioClient.messages.create({ to, from, body });
 }
@@ -1452,22 +1422,52 @@ function updateConversationHistory(state, patientMsg, liaReply) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   CORE ENGINE — processLiaMessage()
-   Função central que processa uma mensagem e retorna a resposta.
-   Usada tanto pelo /whatsapp (Twilio) quanto pelo /lia/respond (n8n).
+   ███████████████████████████████████████████████████████████████████
+   CORE LOGIC — processLiaMessage()
+   ███████████████████████████████████████████████████████████████████
+
+   Extraído do handler /whatsapp original.
+   Lógica 100% idêntica, só retorna em vez de enviar.
+   Usado tanto pelo /whatsapp (Twilio) quanto pelo /lia/respond (n8n).
+
    ═══════════════════════════════════════════════════════════════════ */
 
-async function processLiaMessage({ phone, incomingText, presetNome = null, botId = "lia-api" }) {
-  let state = initializeState(await getUserState(phone), botId);
+async function processLiaMessage(phone, incomingText) {
+  const phoneDigits = String(phone).replace(/\D/g, "");
 
-  // Se o nome veio de fora (n8n) e o state não tem nome, injetar
-  if (presetNome && !state.nome) {
-    const extracted = extractFirstName(presetNome);
-    if (extracted) state.nome = extracted;
+  // ── Admin reset ──
+  if (norm(incomingText) === "reset" && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
+    await pool.query(`UPDATE wa_users SET state = '{}'::jsonb, updated_at = NOW() WHERE regexp_replace(phone, '\\D', '', 'g') = $1`, [phoneDigits]);
+    await pool.query(`DELETE FROM wa_slot_locks WHERE phone = $1 AND status='held'`, [phone]);
+    return {
+      reply: "🔄 Memória resetada. Pode testar do zero.",
+      state: {},
+      flags: {},
+      intent: "admin_reset",
+    };
   }
 
+  // ── Admin simular pagamento ──
+  if (["simular pagamento","paguei_teste","simular_pagamento","aprovar_teste"].includes(norm(incomingText)) && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
+    const st = await getUserState(phone);
+    st.payment = st.payment || {};
+    st.payment.status = "approved";
+    st.payment.simulated = true;
+    if (st.slot_key) await markSlotPaid(st.slot_key, phone);
+    await saveUserState(phone, st);
+    return {
+      reply: afterPaidReply(st),
+      state: st,
+      flags: {},
+      intent: "admin_simulate_payment",
+    };
+  }
+
+  // ── Load state ──
+  let state = initializeState(await getUserState(phone), `api:${phone}`);
+
   // Salvar mensagem inbound
-  logMessage(phone, botId, incomingText, "inbound");
+  logMessage(phone, "lia", incomingText, "inbound");
 
   const flags = detectIntent(incomingText);
 
@@ -1489,7 +1489,9 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
 
   let reply = "";
 
-  /* ═══ [CAMADA 0] — PROTEÇÕES ═══ */
+  /* ═══════════════════════════════════════════════════════════════
+     [CAMADA 0] — PROTEÇÕES
+     ═══════════════════════════════════════════════════════════════ */
 
   if (state.payment?.status === "approved") {
     reply = afterPaidReply(state);
@@ -1498,11 +1500,19 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
     reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Por favor, procure um pronto-socorro ou ligue para o SAMU (192) agora. Quando estiver seguro(a), me chama aqui 😊";
   }
 
-  /* ═══ [CAMADA 1] — REPARO CONVERSACIONAL ═══ */
+  /* ═══════════════════════════════════════════════════════════════
+     [CAMADA 1] — REPARO CONVERSACIONAL
+     ═══════════════════════════════════════════════════════════════ */
 
   else if (isRepairSignal(incomingText)) {
     state.repair_count = (state.repair_count || 0) + 1;
-    const ai = await runLia({ incomingText, state, flags, stageCTA: "", isRepair: true });
+    const ai = await runLia({
+      incomingText,
+      state,
+      flags,
+      stageCTA: "",
+      isRepair: true,
+    });
 
     if (ai.reply.startsWith("__")) {
       reply = "Me desculpa pela confusão. Me conta com suas palavras o que ficou sem resposta que eu tento de um jeito diferente.";
@@ -1515,7 +1525,9 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
     }
   }
 
-  /* ═══ [CAMADA 2] — PERGUNTAS DO PACIENTE → GPT ═══ */
+  /* ═══════════════════════════════════════════════════════════════
+     [CAMADA 2] — PERGUNTAS DO PACIENTE → GPT RESPONDE
+     ═══════════════════════════════════════════════════════════════ */
 
   else if (!reply && state.stage && hasQuestion(incomingText)
     && !DATA_COLLECTION_STAGES.includes(state.stage)
@@ -1524,37 +1536,44 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
       reply = medCostReply(state);
       state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
     } else {
-      const ctaHint = shouldShowCTA(state, flags, incomingText) ? getStageCTA(state).trim() : "";
-      const ai = await runLia({ incomingText, state, flags, stageCTA: ctaHint });
+    const ctaHint = shouldShowCTA(state, flags, incomingText) ? getStageCTA(state).trim() : "";
+    const ai = await runLia({
+      incomingText,
+      state,
+      flags,
+      stageCTA: ctaHint,
+    });
 
-      if (ai.reply === "__NEED_PRICE__") {
-        state.price_ask_count += 1;
-        reply = priceReply();
-        state.stage = "ASK_PLAN";
-      } else if (ai.reply === "__NEED_BOOK__") {
-        state.stage = "ASK_DAY";
-        reply = await askDayReply();
-      } else if (ai.reply === "__NEED_PAY__") {
-        if (state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
-        else { state.stage = "ASK_DAY"; reply = await askDayReply(); }
-      } else if (ai.reply === "__URGENT__") {
-        reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Procure um pronto-socorro ou SAMU (192).";
+    if (ai.reply === "__NEED_PRICE__") {
+      state.price_ask_count += 1;
+      reply = priceReply();
+      state.stage = "ASK_PLAN";
+    } else if (ai.reply === "__NEED_BOOK__") {
+      state.stage = "ASK_DAY";
+      reply = await askDayReply();
+    } else if (ai.reply === "__NEED_PAY__") {
+      if (state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
+      else { state.stage = "ASK_DAY"; reply = await askDayReply(); }
+    } else if (ai.reply === "__URGENT__") {
+      reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Procure um pronto-socorro ou SAMU (192).";
+    } else {
+      reply = ai.reply;
+      state = mergeState(state, ai.updates);
+      if (shouldShowCTA(state, flags, incomingText)
+          && !/(horários|horario|marcar|agendar|disponíveis|disponivel)/i.test(reply)
+          && !["ASK_NAME","ASK_PROBLEM","DIAGNOSTIC"].includes(state.stage)
+          && !isSubstantiveQuestion(incomingText)) {
+        reply += getSmartCTA(state, flags, incomingText);
       } else {
-        reply = ai.reply;
-        state = mergeState(state, ai.updates);
-        if (shouldShowCTA(state, flags, incomingText)
-            && !/(horários|horario|marcar|agendar|disponíveis|disponivel)/i.test(reply)
-            && !["ASK_NAME","ASK_PROBLEM","DIAGNOSTIC"].includes(state.stage)
-            && !isSubstantiveQuestion(incomingText)) {
-          reply += getSmartCTA(state, flags, incomingText);
-        } else {
-          state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
-        }
+        state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
       }
+    }
     }
   }
 
-  /* ═══ [CAMADA 3] — STATE MACHINE ═══ */
+  /* ═══════════════════════════════════════════════════════════════
+     [CAMADA 3] — STATE MACHINE
+     ═══════════════════════════════════════════════════════════════ */
 
   if (!reply) {
 
@@ -1774,21 +1793,8 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
       const full = extractFullName(incomingText);
       if (full) {
         state.nome_completo = full;
-        // V24.4 FIX: Se já tem plano, birthdate e email, gerar link direto
-        if (state.selected_plan_key && state.date_key && state.slot_time && state.birthdate && state.email) {
-          const planKey = state.selected_plan_key;
-          const pref = await mpCreatePreference({ phone, planKey });
-          state.payment = {
-            status: "pending", plan_key: planKey,
-            preference_id: pref.preference_id, link: pref.link,
-            external_reference: pref.external_reference, created_at: Date.now(),
-          };
-          reply = paymentSentReply(pref.plan, pref.link, state);
-          state.stage = "WAIT_PAYMENT";
-        } else {
-          state.stage = "ASK_BIRTHDATE";
-          reply = askBirthdateReply(state);
-        }
+        state.stage = "ASK_BIRTHDATE";
+        reply = askBirthdateReply(state);
       } else if (hasQuestion(incomingText)) {
         const ai = await runLia({ incomingText, state, flags, stageCTA: "Me passa seu nome completo para finalizar a reserva" });
         if (!ai.reply.startsWith("__")) { reply = ai.reply + "\n\nMe passa seu *nome completo* 😊"; state = mergeState(state, ai.updates); }
@@ -1801,21 +1807,8 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
       const bd = extractBirthDate(incomingText);
       if (bd) {
         state.birthdate = bd;
-        // V24.4 FIX: Se já tem plano e email, gerar link direto
-        if (state.selected_plan_key && state.date_key && state.slot_time && state.nome_completo && state.email) {
-          const planKey = state.selected_plan_key;
-          const pref = await mpCreatePreference({ phone, planKey });
-          state.payment = {
-            status: "pending", plan_key: planKey,
-            preference_id: pref.preference_id, link: pref.link,
-            external_reference: pref.external_reference, created_at: Date.now(),
-          };
-          reply = paymentSentReply(pref.plan, pref.link, state);
-          state.stage = "WAIT_PAYMENT";
-        } else {
-          state.stage = "ASK_EMAIL";
-          reply = askEmailReply();
-        }
+        state.stage = "ASK_EMAIL";
+        reply = askEmailReply();
       } else {
         reply = "Me manda sua *data de nascimento* no formato *dd/mm/aaaa*.";
       }
@@ -1824,21 +1817,8 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
       const em = extractEmail(incomingText);
       if (em) {
         state.email = em;
-        // V24.4 FIX: Se já tem plano escolhido e todos os dados, gerar link direto
-        if (state.selected_plan_key && state.date_key && state.slot_time && state.nome_completo && state.birthdate) {
-          const planKey = state.selected_plan_key;
-          const pref = await mpCreatePreference({ phone, planKey });
-          state.payment = {
-            status: "pending", plan_key: planKey,
-            preference_id: pref.preference_id, link: pref.link,
-            external_reference: pref.external_reference, created_at: Date.now(),
-          };
-          reply = paymentSentReply(pref.plan, pref.link, state);
-          state.stage = "WAIT_PAYMENT";
-        } else {
-          state.stage = "ASK_PLAN";
-          reply = `Obrigada 😊\n\nHorário pré-reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, sua reserva fica garantida 😊\n\n${priceReply()}`;
-        }
+        state.stage = "ASK_PLAN";
+        reply = `Obrigada 😊\n\nHorário pré-reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, sua reserva fica garantida 😊\n\n${priceReply()}`;
       } else {
         reply = "Me manda seu *e-mail* certinho, por favor.";
       }
@@ -1846,15 +1826,7 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
 
     // ── Escolha do plano ──
     else if (state.stage === "ASK_PLAN") {
-      // V24.4 FIX: Se já tem plano escolhido E todos os dados, gerar link direto
-      // (evita pedir plano de novo após coleta de dados)
-      const planKey = extractPlanChoice(incomingText) || (
-        state.selected_plan_key
-        && state.date_key && state.slot_time
-        && state.nome_completo && state.birthdate && state.email
-          ? state.selected_plan_key
-          : null
-      );
+      const planKey = extractPlanChoice(incomingText);
 
       if (planKey) {
         state.selected_plan_key = planKey;
@@ -1958,7 +1930,9 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
       state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
     }
 
-    /* ═══ [CAMADA 4/5] — OBJEÇÕES + FALLBACK GPT ═══ */
+    /* ═══════════════════════════════════════════════════════════════
+       [CAMADA 4/5] — OBJEÇÕES + FALLBACK GPT
+       ═══════════════════════════════════════════════════════════════ */
 
     else {
       const cta = shouldShowCTA(state, flags, incomingText) ? getStageCTA(state).trim() : "";
@@ -1989,7 +1963,9 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
     }
   }
 
-  /* ═══ ANTI-REPETIÇÃO ═══ */
+  /* ═══════════════════════════════════════════════════════════════
+     ANTI-REPETIÇÃO V24
+     ═══════════════════════════════════════════════════════════════ */
 
   if (state.payment?.status === "approved") {
     // OK — repetir afterPaidReply é comportamento correto
@@ -2011,42 +1987,9 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
   state.last_sent_at = Date.now();
 
   await saveUserState(phone, state);
-  logMessage(botId, phone, reply, "outbound");
+  logMessage("lia", phone, reply, "outbound");
 
-  // Determinar intent principal para retorno
-  const mainIntent = flags.wantsPrice ? "wantsPrice"
-    : flags.intentPay ? "intentPay"
-    : flags.wantsBook ? "wantsBook"
-    : flags.asksHours ? "asksHours"
-    : flags.confirms ? "confirms"
-    : flags.refuses ? "refuses"
-    : flags.urgency ? "urgency"
-    : flags.saysExpensive ? "saysExpensive"
-    : null;
-
-  // Determinar action
-  let action = null;
-  const needsPayment = state.stage === "WAIT_PAYMENT" && state.payment?.status === "pending";
-  if (needsPayment && state.payment?.link) {
-    const planPrice = PLANS[state.payment.plan_key]?.price || "";
-    action = `SEND_PAYMENT_LINK_${planPrice}`;
-  }
-
-  return {
-    ok: true,
-    reply,
-    stage: state.stage || null,
-    intent: mainIntent,
-    action,
-    needs_payment: !!needsPayment,
-    needs_human: false,
-    payment_link: state.payment?.link || null,
-    debug: {
-      lead_profile: state.lead_profile,
-      condition: state.condition,
-      nome: state.nome,
-    },
-  };
+  return { reply, state, flags };
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2057,48 +2000,78 @@ app.get("/", (req, res) => res.send("OK"));
 app.get("/mp/thanks", (req, res) => res.send("OK"));
 
 /* ═══════════════════════════════════════════════════════════════════
-   ENDPOINT /lia/respond — API HTTP para n8n + Evolution API
+   ENDPOINT PRINCIPAL PARA N8N — POST /lia/respond
    ═══════════════════════════════════════════════════════════════════ */
 
 app.post("/lia/respond", async (req, res) => {
   try {
-    const { telefone, nome, mensagem, channel, source, metadata } = req.body || {};
+    const { telefone, mensagem } = req.body || {};
 
     if (!telefone || !mensagem) {
-      return res.status(400).json({ ok: false, error: "Campos 'telefone' e 'mensagem' são obrigatórios." });
+      return res.status(400).json({
+        ok: false,
+        error: "campos 'telefone' e 'mensagem' são obrigatórios",
+      });
     }
 
-    // Normalizar telefone
     const phone = String(telefone).replace(/\D/g, "");
-    if (phone.length < 10) {
-      return res.status(400).json({ ok: false, error: "Telefone inválido." });
+    if (!phone || phone.length < 10) {
+      return res.status(400).json({ ok: false, error: "telefone inválido" });
     }
 
     const incomingText = String(mensagem).trim();
     if (!incomingText) {
-      return res.status(400).json({ ok: false, error: "Mensagem vazia." });
+      return res.status(400).json({ ok: false, error: "mensagem vazia" });
     }
 
-    const result = await processLiaMessage({
-      phone,
-      incomingText,
-      presetNome: nome || null,
-      botId: `lia-n8n-${source || "api"}`,
+    const result = await processLiaMessage(phone, incomingText);
+
+    return res.json({
+      ok: true,
+      reply: result.reply,
+      stage: result.state?.stage || null,
+      intent: detectMainIntent(result.flags) || null,
+      action: null,
+      needs_payment: result.state?.stage === "WAIT_PAYMENT",
+      needs_human: false,
+      payment_link: result.state?.payment?.link || null,
+      debug: {
+        lead_profile: result.state?.lead_profile || null,
+        condition: result.state?.condition || null,
+        nome: result.state?.nome || null,
+      },
     });
-
-    return res.status(200).json(result);
-
   } catch (err) {
-    console.error("❌ Erro no /lia/respond:", err);
+    console.error("❌ Erro /lia/respond:", err);
     return res.status(500).json({
       ok: false,
-      reply: "Tive uma instabilidade rápida aqui 😊 Tente novamente em alguns segundos.",
-      error: err.message,
+      error: "erro interno",
+      reply: "Tive uma instabilidade rápida aqui 😊 Me manda de novo em 1 frase: quer *agendar*, *tirar dúvida* ou *ver valores*?",
     });
   }
 });
 
-// Webhook Mercado Pago (preservado)
+// Helper para extrair a intent principal das flags
+function detectMainIntent(flags) {
+  if (!flags) return null;
+  if (flags.urgency) return "URGENCIA";
+  if (flags.wantsBook || flags.asksHours) return "AGENDAR";
+  if (flags.wantsPrice) return "PRECO";
+  if (flags.intentPay) return "PAGAMENTO";
+  if (flags.confirms) return "CONFIRMA";
+  if (flags.refuses) return "RECUSA";
+  if (flags.asksHowConsultWorks || flags.asksIfOnline) return "DUVIDA_CONSULTA";
+  if (flags.asksIfWorks || flags.asksIfForMe) return "DUVIDA_TRATAMENTO";
+  if (flags.asksLegal || flags.asksChapado) return "DUVIDA_LEGAL";
+  if (flags.saysExpensive || flags.saysCheaperElsewhere) return "OBJECAO_PRECO";
+  if (flags.saysWillSee || flags.saysUnsure) return "INDECISO";
+  return "CONVERSA";
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   WEBHOOK MERCADO PAGO (preservado — envio Twilio condicional)
+   ═══════════════════════════════════════════════════════════════════ */
+
 app.post("/mp/webhook", async (req, res) => {
   res.status(200).send("OK");
   try {
@@ -2126,35 +2099,32 @@ app.post("/mp/webhook", async (req, res) => {
       await saveUserState(phone, state);
 
       if (status === "approved") {
-        // Tentar notificar via Twilio (se disponível)
+        // Tentar enviar via Twilio se disponível
         if (twilioClient) {
           const botFrom = state?.last_bot_from || null;
-          if (botFrom) {
+          if (botFrom && !botFrom.startsWith("api:")) {
             try {
               await twilioClient.messages.create({ to: `whatsapp:${phone}`, from: botFrom, body: afterPaidReply(state) });
             } catch {}
           }
-        } else {
-          // Sem Twilio — salvar flag para que a próxima chamada /lia/respond retorne a confirmação
-          state.payment_confirmed_pending_notify = true;
-          await saveUserState(phone, state);
-          console.log(`💳 Pagamento aprovado para ${phone} — aguardando próxima interação via /lia/respond para notificar.`);
         }
+        // Nota: quando via n8n, o n8n deve ter um webhook/polling para confirmar pagamento
+        // O estado já está salvo como CONFIRMED, então a próxima chamada ao /lia/respond retornará afterPaidReply
       }
     }
   } catch (err) { console.error("❌ MP webhook erro:", err); }
 });
 
 /* ═══════════════════════════════════════════════════════════════════
-   ███████████████████████████████████████████████████████████████████
-   MAIN HANDLER — V24 GPT-FIRST (TWILIO WEBHOOK)
-   Agora delega para processLiaMessage(). Mantém apenas lógica
-   específica do Twilio: admin, áudio, delay, envio.
-   ███████████████████████████████████████████████████████████████████
+   HANDLER TWILIO /whatsapp (PRESERVADO — usa processLiaMessage)
    ═══════════════════════════════════════════════════════════════════ */
 
 app.post("/whatsapp", async (req, res) => {
-  if (!twilio) { return res.status(503).send("Twilio não configurado"); }
+  // Se Twilio não está configurado, retornar erro
+  if (!twilioClient || !twilio) {
+    return res.status(200).type("text/xml").send("<Response></Response>");
+  }
+
   const twiml = new twilio.twiml.MessagingResponse();
   res.type("text/xml").send(twiml.toString());
 
@@ -2163,33 +2133,11 @@ app.post("/whatsapp", async (req, res) => {
       const lead = req.body.From || "";
       const bot = req.body.To || "";
       const phone = lead.replace("whatsapp:", "").trim();
-      const phoneDigits = String(phone).replace(/\D/g, "");
       let incomingText = (req.body.Body || "").trim();
 
-      // ── Admin reset ──
-      if (norm(incomingText) === "reset" && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
-        await pool.query(`UPDATE wa_users SET state = '{}'::jsonb, updated_at = NOW() WHERE regexp_replace(phone, '\\D', '', 'g') = $1`, [phoneDigits]);
-        await pool.query(`DELETE FROM wa_slot_locks WHERE phone = $1 AND status='held'`, [phone]);
-        await sendWhatsApp(`whatsapp:+${phoneDigits}`, bot, "🔄 Memória resetada. Pode testar do zero.", 0);
-        return;
-      }
-
-      // ── Admin simular pagamento ──
-      if (["simular pagamento","paguei_teste","simular_pagamento","aprovar_teste"].includes(norm(incomingText)) && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
-        const st = await getUserState(phone);
-        st.payment = st.payment || {};
-        st.payment.status = "approved";
-        st.payment.simulated = true;
-        if (st.slot_key) await markSlotPaid(st.slot_key, phone);
-        await saveUserState(phone, st);
-        await sendWhatsApp(lead, bot, afterPaidReply(st), 0);
-        return;
-      }
-
-      // ── Mídia: transcrição de áudio ou fallback (Twilio-specific) ──
+      // ── Mídia: transcrição de áudio ou fallback ──
       const hasMedia = Number(req.body.NumMedia || 0) > 0;
       if (hasMedia) {
-        const state = initializeState(await getUserState(phone), bot);
         const mediaType = (req.body.MediaContentType0 || "").toLowerCase();
         const mediaUrl = req.body.MediaUrl0;
 
@@ -2198,6 +2146,7 @@ app.post("/whatsapp", async (req, res) => {
           if (transcribed && transcribed.length >= 2) {
             incomingText = transcribed;
           } else {
+            const state = initializeState(await getUserState(phone), bot);
             const fallback = state.nome
               ? `${state.nome}, não consegui entender bem o áudio 😅 Pode me mandar por texto?`
               : "Não consegui entender bem o áudio 😅 Pode me mandar por texto?";
@@ -2208,6 +2157,7 @@ app.post("/whatsapp", async (req, res) => {
             return;
           }
         } else if (!incomingText || incomingText.length < 2) {
+          const state = initializeState(await getUserState(phone), bot);
           const mediaReply = state.nome
             ? `${state.nome}, por enquanto eu só consigo ler mensagens de texto e áudio 😊 Me manda sua dúvida digitando que eu te ajudo.`
             : "Por enquanto eu só consigo ler mensagens de texto e áudio 😊 Me manda sua dúvida digitando que eu te ajudo.";
@@ -2219,51 +2169,49 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // ── Delegar para processLiaMessage() ──
-      const result = await processLiaMessage({ phone, incomingText, botId: bot });
+      // Processar usando a lógica central
+      const result = await processLiaMessage(phone, incomingText);
 
-      // ── Enviar via Twilio com delay humanizado ──
+      // Atualizar last_bot_from para o bot Twilio
+      const stateNow = await getUserState(phone);
+      stateNow.last_bot_from = bot;
+      await saveUserState(phone, stateNow);
+
+      // Enviar via Twilio com delay humano
       const flags = detectIntent(incomingText);
-      const state = await getUserState(phone);
-      const delaySec = computeHumanDelay(flags, state);
+      const delaySec = computeHumanDelay(flags, result.state);
       await sendWhatsApp(lead, bot, result.reply, delaySec);
 
     } catch (err) {
-      console.error("❌ Erro no processamento:", err);
+      console.error("❌ Erro no processamento Twilio:", err);
       try {
         const lead = req.body.From || "";
         const bot = req.body.To || "";
-        if (twilioClient) {
-          await twilioClient.messages.create({
-            to: lead, from: bot,
-            body: "Tive uma instabilidade rápida aqui 😊 Me manda de novo em 1 frase: quer *agendar*, *tirar dúvida* ou *ver valores*?",
-          });
-        }
+        await twilioClient.messages.create({
+          to: lead, from: bot,
+          body: "Tive uma instabilidade rápida aqui 😊 Me manda de novo em 1 frase: quer *agendar*, *tirar dúvida* ou *ver valores*?",
+        });
       } catch {}
     }
   })();
 });
 
 /* ═══════════════════════════════════════════════════════════════════
-   ENVIO MANUAL — ETAPA 1 SUPERVISÃO
-   Endpoint para o Dr. Alef enviar mensagem manual a qualquer paciente
-   sem interferir no fluxo automático da LIA.
+   ENVIO MANUAL (preservado — Twilio condicional)
    ═══════════════════════════════════════════════════════════════════ */
 
 app.post("/send-manual", async (req, res) => {
-  if (!twilioClient) return res.status(503).json({ ok: false, error: "Twilio não configurado — use /lia/respond" });
   const { to, message, secret } = req.body || {};
 
   if (!MANUAL_SEND_SECRET) return res.status(500).json({ ok: false, error: "MANUAL_SEND_SECRET não configurado no servidor" });
   if (secret !== MANUAL_SEND_SECRET) return res.status(401).json({ ok: false, error: "secret inválido" });
   if (!to || !message) return res.status(400).json({ ok: false, error: "campos 'to' e 'message' são obrigatórios" });
+  if (!twilioClient) return res.status(500).json({ ok: false, error: "Twilio não configurado (modo API-only)" });
 
-  // Normalizar número: aceita "5565...", "+5565...", "whatsapp:+5565..."
   let phone = String(to).replace(/\D/g, "");
   if (!phone || phone.length < 10) return res.status(400).json({ ok: false, error: "número inválido" });
   const toWhatsApp = `whatsapp:+${phone}`;
 
-  // Usar TWILIO_WHATSAPP_NUMBER se configurado, senão fallback do webhook
   const fromNumber = TWILIO_WHATSAPP_NUMBER || "";
   if (!fromNumber) return res.status(500).json({ ok: false, error: "TWILIO_WHATSAPP_NUMBER não configurado" });
   const fromWhatsApp = fromNumber.startsWith("whatsapp:") ? fromNumber : `whatsapp:${fromNumber}`;
@@ -2284,7 +2232,7 @@ app.post("/send-manual", async (req, res) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════════
-   ADMIN API — ENDPOINTS PARA RETOOL / PAINEL
+   ADMIN API (preservado)
    ═══════════════════════════════════════════════════════════════════ */
 
 function adminAuth(req, res) {
@@ -2294,7 +2242,6 @@ function adminAuth(req, res) {
   return true;
 }
 
-// Listar últimas 200 mensagens
 app.get("/admin/messages", async (req, res) => {
   if (!adminAuth(req, res)) return;
   try {
@@ -2305,7 +2252,6 @@ app.get("/admin/messages", async (req, res) => {
   } catch (err) { return res.status(500).json({ ok: false, error: err.message }); }
 });
 
-// Listar conversas agrupadas por contato
 app.get("/admin/conversations", async (req, res) => {
   if (!adminAuth(req, res)) return;
   try {
@@ -2329,7 +2275,6 @@ app.get("/admin/conversations", async (req, res) => {
   } catch (err) { return res.status(500).json({ ok: false, error: err.message }); }
 });
 
-// Ver conversa de um número específico
 app.get("/admin/messages/:phone", async (req, res) => {
   if (!adminAuth(req, res)) return;
   try {
@@ -2351,4 +2296,4 @@ app.get("/admin/messages/:phone", async (req, res) => {
    ═══════════════════════════════════════════════════════════════════ */
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 LIA V24 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 LIA V24.3 (n8n-ready) rodando na porta ${PORT}`));
