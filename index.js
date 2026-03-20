@@ -44,7 +44,8 @@
 
 const express = require("express");
 const bodyParser = require("body-parser");
-const twilio = require("twilio");
+let twilio;
+try { twilio = require("twilio"); } catch { twilio = null; }
 const { Pool } = require("pg");
 const OpenAI = require("openai");
 
@@ -73,13 +74,15 @@ const {
 } = process.env;
 
 if (!OPENAI_API_KEY) console.error("❌ Falta OPENAI_API_KEY");
-if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) console.error("❌ Falta TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN");
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) console.warn("⚠️ Twilio não configurado — fluxo /whatsapp e /send-manual ficarão inativos.");
 if (!DATABASE_URL) console.error("❌ Falta DATABASE_URL");
 if (!MP_ACCESS_TOKEN) console.error("❌ Falta MP_ACCESS_TOKEN");
 if (!PUBLIC_BASE_URL) console.warn("⚠️ PUBLIC_BASE_URL não definido.");
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
-const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+const twilioClient = (twilio && TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN)
+  ? twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+  : null;
 
 const CHAT_MODEL = MODEL_CHAT || "gpt-4.1";
 const MIN_DELAY = Number(MIN_DELAY_SEC || 1);
@@ -1326,6 +1329,7 @@ function computeHumanDelay(flags, state) {
 }
 
 async function sendWhatsApp(to, from, body, delaySec) {
+  if (!twilioClient) { console.warn("⚠️ sendWhatsApp ignorado — Twilio não configurado."); return; }
   await sleep(delaySec * 1000);
   await twilioClient.messages.create({ to, from, body });
 }
@@ -1447,11 +1451,604 @@ function updateConversationHistory(state, patientMsg, liaReply) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   CORE ENGINE — processLiaMessage()
+   Função central que processa uma mensagem e retorna a resposta.
+   Usada tanto pelo /whatsapp (Twilio) quanto pelo /lia/respond (n8n).
+   ═══════════════════════════════════════════════════════════════════ */
+
+async function processLiaMessage({ phone, incomingText, presetNome = null, botId = "lia-api" }) {
+  let state = initializeState(await getUserState(phone), botId);
+
+  // Se o nome veio de fora (n8n) e o state não tem nome, injetar
+  if (presetNome && !state.nome) {
+    const extracted = extractFirstName(presetNome);
+    if (extracted) state.nome = extracted;
+  }
+
+  // Salvar mensagem inbound
+  logMessage(phone, botId, incomingText, "inbound");
+
+  const flags = detectIntent(incomingText);
+
+  // Atualizar focus/condition/problem passivamente
+  if (flags.focus && !state.focus) state.focus = flags.focus;
+  const detCond = detectCondition(incomingText);
+  if (detCond && !state.condition) state.condition = detCond;
+  const detProb = extractProblemText(incomingText);
+  if (detProb && !state.problem_text) state.problem_text = detProb;
+
+  // Classificar lead
+  const lp = classifyLead(flags, incomingText, state);
+  if (!state.lead_profile || ["emocional","desconfiado","quente"].includes(lp)) state.lead_profile = lp;
+
+  // Rastrear pergunta importante
+  if (hasQuestion(incomingText)) {
+    state.last_important_question = extractMainQuestion(incomingText);
+  }
+
+  let reply = "";
+
+  /* ═══ [CAMADA 0] — PROTEÇÕES ═══ */
+
+  if (state.payment?.status === "approved") {
+    reply = afterPaidReply(state);
+  }
+  else if (flags.urgency) {
+    reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Por favor, procure um pronto-socorro ou ligue para o SAMU (192) agora. Quando estiver seguro(a), me chama aqui 😊";
+  }
+
+  /* ═══ [CAMADA 1] — REPARO CONVERSACIONAL ═══ */
+
+  else if (isRepairSignal(incomingText)) {
+    state.repair_count = (state.repair_count || 0) + 1;
+    const ai = await runLia({ incomingText, state, flags, stageCTA: "", isRepair: true });
+
+    if (ai.reply.startsWith("__")) {
+      reply = "Me desculpa pela confusão. Me conta com suas palavras o que ficou sem resposta que eu tento de um jeito diferente.";
+    } else {
+      const ack = state.repair_count >= 3
+        ? `Me desculpa pela confusão${state.nome ? `, ${state.nome}` : ""}. Vou ser bem direto(a):\n\n`
+        : `Você tem razão${state.nome ? `, ${state.nome}` : ""} — obrigada por sinalizar.\n\n`;
+      reply = ack + ai.reply;
+      state = mergeState(state, ai.updates);
+    }
+  }
+
+  /* ═══ [CAMADA 2] — PERGUNTAS DO PACIENTE → GPT ═══ */
+
+  else if (!reply && state.stage && hasQuestion(incomingText)
+    && !DATA_COLLECTION_STAGES.includes(state.stage)
+  ) {
+    if (isMedCostQuestion(flags, incomingText)) {
+      reply = medCostReply(state);
+      state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
+    } else {
+      const ctaHint = shouldShowCTA(state, flags, incomingText) ? getStageCTA(state).trim() : "";
+      const ai = await runLia({ incomingText, state, flags, stageCTA: ctaHint });
+
+      if (ai.reply === "__NEED_PRICE__") {
+        state.price_ask_count += 1;
+        reply = priceReply();
+        state.stage = "ASK_PLAN";
+      } else if (ai.reply === "__NEED_BOOK__") {
+        state.stage = "ASK_DAY";
+        reply = await askDayReply();
+      } else if (ai.reply === "__NEED_PAY__") {
+        if (state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
+        else { state.stage = "ASK_DAY"; reply = await askDayReply(); }
+      } else if (ai.reply === "__URGENT__") {
+        reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Procure um pronto-socorro ou SAMU (192).";
+      } else {
+        reply = ai.reply;
+        state = mergeState(state, ai.updates);
+        if (shouldShowCTA(state, flags, incomingText)
+            && !/(horários|horario|marcar|agendar|disponíveis|disponivel)/i.test(reply)
+            && !["ASK_NAME","ASK_PROBLEM","DIAGNOSTIC"].includes(state.stage)
+            && !isSubstantiveQuestion(incomingText)) {
+          reply += getSmartCTA(state, flags, incomingText);
+        } else {
+          state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
+        }
+      }
+    }
+  }
+
+  /* ═══ [CAMADA 3] — STATE MACHINE ═══ */
+
+  if (!reply) {
+
+    // ── Abertura: sem stage e sem nome ──
+    if (!state.stage && !state.nome) {
+      if (hasQuestion(incomingText)) {
+        const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
+        if (!ai.reply.startsWith("__")) {
+          reply = ai.reply + "\n\nAntes de mais nada, qual é o seu *primeiro nome*? 😊";
+          state = mergeState(state, ai.updates);
+        } else {
+          reply = askNameIntroReply();
+        }
+      } else {
+        reply = askNameIntroReply();
+      }
+      state.stage = "ASK_NAME";
+    }
+
+    // ── Captura do nome ──
+    else if (state.stage === "ASK_NAME") {
+      if (state.nome) {
+        if (!state.problem_text) {
+          state.stage = "ASK_PROBLEM";
+          reply = askProblemReply(state);
+        } else {
+          state.stage = "DIAGNOSTIC";
+          const nextQ = getNextDiagQuestion(state, state.problem_text || incomingText);
+          if (nextQ) { reply = nextQ; }
+          else { state.stage = "BRIDGE"; reply = bridgeReply(state); }
+        }
+      } else {
+        const nm = extractFirstName(incomingText);
+        if (nm) {
+          state.nome = nm;
+          state.name_used_count = 0;
+
+          if (state.problem_text) {
+            if (state.lead_profile === "quente" || flags.wantsBook) {
+              state.stage = "ASK_DAY";
+              reply = `Prazer, ${nm} 😊 Vou te mostrar os horários disponíveis.\n\n` + await askDayReply();
+            } else if (state.lead_profile === "pragmatico" || flags.wantsPrice) {
+              state.stage = "ASK_PLAN";
+              reply = `Prazer, ${nm} 😊\n\n${priceReply()}`;
+            } else {
+              state.stage = "DIAGNOSTIC";
+              const nextQ = getNextDiagQuestion(state, state.problem_text || incomingText);
+              if (nextQ) {
+                reply = `Prazer, ${nm} 😊\n\n${nextQ}`;
+              } else {
+                state.stage = "BRIDGE";
+                reply = `Prazer, ${nm} 😊\n\n${bridgeReply(state)}`;
+              }
+            }
+          } else {
+            state.stage = "ASK_PROBLEM";
+            reply = askProblemReply(state);
+          }
+        } else {
+          if (hasQuestion(incomingText)) {
+            const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
+            if (!ai.reply.startsWith("__")) {
+              reply = ai.reply + "\n\nAntes de seguir, me diz seu *primeiro nome* 😊";
+              state = mergeState(state, ai.updates);
+            } else {
+              reply = "Antes de tudo, me diz seu *primeiro nome* 😊";
+            }
+          } else {
+            reply = "Antes de tudo, me diz seu *primeiro nome* 😊";
+          }
+        }
+      }
+    }
+
+    // ── Captura do problema ──
+    else if (state.stage === "ASK_PROBLEM") {
+      const pb = extractProblemText(incomingText);
+      if (pb) {
+        state.problem_text = pb;
+        state.condition = state.condition || detectCondition(pb) || state.focus || null;
+
+        state.stage = "DIAGNOSTIC";
+        const nextQ = getNextDiagQuestion(state, incomingText);
+        if (nextQ) {
+          reply = nextQ;
+        } else {
+          state.stage = "BRIDGE";
+          reply = bridgeReply(state);
+        }
+      } else {
+        const ai = await runLia({ incomingText, state, flags, stageCTA: "Me conta: o que tem te incomodado mais?" });
+        if (ai.reply.startsWith("__")) {
+          reply = askProblemReply(state);
+        } else {
+          reply = ai.reply;
+          state = mergeState(state, ai.updates);
+        }
+      }
+    }
+
+    // ── Triagem adaptativa ──
+    else if (state.stage === "DIAGNOSTIC") {
+      const low = norm(incomingText);
+      if (/(ha |há |faz |anos|meses)/.test(low)) state.diag_has_tempo = true;
+      if (/(rotina|dia a dia|trabalho|sono|atrapalha|incomoda|cansaço)/.test(low)) state.diag_has_impacto = true;
+      if (/(ja tomei|já tomei|ja tentei|já tentei|remedio|remédio|anti.?inflam|fisioterapia|medicac|pregabalina|duloxetina|amitriptilina|infiltrac)/.test(low)) state.diag_has_tratamento = true;
+
+      const nextQ = getNextDiagQuestion(state, incomingText);
+      if (nextQ) {
+        reply = nextQ;
+      } else {
+        state.stage = "BRIDGE";
+        reply = bridgeReply(state);
+      }
+    }
+
+    // ── Bridge ──
+    else if (state.stage === "BRIDGE") {
+      if (flags.wantsBook || flags.asksHours || flags.confirms) {
+        state.stage = "ASK_DAY";
+        reply = await askDayReply();
+      } else if (flags.wantsPrice) {
+        state.price_ask_count += 1;
+        reply = priceReply();
+        state.stage = "ASK_PLAN";
+      } else {
+        const ai = await runLia({ incomingText, state, flags, stageCTA: "Se quiser, eu posso te mostrar os horários disponíveis" });
+        if (ai.reply === "__NEED_BOOK__") { state.stage = "ASK_DAY"; reply = await askDayReply(); }
+        else if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceReply(); state.stage = "ASK_PLAN"; }
+        else { reply = ai.reply; state = mergeState(state, ai.updates); }
+      }
+    }
+
+    // ── Escolher dia ──
+    else if (state.stage === "ASK_DAY") {
+      if (state.date_key && !state.slot_time) {
+        state.stage = "OFFER_SLOTS";
+        reply = await offerSlotsReply(state);
+      } else {
+        const dayChoice = extractNumericChoice(incomingText);
+        const explicitDate = extractDateKey(incomingText);
+        const suggested = await getSuggestedDayKeys();
+
+        if (dayChoice && suggested[dayChoice - 1]) {
+          state.date_key = suggested[dayChoice - 1];
+          state.stage = "OFFER_SLOTS";
+          reply = await offerSlotsReply(state);
+        } else if (explicitDate) {
+          const avail = await getAvailableSlotsForDate(explicitDate);
+          if (!avail.length) { reply = "Esse dia está sem vagas no momento 😕 Quer que eu te mostre outra data?"; }
+          else {
+            state.date_key = explicitDate;
+            state.stage = "OFFER_SLOTS";
+            const periodMin = extractPeriodFilter(incomingText);
+            reply = await offerSlotsReply(state, periodMin);
+          }
+        } else if (flags.confirms && suggested.length) {
+          state.date_key = suggested[0];
+          state.stage = "OFFER_SLOTS";
+          reply = await offerSlotsReply(state);
+        } else if (hasQuestion(incomingText)) {
+          const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dia fica melhor para você?" });
+          if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceReply(); state.stage = "ASK_PLAN"; }
+          else if (ai.reply.startsWith("__")) { reply = await askDayReply(); }
+          else { reply = ai.reply; state = mergeState(state, ai.updates); }
+        } else {
+          reply = await askDayReply();
+        }
+      }
+    }
+
+    // ── Escolher horário ──
+    else if (state.stage === "OFFER_SLOTS") {
+      const best = state.offered_slots?.length ? state.offered_slots : await chooseBestSlotsForDate(state.date_key, 3);
+      const choiceNum = extractNumericChoice(incomingText);
+      const requestedTime = extractHourOnly(incomingText);
+
+      let chosen = null;
+      if (choiceNum && best[choiceNum - 1]) chosen = best[choiceNum - 1];
+      else if (requestedTime) {
+        const available = await getAvailableSlotsForDate(state.date_key);
+        if (available.includes(requestedTime)) chosen = requestedTime;
+        else {
+          const best2 = await chooseBestSlotsForDate(state.date_key, 3);
+          reply = `Esse horário não está disponível. O mais próximo que tenho é:\n${best2.map((s,i) => `${i+1}) *${s}*`).join("\n")}\n\nQual fica melhor? 😊`;
+        }
+      } else if (/\b(outro|nenhum|tem mais)\b/.test(norm(incomingText))) {
+        reply = `Sem problema 😊 Que horário em *${formatDatePt(state.date_key)}* funciona melhor para você?`;
+      }
+
+      if (chosen && !reply) {
+        const hold = await acquireSlotHold(state.date_key, chosen, phone);
+        if (!hold.ok) {
+          reply = "Esse horário acabou de ser preenchido 😕 Vou te mostrar outras opções.\n\n" + (await offerSlotsReply(state));
+        } else {
+          state.slot_time = chosen;
+          state.slot_key = hold.slot_key;
+          await releaseOldHeldSlotsForPhone(phone, hold.slot_key);
+          state.stage = "ASK_FULLNAME";
+          reply = askFullNameReply(state);
+        }
+      }
+
+      if (!reply) {
+        if (hasQuestion(incomingText)) {
+          const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual desses horários funciona melhor?" });
+          if (ai.reply.startsWith("__")) { reply = await offerSlotsReply(state); }
+          else { reply = ai.reply; state = mergeState(state, ai.updates); }
+        } else {
+          reply = "Qual horário fica melhor? Pode me responder com *1, 2, 3* ou com o horário exato 😊";
+        }
+      }
+    }
+
+    // ── Dados cadastrais ──
+    else if (state.stage === "ASK_FULLNAME") {
+      const full = extractFullName(incomingText);
+      if (full) {
+        state.nome_completo = full;
+        state.stage = "ASK_BIRTHDATE";
+        reply = askBirthdateReply(state);
+      } else if (hasQuestion(incomingText)) {
+        const ai = await runLia({ incomingText, state, flags, stageCTA: "Me passa seu nome completo para finalizar a reserva" });
+        if (!ai.reply.startsWith("__")) { reply = ai.reply + "\n\nMe passa seu *nome completo* 😊"; state = mergeState(state, ai.updates); }
+        else { reply = "Me manda seu *nome completo* certinho, por favor."; }
+      } else {
+        reply = "Me manda seu *nome completo* certinho, por favor.";
+      }
+    }
+    else if (state.stage === "ASK_BIRTHDATE") {
+      const bd = extractBirthDate(incomingText);
+      if (bd) {
+        state.birthdate = bd;
+        state.stage = "ASK_EMAIL";
+        reply = askEmailReply();
+      } else {
+        reply = "Me manda sua *data de nascimento* no formato *dd/mm/aaaa*.";
+      }
+    }
+    else if (state.stage === "ASK_EMAIL") {
+      const em = extractEmail(incomingText);
+      if (em) {
+        state.email = em;
+        state.stage = "ASK_PLAN";
+        reply = `Obrigada 😊\n\nHorário pré-reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, sua reserva fica garantida 😊\n\n${priceReply()}`;
+      } else {
+        reply = "Me manda seu *e-mail* certinho, por favor.";
+      }
+    }
+
+    // ── Escolha do plano ──
+    else if (state.stage === "ASK_PLAN") {
+      const planKey = extractPlanChoice(incomingText);
+
+      if (planKey) {
+        state.selected_plan_key = planKey;
+        const holdCheck = state.date_key && state.slot_time ? await acquireSlotHold(state.date_key, state.slot_time, phone) : { ok: true };
+        if (state.date_key && !holdCheck.ok) {
+          state.slot_time = null;
+          state.slot_key = null;
+          state.stage = "OFFER_SLOTS";
+          reply = "Esse horário acabou de ser preenchido 😕 Vou te mostrar outras opções.\n\n" + (await offerSlotsReply(state));
+        } else {
+          if (holdCheck.slot_key) state.slot_key = holdCheck.slot_key;
+
+          if (!state.date_key) {
+            state.stage = "ASK_DAY";
+            reply = `Perfeito 😊 Vou organizar sua reserva.\n\n${await askDayReply()}`;
+          } else if (!state.slot_time) {
+            state.stage = "OFFER_SLOTS";
+            reply = await offerSlotsReply(state);
+          } else if (!state.nome_completo) {
+            state.stage = "ASK_FULLNAME";
+            reply = askFullNameReply(state);
+          } else if (!state.birthdate) {
+            state.stage = "ASK_BIRTHDATE";
+            reply = askBirthdateReply(state);
+          } else if (!state.email) {
+            state.stage = "ASK_EMAIL";
+            reply = askEmailReply();
+          } else {
+            const pref = await mpCreatePreference({ phone, planKey });
+            state.payment = {
+              status: "pending", plan_key: planKey,
+              preference_id: pref.preference_id, link: pref.link,
+              external_reference: pref.external_reference, created_at: Date.now(),
+            };
+            reply = paymentSentReply(pref.plan, pref.link, state);
+            state.stage = "WAIT_PAYMENT";
+          }
+        }
+      } else if (isMedCostQuestion(flags, incomingText)) {
+        reply = medCostReply(state);
+        state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
+      } else {
+        const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dessas opções faz mais sentido? Me responde com 1, 2 ou 3" });
+        if (ai.reply.startsWith("__")) {
+          reply = "Se quiser, eu posso te explicar a diferença entre as opções. Qual faz mais sentido: *1, 2 ou 3*?";
+        } else {
+          reply = ai.reply;
+          state = mergeState(state, ai.updates);
+        }
+      }
+    }
+
+    // ── Aguardando pagamento ──
+    else if (state.stage === "WAIT_PAYMENT") {
+      if (state.payment?.status === "pending" && state.payment?.link) {
+        if (flags.intentPay || flags.confirms) {
+          reply = pendingPaymentReply(state);
+        } else {
+          const ai = await runLia({ incomingText, state, flags, stageCTA: `Seu horário está pré-reservado. Para confirmar é só finalizar aqui: ${state.payment.link}` });
+          if (ai.reply.startsWith("__")) {
+            reply = pendingPaymentReply(state);
+          } else {
+            reply = ai.reply;
+            state = mergeState(state, ai.updates);
+          }
+        }
+      } else {
+        reply = "Me conta: como posso te ajudar agora? 😊";
+      }
+    }
+
+    // ── Intenções fora de stage ──
+    else if (flags.wantsBook || flags.asksHours) {
+      if (!state.nome) { state.stage = "ASK_NAME"; reply = askNameIntroReply(); }
+      else if (!state.problem_text) { state.stage = "ASK_PROBLEM"; reply = askProblemReply(state); }
+      else if (!state.date_key) { state.stage = "ASK_DAY"; reply = await askDayReply(); }
+      else if (!state.slot_time) { state.stage = "OFFER_SLOTS"; reply = await offerSlotsReply(state); }
+      else { state.stage = "ASK_PLAN"; reply = priceReply(); }
+    }
+
+    else if (flags.wantsPrice) {
+      state.price_ask_count += 1;
+      if (!state.nome) {
+        if (state.price_ask_count >= 2) { state.stage = "ASK_PLAN"; reply = priceReply(); }
+        else { state.stage = "ASK_NAME"; reply = "Claro, vou te passar as opções 😊 Antes, me diz seu *primeiro nome*?"; }
+      } else { reply = priceReply(); state.stage = "ASK_PLAN"; }
+    }
+
+    else if (flags.intentPay) {
+      if (state.payment?.status === "pending" && state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
+      else if (!state.date_key) { state.stage = "ASK_DAY"; reply = `Perfeito 😊 Antes do pagamento, vou reservar seu horário.\n\n${await askDayReply()}`; }
+      else { state.stage = "ASK_PLAN"; reply = priceReply(); }
+    }
+
+    else if (flags.refuses) {
+      reply = "Tranquilo, sem problema 😊 Se quiser tirar qualquer dúvida ou entender melhor como funciona, estou aqui.";
+    }
+
+    else if (isMedCostQuestion(flags, incomingText)) {
+      reply = medCostReply(state);
+      state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
+    }
+
+    /* ═══ [CAMADA 4/5] — OBJEÇÕES + FALLBACK GPT ═══ */
+
+    else {
+      const cta = shouldShowCTA(state, flags, incomingText) ? getStageCTA(state).trim() : "";
+      const ai = await runLia({ incomingText, state, flags, stageCTA: cta });
+
+      if (ai.reply === "__NEED_PRICE__") {
+        state.price_ask_count += 1;
+        reply = priceReply();
+        state.stage = "ASK_PLAN";
+      } else if (ai.reply === "__NEED_BOOK__") {
+        if (!state.nome) { state.stage = "ASK_NAME"; reply = askNameIntroReply(); }
+        else if (!state.problem_text) { state.stage = "ASK_PROBLEM"; reply = askProblemReply(state); }
+        else { state.stage = "ASK_DAY"; reply = await askDayReply(); }
+      } else if (ai.reply === "__NEED_PAY__") {
+        if (state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
+        else { reply = "Perfeito 😊 Antes de finalizar, preciso reservar seu horário." + getStageCTA(state); }
+      } else if (ai.reply === "__URGENT__") {
+        reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Procure um pronto-socorro ou SAMU (192).";
+      } else {
+        reply = ai.reply;
+        state = mergeState(state, ai.updates);
+        if (!state.nome && ai.updates?.nome) state.nome = String(ai.updates.nome).trim();
+        if (!state.problem_text && ai.updates?.problem_text) state.problem_text = String(ai.updates.problem_text).trim();
+        if (!state.condition && (ai.updates?.condition || state.problem_text)) {
+          state.condition = ai.updates?.condition || detectCondition(state.problem_text);
+        }
+      }
+    }
+  }
+
+  /* ═══ ANTI-REPETIÇÃO ═══ */
+
+  if (state.payment?.status === "approved") {
+    // OK — repetir afterPaidReply é comportamento correto
+  } else {
+    reply = await ensureNoRepeat(reply, state, incomingText, flags);
+  }
+
+  // Contar uso do nome
+  if (state.nome && reply.includes(state.nome)) {
+    state.name_used_count = Number(state.name_used_count || 0) + 1;
+  }
+
+  // Atualizar histórico
+  updateConversationHistory(state, incomingText, reply);
+
+  state.second_last_bot_reply = state.last_bot_reply;
+  state.last_bot_reply = reply;
+  state.last_user_message = incomingText;
+  state.last_sent_at = Date.now();
+
+  await saveUserState(phone, state);
+  logMessage(botId, phone, reply, "outbound");
+
+  // Determinar intent principal para retorno
+  const mainIntent = flags.wantsPrice ? "wantsPrice"
+    : flags.intentPay ? "intentPay"
+    : flags.wantsBook ? "wantsBook"
+    : flags.asksHours ? "asksHours"
+    : flags.confirms ? "confirms"
+    : flags.refuses ? "refuses"
+    : flags.urgency ? "urgency"
+    : flags.saysExpensive ? "saysExpensive"
+    : null;
+
+  // Determinar action
+  let action = null;
+  const needsPayment = state.stage === "WAIT_PAYMENT" && state.payment?.status === "pending";
+  if (needsPayment && state.payment?.link) {
+    const planPrice = PLANS[state.payment.plan_key]?.price || "";
+    action = `SEND_PAYMENT_LINK_${planPrice}`;
+  }
+
+  return {
+    ok: true,
+    reply,
+    stage: state.stage || null,
+    intent: mainIntent,
+    action,
+    needs_payment: !!needsPayment,
+    needs_human: false,
+    payment_link: state.payment?.link || null,
+    debug: {
+      lead_profile: state.lead_profile,
+      condition: state.condition,
+      nome: state.nome,
+    },
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    ROUTES
    ═══════════════════════════════════════════════════════════════════ */
 
 app.get("/", (req, res) => res.send("OK"));
 app.get("/mp/thanks", (req, res) => res.send("OK"));
+
+/* ═══════════════════════════════════════════════════════════════════
+   ENDPOINT /lia/respond — API HTTP para n8n + Evolution API
+   ═══════════════════════════════════════════════════════════════════ */
+
+app.post("/lia/respond", async (req, res) => {
+  try {
+    const { telefone, nome, mensagem, channel, source, metadata } = req.body || {};
+
+    if (!telefone || !mensagem) {
+      return res.status(400).json({ ok: false, error: "Campos 'telefone' e 'mensagem' são obrigatórios." });
+    }
+
+    // Normalizar telefone
+    const phone = String(telefone).replace(/\D/g, "");
+    if (phone.length < 10) {
+      return res.status(400).json({ ok: false, error: "Telefone inválido." });
+    }
+
+    const incomingText = String(mensagem).trim();
+    if (!incomingText) {
+      return res.status(400).json({ ok: false, error: "Mensagem vazia." });
+    }
+
+    const result = await processLiaMessage({
+      phone,
+      incomingText,
+      presetNome: nome || null,
+      botId: `lia-n8n-${source || "api"}`,
+    });
+
+    return res.status(200).json(result);
+
+  } catch (err) {
+    console.error("❌ Erro no /lia/respond:", err);
+    return res.status(500).json({
+      ok: false,
+      reply: "Tive uma instabilidade rápida aqui 😊 Tente novamente em alguns segundos.",
+      error: err.message,
+    });
+  }
+});
 
 // Webhook Mercado Pago (preservado)
 app.post("/mp/webhook", async (req, res) => {
@@ -1481,11 +2078,19 @@ app.post("/mp/webhook", async (req, res) => {
       await saveUserState(phone, state);
 
       if (status === "approved") {
-        const botFrom = state?.last_bot_from || null;
-        if (botFrom) {
-          try {
-            await twilioClient.messages.create({ to: `whatsapp:${phone}`, from: botFrom, body: afterPaidReply(state) });
-          } catch {}
+        // Tentar notificar via Twilio (se disponível)
+        if (twilioClient) {
+          const botFrom = state?.last_bot_from || null;
+          if (botFrom) {
+            try {
+              await twilioClient.messages.create({ to: `whatsapp:${phone}`, from: botFrom, body: afterPaidReply(state) });
+            } catch {}
+          }
+        } else {
+          // Sem Twilio — salvar flag para que a próxima chamada /lia/respond retorne a confirmação
+          state.payment_confirmed_pending_notify = true;
+          await saveUserState(phone, state);
+          console.log(`💳 Pagamento aprovado para ${phone} — aguardando próxima interação via /lia/respond para notificar.`);
         }
       }
     }
@@ -1494,20 +2099,14 @@ app.post("/mp/webhook", async (req, res) => {
 
 /* ═══════════════════════════════════════════════════════════════════
    ███████████████████████████████████████████████████████████████████
-   MAIN HANDLER — V24 GPT-FIRST
+   MAIN HANDLER — V24 GPT-FIRST (TWILIO WEBHOOK)
+   Agora delega para processLiaMessage(). Mantém apenas lógica
+   específica do Twilio: admin, áudio, delay, envio.
    ███████████████████████████████████████████████████████████████████
-
-   ARQUITETURA SIMPLIFICADA:
-   [0] Proteções (pagamento, urgência, admin, mídia)
-   [1] Reparo conversacional (sinal de "não respondeu")
-   [2] Perguntas do paciente → GPT responde + CTA inteligente
-   [3] State Machine (fluxo do funil)
-   [4] Objeções → GPT responde
-   [5] Fallback GPT
-
    ═══════════════════════════════════════════════════════════════════ */
 
 app.post("/whatsapp", async (req, res) => {
+  if (!twilio) { return res.status(503).send("Twilio não configurado"); }
   const twiml = new twilio.twiml.MessagingResponse();
   res.type("text/xml").send(twiml.toString());
 
@@ -1539,17 +2138,14 @@ app.post("/whatsapp", async (req, res) => {
         return;
       }
 
-      // ── Load state ──
-      let state = initializeState(await getUserState(phone), bot);
-
-      // ── Mídia: transcrição de áudio ou fallback ──
+      // ── Mídia: transcrição de áudio ou fallback (Twilio-specific) ──
       const hasMedia = Number(req.body.NumMedia || 0) > 0;
       if (hasMedia) {
+        const state = initializeState(await getUserState(phone), bot);
         const mediaType = (req.body.MediaContentType0 || "").toLowerCase();
         const mediaUrl = req.body.MediaUrl0;
 
         if (mediaType.startsWith("audio/") && mediaUrl) {
-          // Áudio do WhatsApp → transcrever via Whisper
           const transcribed = await transcribeWhatsAppAudio(mediaUrl);
           if (transcribed && transcribed.length >= 2) {
             incomingText = transcribed;
@@ -1564,7 +2160,6 @@ app.post("/whatsapp", async (req, res) => {
             return;
           }
         } else if (!incomingText || incomingText.length < 2) {
-          // Imagem, vídeo, sticker, etc. sem texto acompanhante
           const mediaReply = state.nome
             ? `${state.nome}, por enquanto eu só consigo ler mensagens de texto e áudio 😊 Me manda sua dúvida digitando que eu te ajudo.`
             : "Por enquanto eu só consigo ler mensagens de texto e áudio 😊 Me manda sua dúvida digitando que eu te ajudo.";
@@ -1576,558 +2171,26 @@ app.post("/whatsapp", async (req, res) => {
         }
       }
 
-      // Salvar mensagem inbound
-      logMessage(lead, bot, incomingText, "inbound");
+      // ── Delegar para processLiaMessage() ──
+      const result = await processLiaMessage({ phone, incomingText, botId: bot });
 
+      // ── Enviar via Twilio com delay humanizado ──
       const flags = detectIntent(incomingText);
-
-      // Atualizar focus/condition/problem passivamente
-      if (flags.focus && !state.focus) state.focus = flags.focus;
-      const detCond = detectCondition(incomingText);
-      if (detCond && !state.condition) state.condition = detCond;
-      const detProb = extractProblemText(incomingText);
-      if (detProb && !state.problem_text) state.problem_text = detProb;
-
-      // Classificar lead
-      const lp = classifyLead(flags, incomingText, state);
-      if (!state.lead_profile || ["emocional","desconfiado","quente"].includes(lp)) state.lead_profile = lp;
-
-      // Rastrear pergunta importante
-      if (hasQuestion(incomingText)) {
-        state.last_important_question = extractMainQuestion(incomingText);
-      }
-
-      let reply = "";
-
-      /* ═══════════════════════════════════════════════════════════════
-         [CAMADA 0] — PROTEÇÕES
-         ═══════════════════════════════════════════════════════════════ */
-
-      if (state.payment?.status === "approved") {
-        reply = afterPaidReply(state);
-      }
-      else if (flags.urgency) {
-        reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Por favor, procure um pronto-socorro ou ligue para o SAMU (192) agora. Quando estiver seguro(a), me chama aqui 😊";
-      }
-
-      /* ═══════════════════════════════════════════════════════════════
-         [CAMADA 1] — REPARO CONVERSACIONAL (V24 NOVO)
-         Se o paciente sinalizou que não foi ouvido, GPT gera
-         resposta NOVA com contexto completo.
-         ═══════════════════════════════════════════════════════════════ */
-
-      else if (isRepairSignal(incomingText)) {
-        state.repair_count = (state.repair_count || 0) + 1;
-        const ai = await runLia({
-          incomingText,
-          state,
-          flags,
-          stageCTA: "",
-          isRepair: true,
-        });
-
-        if (ai.reply.startsWith("__")) {
-          reply = "Me desculpa pela confusão. Me conta com suas palavras o que ficou sem resposta que eu tento de um jeito diferente.";
-        } else {
-          const ack = state.repair_count >= 3
-            ? `Me desculpa pela confusão${state.nome ? `, ${state.nome}` : ""}. Vou ser bem direto(a):\n\n`
-            : `Você tem razão${state.nome ? `, ${state.nome}` : ""} — obrigada por sinalizar.\n\n`;
-          reply = ack + ai.reply;
-          state = mergeState(state, ai.updates);
-        }
-        // Não adicionar CTA após reparo
-      }
-
-      /* ═══════════════════════════════════════════════════════════════
-         [CAMADA 2] — PERGUNTAS DO PACIENTE → GPT RESPONDE
-         Qualquer pergunta é respondida via GPT com contexto rico.
-         CTA inteligente (só quando paciente está pronto).
-         ═══════════════════════════════════════════════════════════════ */
-
-      else if (!reply && state.stage && hasQuestion(incomingText)
-        // V24.2 FIX: Não interceptar em NENHUM stage de coleta de dados
-        // (cada stage já tem seu próprio handler de perguntas na Camada 3)
-        && !DATA_COLLECTION_STAGES.includes(state.stage)
-      ) {
-        // V24.3: Se é pergunta sobre custo de medicamento, responder diretamente (não mandar pro GPT)
-        if (isMedCostQuestion(flags, incomingText)) {
-          reply = medCostReply(state);
-          state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
-        } else {
-        // Paciente fez pergunta em qualquer stage — responder via GPT
-        const ctaHint = shouldShowCTA(state, flags, incomingText) ? getStageCTA(state).trim() : "";
-        const ai = await runLia({
-          incomingText,
-          state,
-          flags,
-          stageCTA: ctaHint,
-        });
-
-        if (ai.reply === "__NEED_PRICE__") {
-          state.price_ask_count += 1;
-          reply = priceReply();
-          state.stage = "ASK_PLAN";
-        } else if (ai.reply === "__NEED_BOOK__") {
-          state.stage = "ASK_DAY";
-          reply = await askDayReply();
-        } else if (ai.reply === "__NEED_PAY__") {
-          if (state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
-          else { state.stage = "ASK_DAY"; reply = await askDayReply(); }
-        } else if (ai.reply === "__URGENT__") {
-          reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Procure um pronto-socorro ou SAMU (192).";
-        } else {
-          reply = ai.reply;
-          state = mergeState(state, ai.updates);
-          // V24.2: Adicionar CTA inteligente — mas NÃO em stages iniciais nem após pergunta substantiva
-          if (shouldShowCTA(state, flags, incomingText)
-              && !/(horários|horario|marcar|agendar|disponíveis|disponivel)/i.test(reply)
-              && !["ASK_NAME","ASK_PROBLEM","DIAGNOSTIC"].includes(state.stage)
-              && !isSubstantiveQuestion(incomingText)) {
-            reply += getSmartCTA(state, flags, incomingText);
-          } else {
-            state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
-          }
-        }
-        } // V24.3: fecha o else do isMedCostQuestion
-      }
-
-      /* ═══════════════════════════════════════════════════════════════
-         [CAMADA 3] — STATE MACHINE
-         ═══════════════════════════════════════════════════════════════ */
-
-      if (!reply) {
-
-        // ── Abertura: sem stage e sem nome ──
-        if (!state.stage && !state.nome) {
-          if (hasQuestion(incomingText)) {
-            // Primeira mensagem tem pergunta — responder via GPT + pedir nome
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
-            if (!ai.reply.startsWith("__")) {
-              reply = ai.reply + "\n\nAntes de mais nada, qual é o seu *primeiro nome*? 😊";
-              state = mergeState(state, ai.updates);
-            } else {
-              reply = askNameIntroReply();
-            }
-          } else {
-            reply = askNameIntroReply();
-          }
-          state.stage = "ASK_NAME";
-        }
-
-        // ── Captura do nome ──
-        else if (state.stage === "ASK_NAME") {
-          // V24 FIX: Se já tem nome (perda de estado), pular
-          if (state.nome) {
-            if (!state.problem_text) {
-              state.stage = "ASK_PROBLEM";
-              reply = askProblemReply(state);
-            } else {
-              state.stage = "DIAGNOSTIC";
-              const nextQ = getNextDiagQuestion(state, state.problem_text || incomingText);
-              if (nextQ) { reply = nextQ; }
-              else { state.stage = "BRIDGE"; reply = bridgeReply(state); }
-            }
-          } else {
-            const nm = extractFirstName(incomingText);
-            if (nm) {
-              state.nome = nm;
-              state.name_used_count = 0;
-
-              if (state.problem_text) {
-                if (state.lead_profile === "quente" || flags.wantsBook) {
-                  state.stage = "ASK_DAY";
-                  reply = `Prazer, ${nm} 😊 Vou te mostrar os horários disponíveis.\n\n` + await askDayReply();
-                } else if (state.lead_profile === "pragmatico" || flags.wantsPrice) {
-                  state.stage = "ASK_PLAN";
-                  reply = `Prazer, ${nm} 😊\n\n${priceReply()}`;
-                } else {
-                  state.stage = "DIAGNOSTIC";
-                  const nextQ = getNextDiagQuestion(state, state.problem_text || incomingText);
-                  if (nextQ) {
-                    reply = `Prazer, ${nm} 😊\n\n${nextQ}`;
-                  } else {
-                    state.stage = "BRIDGE";
-                    reply = `Prazer, ${nm} 😊\n\n${bridgeReply(state)}`;
-                  }
-                }
-              } else {
-                state.stage = "ASK_PROBLEM";
-                reply = askProblemReply(state);
-              }
-            } else {
-              // Não extraiu nome — pode ser pergunta, responder via GPT
-              if (hasQuestion(incomingText)) {
-                const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
-                if (!ai.reply.startsWith("__")) {
-                  reply = ai.reply + "\n\nAntes de seguir, me diz seu *primeiro nome* 😊";
-                  state = mergeState(state, ai.updates);
-                } else {
-                  reply = "Antes de tudo, me diz seu *primeiro nome* 😊";
-                }
-              } else {
-                reply = "Antes de tudo, me diz seu *primeiro nome* 😊";
-              }
-            }
-          }
-        }
-
-        // ── Captura do problema ──
-        else if (state.stage === "ASK_PROBLEM") {
-          const pb = extractProblemText(incomingText);
-          if (pb) {
-            state.problem_text = pb;
-            state.condition = state.condition || detectCondition(pb) || state.focus || null;
-
-            state.stage = "DIAGNOSTIC";
-            const nextQ = getNextDiagQuestion(state, incomingText);
-            if (nextQ) {
-              reply = nextQ;
-            } else {
-              state.stage = "BRIDGE";
-              reply = bridgeReply(state);
-            }
-          } else {
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "Me conta: o que tem te incomodado mais?" });
-            if (ai.reply.startsWith("__")) {
-              reply = askProblemReply(state);
-            } else {
-              reply = ai.reply;
-              state = mergeState(state, ai.updates);
-            }
-          }
-        }
-
-        // ── Triagem adaptativa ──
-        else if (state.stage === "DIAGNOSTIC") {
-          const low = norm(incomingText);
-          if (/(ha |há |faz |anos|meses)/.test(low)) state.diag_has_tempo = true;
-          if (/(rotina|dia a dia|trabalho|sono|atrapalha|incomoda|cansaço)/.test(low)) state.diag_has_impacto = true;
-          if (/(ja tomei|já tomei|ja tentei|já tentei|remedio|remédio|anti.?inflam|fisioterapia|medicac|pregabalina|duloxetina|amitriptilina|infiltrac)/.test(low)) state.diag_has_tratamento = true;
-
-          const nextQ = getNextDiagQuestion(state, incomingText);
-          if (nextQ) {
-            reply = nextQ;
-          } else {
-            state.stage = "BRIDGE";
-            reply = bridgeReply(state);
-          }
-        }
-
-        // ── Bridge ──
-        else if (state.stage === "BRIDGE") {
-          if (flags.wantsBook || flags.asksHours || flags.confirms) {
-            state.stage = "ASK_DAY";
-            reply = await askDayReply();
-          } else if (flags.wantsPrice) {
-            state.price_ask_count += 1;
-            reply = priceReply();
-            state.stage = "ASK_PLAN";
-          } else {
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "Se quiser, eu posso te mostrar os horários disponíveis" });
-            if (ai.reply === "__NEED_BOOK__") { state.stage = "ASK_DAY"; reply = await askDayReply(); }
-            else if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceReply(); state.stage = "ASK_PLAN"; }
-            else { reply = ai.reply; state = mergeState(state, ai.updates); }
-          }
-        }
-
-        // ── Escolher dia ──
-        else if (state.stage === "ASK_DAY") {
-          // V24 FIX: Se já tem date_key, pular para OFFER_SLOTS
-          if (state.date_key && !state.slot_time) {
-            state.stage = "OFFER_SLOTS";
-            reply = await offerSlotsReply(state);
-          } else {
-            const dayChoice = extractNumericChoice(incomingText);
-            const explicitDate = extractDateKey(incomingText);
-            const suggested = await getSuggestedDayKeys();
-
-            if (dayChoice && suggested[dayChoice - 1]) {
-              state.date_key = suggested[dayChoice - 1];
-              state.stage = "OFFER_SLOTS";
-              reply = await offerSlotsReply(state);
-            } else if (explicitDate) {
-              const avail = await getAvailableSlotsForDate(explicitDate);
-              if (!avail.length) { reply = "Esse dia está sem vagas no momento 😕 Quer que eu te mostre outra data?"; }
-              else {
-                state.date_key = explicitDate;
-                state.stage = "OFFER_SLOTS";
-                // V24.3: Filtrar slots por período se paciente especificou (ex: "depois das 18h")
-                const periodMin = extractPeriodFilter(incomingText);
-                reply = await offerSlotsReply(state, periodMin);
-              }
-            } else if (flags.confirms && suggested.length) {
-              state.date_key = suggested[0];
-              state.stage = "OFFER_SLOTS";
-              reply = await offerSlotsReply(state);
-            } else if (hasQuestion(incomingText)) {
-              const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dia fica melhor para você?" });
-              if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceReply(); state.stage = "ASK_PLAN"; }
-              else if (ai.reply.startsWith("__")) { reply = await askDayReply(); }
-              else { reply = ai.reply; state = mergeState(state, ai.updates); }
-            } else {
-              reply = await askDayReply();
-            }
-          }
-        }
-
-        // ── Escolher horário ──
-        else if (state.stage === "OFFER_SLOTS") {
-          const best = state.offered_slots?.length ? state.offered_slots : await chooseBestSlotsForDate(state.date_key, 3);
-          const choiceNum = extractNumericChoice(incomingText);
-          const requestedTime = extractHourOnly(incomingText);
-
-          let chosen = null;
-          if (choiceNum && best[choiceNum - 1]) chosen = best[choiceNum - 1];
-          else if (requestedTime) {
-            const available = await getAvailableSlotsForDate(state.date_key);
-            if (available.includes(requestedTime)) chosen = requestedTime;
-            else {
-              const best2 = await chooseBestSlotsForDate(state.date_key, 3);
-              reply = `Esse horário não está disponível. O mais próximo que tenho é:\n${best2.map((s,i) => `${i+1}) *${s}*`).join("\n")}\n\nQual fica melhor? 😊`;
-            }
-          } else if (/\b(outro|nenhum|tem mais)\b/.test(norm(incomingText))) {
-            reply = `Sem problema 😊 Que horário em *${formatDatePt(state.date_key)}* funciona melhor para você?`;
-          }
-
-          if (chosen && !reply) {
-            const hold = await acquireSlotHold(state.date_key, chosen, phone);
-            if (!hold.ok) {
-              reply = "Esse horário acabou de ser preenchido 😕 Vou te mostrar outras opções.\n\n" + (await offerSlotsReply(state));
-            } else {
-              state.slot_time = chosen;
-              state.slot_key = hold.slot_key;
-              await releaseOldHeldSlotsForPhone(phone, hold.slot_key);
-              state.stage = "ASK_FULLNAME";
-              reply = askFullNameReply(state);
-            }
-          }
-
-          if (!reply) {
-            if (hasQuestion(incomingText)) {
-              const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual desses horários funciona melhor?" });
-              if (ai.reply.startsWith("__")) { reply = await offerSlotsReply(state); }
-              else { reply = ai.reply; state = mergeState(state, ai.updates); }
-            } else {
-              reply = "Qual horário fica melhor? Pode me responder com *1, 2, 3* ou com o horário exato 😊";
-            }
-          }
-        }
-
-        // ── Dados cadastrais ──
-        else if (state.stage === "ASK_FULLNAME") {
-          const full = extractFullName(incomingText);
-          if (full) {
-            state.nome_completo = full;
-            state.stage = "ASK_BIRTHDATE";
-            reply = askBirthdateReply(state);
-          } else if (hasQuestion(incomingText)) {
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "Me passa seu nome completo para finalizar a reserva" });
-            if (!ai.reply.startsWith("__")) { reply = ai.reply + "\n\nMe passa seu *nome completo* 😊"; state = mergeState(state, ai.updates); }
-            else { reply = "Me manda seu *nome completo* certinho, por favor."; }
-          } else {
-            reply = "Me manda seu *nome completo* certinho, por favor.";
-          }
-        }
-        else if (state.stage === "ASK_BIRTHDATE") {
-          const bd = extractBirthDate(incomingText);
-          if (bd) {
-            state.birthdate = bd;
-            state.stage = "ASK_EMAIL";
-            reply = askEmailReply();
-          } else {
-            reply = "Me manda sua *data de nascimento* no formato *dd/mm/aaaa*.";
-          }
-        }
-        else if (state.stage === "ASK_EMAIL") {
-          const em = extractEmail(incomingText);
-          if (em) {
-            state.email = em;
-            state.stage = "ASK_PLAN";
-            reply = `Obrigada 😊\n\nHorário pré-reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, sua reserva fica garantida 😊\n\n${priceReply()}`;
-          } else {
-            reply = "Me manda seu *e-mail* certinho, por favor.";
-          }
-        }
-
-        // ── Escolha do plano ──
-        else if (state.stage === "ASK_PLAN") {
-          const planKey = extractPlanChoice(incomingText);
-
-          if (planKey) {
-            state.selected_plan_key = planKey;
-            const holdCheck = state.date_key && state.slot_time ? await acquireSlotHold(state.date_key, state.slot_time, phone) : { ok: true };
-            if (state.date_key && !holdCheck.ok) {
-              state.slot_time = null;
-              state.slot_key = null;
-              state.stage = "OFFER_SLOTS";
-              reply = "Esse horário acabou de ser preenchido 😕 Vou te mostrar outras opções.\n\n" + (await offerSlotsReply(state));
-            } else {
-              if (holdCheck.slot_key) state.slot_key = holdCheck.slot_key;
-
-              if (!state.date_key) {
-                state.stage = "ASK_DAY";
-                reply = `Perfeito 😊 Vou organizar sua reserva.\n\n${await askDayReply()}`;
-              } else if (!state.slot_time) {
-                state.stage = "OFFER_SLOTS";
-                reply = await offerSlotsReply(state);
-              } else if (!state.nome_completo) {
-                state.stage = "ASK_FULLNAME";
-                reply = askFullNameReply(state);
-              } else if (!state.birthdate) {
-                state.stage = "ASK_BIRTHDATE";
-                reply = askBirthdateReply(state);
-              } else if (!state.email) {
-                state.stage = "ASK_EMAIL";
-                reply = askEmailReply();
-              } else {
-                const pref = await mpCreatePreference({ phone, planKey });
-                state.payment = {
-                  status: "pending", plan_key: planKey,
-                  preference_id: pref.preference_id, link: pref.link,
-                  external_reference: pref.external_reference, created_at: Date.now(),
-                };
-                reply = paymentSentReply(pref.plan, pref.link, state);
-                state.stage = "WAIT_PAYMENT";
-              }
-            }
-          // V24.3: Interceptar pergunta sobre custo de medicamento ANTES de mandar pro GPT
-          } else if (isMedCostQuestion(flags, incomingText)) {
-            reply = medCostReply(state);
-            state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
-          } else {
-            const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dessas opções faz mais sentido? Me responde com 1, 2 ou 3" });
-            if (ai.reply.startsWith("__")) {
-              reply = "Se quiser, eu posso te explicar a diferença entre as opções. Qual faz mais sentido: *1, 2 ou 3*?";
-            } else {
-              reply = ai.reply;
-              state = mergeState(state, ai.updates);
-            }
-          }
-        }
-
-        // ── Aguardando pagamento ──
-        else if (state.stage === "WAIT_PAYMENT") {
-          if (state.payment?.status === "pending" && state.payment?.link) {
-            if (flags.intentPay || flags.confirms) {
-              reply = pendingPaymentReply(state);
-            } else {
-              const ai = await runLia({ incomingText, state, flags, stageCTA: `Seu horário está pré-reservado. Para confirmar é só finalizar aqui: ${state.payment.link}` });
-              if (ai.reply.startsWith("__")) {
-                reply = pendingPaymentReply(state);
-              } else {
-                reply = ai.reply;
-                state = mergeState(state, ai.updates);
-              }
-            }
-          } else {
-            reply = "Me conta: como posso te ajudar agora? 😊";
-          }
-        }
-
-        // ── Intenções fora de stage ──
-        else if (flags.wantsBook || flags.asksHours) {
-          if (!state.nome) { state.stage = "ASK_NAME"; reply = askNameIntroReply(); }
-          else if (!state.problem_text) { state.stage = "ASK_PROBLEM"; reply = askProblemReply(state); }
-          else if (!state.date_key) { state.stage = "ASK_DAY"; reply = await askDayReply(); }
-          else if (!state.slot_time) { state.stage = "OFFER_SLOTS"; reply = await offerSlotsReply(state); }
-          else { state.stage = "ASK_PLAN"; reply = priceReply(); }
-        }
-
-        else if (flags.wantsPrice) {
-          state.price_ask_count += 1;
-          if (!state.nome) {
-            if (state.price_ask_count >= 2) { state.stage = "ASK_PLAN"; reply = priceReply(); }
-            else { state.stage = "ASK_NAME"; reply = "Claro, vou te passar as opções 😊 Antes, me diz seu *primeiro nome*?"; }
-          } else { reply = priceReply(); state.stage = "ASK_PLAN"; }
-        }
-
-        else if (flags.intentPay) {
-          if (state.payment?.status === "pending" && state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
-          else if (!state.date_key) { state.stage = "ASK_DAY"; reply = `Perfeito 😊 Antes do pagamento, vou reservar seu horário.\n\n${await askDayReply()}`; }
-          else { state.stage = "ASK_PLAN"; reply = priceReply(); }
-        }
-
-        else if (flags.refuses) {
-          reply = "Tranquilo, sem problema 😊 Se quiser tirar qualquer dúvida ou entender melhor como funciona, estou aqui.";
-        }
-
-        // V24.3: Resposta direta sobre custo de medicamento/óleos (usa helper centralizado)
-        else if (isMedCostQuestion(flags, incomingText)) {
-          reply = medCostReply(state);
-          state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
-        }
-
-        /* ═══════════════════════════════════════════════════════════════
-           [CAMADA 4/5] — OBJEÇÕES + FALLBACK GPT
-           Tudo via GPT com contexto rico.
-           ═══════════════════════════════════════════════════════════════ */
-
-        else {
-          const cta = shouldShowCTA(state, flags, incomingText) ? getStageCTA(state).trim() : "";
-          const ai = await runLia({ incomingText, state, flags, stageCTA: cta });
-
-          if (ai.reply === "__NEED_PRICE__") {
-            state.price_ask_count += 1;
-            reply = priceReply();
-            state.stage = "ASK_PLAN";
-          } else if (ai.reply === "__NEED_BOOK__") {
-            if (!state.nome) { state.stage = "ASK_NAME"; reply = askNameIntroReply(); }
-            else if (!state.problem_text) { state.stage = "ASK_PROBLEM"; reply = askProblemReply(state); }
-            else { state.stage = "ASK_DAY"; reply = await askDayReply(); }
-          } else if (ai.reply === "__NEED_PAY__") {
-            if (state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
-            else { reply = "Perfeito 😊 Antes de finalizar, preciso reservar seu horário." + getStageCTA(state); }
-          } else if (ai.reply === "__URGENT__") {
-            reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Procure um pronto-socorro ou SAMU (192).";
-          } else {
-            reply = ai.reply;
-            state = mergeState(state, ai.updates);
-            if (!state.nome && ai.updates?.nome) state.nome = String(ai.updates.nome).trim();
-            if (!state.problem_text && ai.updates?.problem_text) state.problem_text = String(ai.updates.problem_text).trim();
-            if (!state.condition && (ai.updates?.condition || state.problem_text)) {
-              state.condition = ai.updates?.condition || detectCondition(state.problem_text);
-            }
-          }
-        }
-      }
-
-      /* ═══════════════════════════════════════════════════════════════
-         ANTI-REPETIÇÃO V24 (via ensureNoRepeat)
-         ═══════════════════════════════════════════════════════════════ */
-
-      if (state.payment?.status === "approved") {
-        // OK — repetir afterPaidReply é comportamento correto
-      } else {
-        reply = await ensureNoRepeat(reply, state, incomingText, flags);
-      }
-
-      // Contar uso do nome
-      if (state.nome && reply.includes(state.nome)) {
-        state.name_used_count = Number(state.name_used_count || 0) + 1;
-      }
-
-      // Atualizar histórico
-      updateConversationHistory(state, incomingText, reply);
-
+      const state = await getUserState(phone);
       const delaySec = computeHumanDelay(flags, state);
-      state.second_last_bot_reply = state.last_bot_reply;
-      state.last_bot_reply = reply;
-      state.last_user_message = incomingText;
-      state.last_sent_at = Date.now();
-
-      await saveUserState(phone, state);
-      await sendWhatsApp(lead, bot, reply, delaySec);
-      logMessage(bot, lead, reply, "outbound");
+      await sendWhatsApp(lead, bot, result.reply, delaySec);
 
     } catch (err) {
       console.error("❌ Erro no processamento:", err);
       try {
         const lead = req.body.From || "";
         const bot = req.body.To || "";
-        await twilioClient.messages.create({
-          to: lead, from: bot,
-          body: "Tive uma instabilidade rápida aqui 😊 Me manda de novo em 1 frase: quer *agendar*, *tirar dúvida* ou *ver valores*?",
-        });
+        if (twilioClient) {
+          await twilioClient.messages.create({
+            to: lead, from: bot,
+            body: "Tive uma instabilidade rápida aqui 😊 Me manda de novo em 1 frase: quer *agendar*, *tirar dúvida* ou *ver valores*?",
+          });
+        }
       } catch {}
     }
   })();
@@ -2140,6 +2203,7 @@ app.post("/whatsapp", async (req, res) => {
    ═══════════════════════════════════════════════════════════════════ */
 
 app.post("/send-manual", async (req, res) => {
+  if (!twilioClient) return res.status(503).json({ ok: false, error: "Twilio não configurado — use /lia/respond" });
   const { to, message, secret } = req.body || {};
 
   if (!MANUAL_SEND_SECRET) return res.status(500).json({ ok: false, error: "MANUAL_SEND_SECRET não configurado no servidor" });
