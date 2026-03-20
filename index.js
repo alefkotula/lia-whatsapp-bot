@@ -78,7 +78,13 @@ if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && twilio) {
   console.warn("⚠️ Twilio não configurado (modo API-only / n8n).");
 }
 
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+let openai = null;
+if (OPENAI_API_KEY) {
+  openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+  console.log("✅ OpenAI configurado.");
+} else {
+  console.warn("⚠️ OpenAI não configurado — LIA não responderá sem OPENAI_API_KEY.");
+}
 
 const CHAT_MODEL = MODEL_CHAT || "gpt-4.1";
 const MIN_DELAY = Number(MIN_DELAY_SEC || 1);
@@ -125,12 +131,33 @@ const PLANS = {
 };
 
 const FIXED_SCHEDULE = {
-  "18-03": { dayName: "quarta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
-  "19-03": { dayName: "quinta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
-  "20-03": { dayName: "sexta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
+  // MARÇO 2026
+  "24-03": { dayName: "terça-feira",  slots: ["16h","17h","18h","19h","20h","21h","22h"] },
+  "25-03": { dayName: "quarta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h","22h"] },
+  "26-03": { dayName: "quinta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h","22h"] },
+  "27-03": { dayName: "sexta-feira",  slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h","22h"] },
+  "28-03": { dayName: "sábado",       slots: ["9h","10h","11h","12h"] },
+  "31-03": { dayName: "terça-feira",  slots: ["16h","17h","18h","19h","20h","21h","22h"] },
+  // ABRIL 2026
+  "01-04": { dayName: "quarta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h","22h"] },
+  "02-04": { dayName: "quinta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h","22h"] },
+  "03-04": { dayName: "sexta-feira",  slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h","22h"] },
+  "04-04": { dayName: "sábado",       slots: ["9h","10h","11h","12h"] },
+  "07-04": { dayName: "terça-feira",  slots: ["16h","17h","18h","19h","20h","21h","22h"] },
 };
 
-const PREMIUM_SLOT_PRIORITY = ["19h","18h","20h","17h","21h","16h","15h","14h","13h","12h","11h","10h","9h"];
+const PREMIUM_SLOT_PRIORITY = ["20h","21h","22h","19h","18h","17h","16h","15h","14h","13h","12h","11h","10h","9h"];
+
+// V24.4: Prioridade de horário dinâmica por dia da semana
+function getSlotPriority(dateKey) {
+  const entry = FIXED_SCHEDULE[dateKey];
+  if (!entry) return PREMIUM_SLOT_PRIORITY;
+  const dn = norm(entry.dayName);
+  if (dn.includes("sabado")) return ["9h","10h","11h","12h"];
+  if (dn.includes("terca")) return ["20h","21h","22h","19h","18h","17h","16h"];
+  // Quarta/Quinta/Sexta: noite > tarde > manhã
+  return PREMIUM_SLOT_PRIORITY;
+}
 const WEEKDAY_PT = ["domingo","segunda-feira","terça-feira","quarta-feira","quinta-feira","sexta-feira","sábado"];
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -405,26 +432,36 @@ function extractEmail(text) {
 function extractDateKey(text) {
   const t = String(text || "");
   const validMonths = new Set(Object.keys(FIXED_SCHEDULE).map(k => Number(k.split("-")[1])));
+
+  // 1) Data explícita (dd/mm)
   const m = t.match(/\b(\d{1,2})[\/.-](\d{1,2})\b/);
   if (m) {
     const dd = Number(m[1]), mm = Number(m[2]);
-    if (dd >= 1 && dd <= 31 && validMonths.has(mm)) return makeDateKey(dd, mm);
+    if (dd >= 1 && dd <= 31 && validMonths.has(mm)) {
+      const key = makeDateKey(dd, mm);
+      if (FIXED_SCHEDULE[key]) return key;
+    }
   }
-  const dayNameMap = {};
+
+  // 2) Nome do dia → retorna a data MAIS PRÓXIMA futura com esse dia
+  const low = norm(t);
+  const now = new Date();
+  let bestKey = null;
+  let bestDiff = Infinity;
+
   for (const [key, val] of Object.entries(FIXED_SCHEDULE)) {
     const dayNorm = norm(val.dayName);
-    dayNameMap[dayNorm] = key;
+    const abbrev = dayNorm.replace("-feira", "").replace("á", "a"); // "sábado" → "sabado"
+    if (low.includes(dayNorm) || low.includes(abbrev)) {
+      const dt = parseDateKeyToDate(key);
+      const diff = dt.getTime() - now.getTime();
+      if (diff >= -86400000 && diff < bestDiff) {
+        bestDiff = diff;
+        bestKey = key;
+      }
+    }
   }
-  const low = norm(t);
-  for (const [dayNorm, dateKey] of Object.entries(dayNameMap)) {
-    if (low.includes(dayNorm)) return dateKey;
-  }
-  // V24.3: Também tentar abreviações (ex: "quinta" sem "-feira")
-  for (const [key, val] of Object.entries(FIXED_SCHEDULE)) {
-    const abbrev = norm(val.dayName).replace("-feira", "");
-    if (low.includes(abbrev)) return key;
-  }
-  return null;
+  return bestKey;
 }
 
 // V24.3: Extrai filtro de período do texto (ex: "depois das 18h" → 18)
@@ -541,6 +578,16 @@ function detectIntent(text) {
     urgency:          /\b(dor no peito|falta de ar|desmaio|avc|convuls|paralisia|confusao|confusão)\b/.test(t),
     strongPain:       /\b(nao aguento|não aguento|to sofrendo|tô sofrendo|muito ruim|muito dificil|muito difícil|desespero|nao consigo mais|não consigo mais|ajuda|socorro)\b/.test(t),
     focus: detectCondition(text),
+    // V24.4: Detecta menção a dia específico com intenção de disponibilidade
+    mentionsDayAvail: (() => {
+      const lt = norm(text);
+      const hasDay = /\b(segunda|terca|terça|quarta|quinta|sexta|sabado|sábado)\b/.test(lt)
+                  || /\b\d{1,2}[\/.-]\d{1,2}\b/.test(text);
+      if (!hasDay) return false;
+      if (/\b(tem|pode|disponivel|disponível|vaga|livre|aberto|horario|horário|horas)\b/.test(lt)) return true;
+      if (text.trim().length < 30 && text.includes("?")) return true;
+      return false;
+    })(),
   };
 }
 
@@ -569,10 +616,11 @@ function getGenericSlotsForDate(dateKey) {
   return FIXED_SCHEDULE[dateKey] ? [...FIXED_SCHEDULE[dateKey].slots] : [];
 }
 function getBaseSlotsForDate(dateKey) { return getGenericSlotsForDate(dateKey); }
-function sortSlotsSmart(slots) {
+function sortSlotsSmart(slots, dateKey) {
   const unique = removeDuplicates(slots);
+  const priority = dateKey ? getSlotPriority(dateKey) : PREMIUM_SLOT_PRIORITY;
   const prioritized = [];
-  for (const p of PREMIUM_SLOT_PRIORITY) if (unique.includes(p)) prioritized.push(p);
+  for (const p of priority) if (unique.includes(p)) prioritized.push(p);
   for (const s of unique) if (!prioritized.includes(s)) prioritized.push(s);
   return prioritized;
 }
@@ -598,7 +646,26 @@ async function getAvailableSlotsForDate(dateKey) {
 
 async function chooseBestSlotsForDate(dateKey, max = 3) {
   const available = await getAvailableSlotsForDate(dateKey);
-  return sortSlotsSmart(available).slice(0, max);
+  return sortSlotsSmart(available, dateKey).slice(0, max);
+}
+
+// V24.4: Encontra o dia disponível mais próximo de uma data-alvo
+async function findNearestAvailableDay(targetDateKey) {
+  const targetDate = parseDateKeyToDate(targetDateKey);
+  const now = new Date(Date.now() - 86400000); // permite hoje
+  const allKeys = Object.keys(FIXED_SCHEDULE);
+  let bestKey = null;
+  let bestDiff = Infinity;
+  for (const k of allKeys) {
+    const dt = parseDateKeyToDate(k);
+    if (dt < now) continue;
+    if (k === targetDateKey) continue;
+    const slots = await getAvailableSlotsForDate(k);
+    if (!slots.length) continue;
+    const diff = Math.abs(dt.getTime() - targetDate.getTime());
+    if (diff < bestDiff) { bestDiff = diff; bestKey = k; }
+  }
+  return bestKey;
 }
 
 async function acquireSlotHold(dateKey, time, phone, minutes = HOLD_MINUTES) {
@@ -949,7 +1016,7 @@ async function offerSlotsReply(state, periodMin = null) {
       const h = parseInt(s.replace("h", ""));
       return h >= periodMin;
     });
-    best = sortSlotsSmart(filtered).slice(0, 3);
+    best = sortSlotsSmart(filtered, dateKey).slice(0, 3);
     if (!best.length) {
       best = await chooseBestSlotsForDate(dateKey, 3);
       if (!best.length) return "Esse dia acabou de ficar sem vagas 😕 Quer que eu te mostre outra data?";
@@ -1435,15 +1502,16 @@ function updateConversationHistory(state, patientMsg, liaReply) {
 async function processLiaMessage(phone, incomingText) {
   const phoneDigits = String(phone).replace(/\D/g, "");
 
-  // ── Admin reset ──
-  if (norm(incomingText) === "reset" && phoneDigits === ADMIN_RESET_PHONE_DIGITS) {
-    await pool.query(`UPDATE wa_users SET state = '{}'::jsonb, updated_at = NOW() WHERE regexp_replace(phone, '\\D', '', 'g') = $1`, [phoneDigits]);
+  // ── Reset universal (qualquer lead) ──
+  const RESET_COMMANDS = ["reset", "reiniciar", "recomeçar", "recomecar"];
+  if (RESET_COMMANDS.includes(norm(incomingText))) {
+    await pool.query(`UPDATE wa_users SET state = '{}'::jsonb, updated_at = NOW() WHERE phone = $1`, [phone]);
     await pool.query(`DELETE FROM wa_slot_locks WHERE phone = $1 AND status='held'`, [phone]);
     return {
-      reply: "🔄 Memória resetada. Pode testar do zero.",
+      reply: "Conversa reiniciada 😊 Pode começar de novo!",
       state: {},
       flags: {},
-      intent: "admin_reset",
+      intent: "reset",
     };
   }
 
@@ -1577,8 +1645,33 @@ async function processLiaMessage(phone, incomingText) {
 
   if (!reply) {
 
+    // ── V24.4: Atalho — paciente menciona dia específico → oferecer horários ──
+    if (flags.mentionsDayAvail
+      && !["OFFER_SLOTS","ASK_FULLNAME","ASK_BIRTHDATE","ASK_EMAIL","ASK_PLAN","WAIT_PAYMENT"].includes(state.stage)
+    ) {
+      const mentionedDate = extractDateKey(incomingText);
+      if (mentionedDate) {
+        const avail = await getAvailableSlotsForDate(mentionedDate);
+        if (avail.length) {
+          state.date_key = mentionedDate;
+          state.stage = "OFFER_SLOTS";
+          const periodMin = extractPeriodFilter(incomingText);
+          reply = await offerSlotsReply(state, periodMin);
+        } else {
+          const nearest = await findNearestAvailableDay(mentionedDate);
+          if (nearest) {
+            state.date_key = nearest;
+            reply = `Esse dia não tenho mais vaga disponível 😕 Mas o dia mais próximo que tenho é *${formatDatePt(nearest)}*. Quer ver os horários?`;
+            state.stage = "ASK_DAY";
+          } else {
+            reply = "No momento todos os horários já estão preenchidos 😕 Quer que eu te coloque na lista de prioridade?";
+          }
+        }
+      }
+    }
+
     // ── Abertura: sem stage e sem nome ──
-    if (!state.stage && !state.nome) {
+    if (!reply && !state.stage && !state.nome) {
       if (hasQuestion(incomingText)) {
         const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
         if (!ai.reply.startsWith("__")) {
@@ -1692,7 +1785,7 @@ async function processLiaMessage(phone, incomingText) {
 
     // ── Bridge ──
     else if (state.stage === "BRIDGE") {
-      if (flags.wantsBook || flags.asksHours || flags.confirms) {
+      if (flags.wantsBook || flags.asksHours || flags.confirms || flags.mentionsDayAvail) {
         state.stage = "ASK_DAY";
         reply = await askDayReply();
       } else if (flags.wantsPrice) {
@@ -1723,8 +1816,15 @@ async function processLiaMessage(phone, incomingText) {
           reply = await offerSlotsReply(state);
         } else if (explicitDate) {
           const avail = await getAvailableSlotsForDate(explicitDate);
-          if (!avail.length) { reply = "Esse dia está sem vagas no momento 😕 Quer que eu te mostre outra data?"; }
-          else {
+          if (!avail.length) {
+            const nearest = await findNearestAvailableDay(explicitDate);
+            if (nearest) {
+              state.date_key = nearest;
+              reply = `Esse dia não tenho mais vaga 😕 Mas o mais próximo que tenho é *${formatDatePt(nearest)}*. Quer ver os horários?`;
+            } else {
+              reply = "Esse dia está sem vagas no momento 😕 Quer que eu te mostre outra data?";
+            }
+          } else {
             state.date_key = explicitDate;
             state.stage = "OFFER_SLOTS";
             const periodMin = extractPeriodFilter(incomingText);
@@ -1899,7 +1999,7 @@ async function processLiaMessage(phone, incomingText) {
     }
 
     // ── Intenções fora de stage ──
-    else if (flags.wantsBook || flags.asksHours) {
+    else if (flags.wantsBook || flags.asksHours || flags.mentionsDayAvail) {
       if (!state.nome) { state.stage = "ASK_NAME"; reply = askNameIntroReply(); }
       else if (!state.problem_text) { state.stage = "ASK_PROBLEM"; reply = askProblemReply(state); }
       else if (!state.date_key) { state.stage = "ASK_DAY"; reply = await askDayReply(); }
