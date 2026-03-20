@@ -1146,6 +1146,7 @@ Você é humana, acolhedora, profissional, segura e experiente. Você acredita n
 - Fazer mais de 1 pergunta por mensagem
 - Investigar sintomas clínicos em profundidade
 - Repetir a mesma resposta de mensagens anteriores
+- NUNCA peça CPF, RG ou documento ao paciente. O sistema NÃO precisa de CPF para gerar o link de pagamento. Se o paciente mencionar CPF espontaneamente, diga que não é necessário neste momento.
 
 ${KNOWLEDGE_BASE}
 ${conditionContext}
@@ -1773,8 +1774,21 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
       const full = extractFullName(incomingText);
       if (full) {
         state.nome_completo = full;
-        state.stage = "ASK_BIRTHDATE";
-        reply = askBirthdateReply(state);
+        // V24.4 FIX: Se já tem plano, birthdate e email, gerar link direto
+        if (state.selected_plan_key && state.date_key && state.slot_time && state.birthdate && state.email) {
+          const planKey = state.selected_plan_key;
+          const pref = await mpCreatePreference({ phone, planKey });
+          state.payment = {
+            status: "pending", plan_key: planKey,
+            preference_id: pref.preference_id, link: pref.link,
+            external_reference: pref.external_reference, created_at: Date.now(),
+          };
+          reply = paymentSentReply(pref.plan, pref.link, state);
+          state.stage = "WAIT_PAYMENT";
+        } else {
+          state.stage = "ASK_BIRTHDATE";
+          reply = askBirthdateReply(state);
+        }
       } else if (hasQuestion(incomingText)) {
         const ai = await runLia({ incomingText, state, flags, stageCTA: "Me passa seu nome completo para finalizar a reserva" });
         if (!ai.reply.startsWith("__")) { reply = ai.reply + "\n\nMe passa seu *nome completo* 😊"; state = mergeState(state, ai.updates); }
@@ -1787,8 +1801,21 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
       const bd = extractBirthDate(incomingText);
       if (bd) {
         state.birthdate = bd;
-        state.stage = "ASK_EMAIL";
-        reply = askEmailReply();
+        // V24.4 FIX: Se já tem plano e email, gerar link direto
+        if (state.selected_plan_key && state.date_key && state.slot_time && state.nome_completo && state.email) {
+          const planKey = state.selected_plan_key;
+          const pref = await mpCreatePreference({ phone, planKey });
+          state.payment = {
+            status: "pending", plan_key: planKey,
+            preference_id: pref.preference_id, link: pref.link,
+            external_reference: pref.external_reference, created_at: Date.now(),
+          };
+          reply = paymentSentReply(pref.plan, pref.link, state);
+          state.stage = "WAIT_PAYMENT";
+        } else {
+          state.stage = "ASK_EMAIL";
+          reply = askEmailReply();
+        }
       } else {
         reply = "Me manda sua *data de nascimento* no formato *dd/mm/aaaa*.";
       }
@@ -1797,8 +1824,21 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
       const em = extractEmail(incomingText);
       if (em) {
         state.email = em;
-        state.stage = "ASK_PLAN";
-        reply = `Obrigada 😊\n\nHorário pré-reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, sua reserva fica garantida 😊\n\n${priceReply()}`;
+        // V24.4 FIX: Se já tem plano escolhido e todos os dados, gerar link direto
+        if (state.selected_plan_key && state.date_key && state.slot_time && state.nome_completo && state.birthdate) {
+          const planKey = state.selected_plan_key;
+          const pref = await mpCreatePreference({ phone, planKey });
+          state.payment = {
+            status: "pending", plan_key: planKey,
+            preference_id: pref.preference_id, link: pref.link,
+            external_reference: pref.external_reference, created_at: Date.now(),
+          };
+          reply = paymentSentReply(pref.plan, pref.link, state);
+          state.stage = "WAIT_PAYMENT";
+        } else {
+          state.stage = "ASK_PLAN";
+          reply = `Obrigada 😊\n\nHorário pré-reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, sua reserva fica garantida 😊\n\n${priceReply()}`;
+        }
       } else {
         reply = "Me manda seu *e-mail* certinho, por favor.";
       }
@@ -1806,7 +1846,15 @@ async function processLiaMessage({ phone, incomingText, presetNome = null, botId
 
     // ── Escolha do plano ──
     else if (state.stage === "ASK_PLAN") {
-      const planKey = extractPlanChoice(incomingText);
+      // V24.4 FIX: Se já tem plano escolhido E todos os dados, gerar link direto
+      // (evita pedir plano de novo após coleta de dados)
+      const planKey = extractPlanChoice(incomingText) || (
+        state.selected_plan_key
+        && state.date_key && state.slot_time
+        && state.nome_completo && state.birthdate && state.email
+          ? state.selected_plan_key
+          : null
+      );
 
       if (planKey) {
         state.selected_plan_key = planKey;
