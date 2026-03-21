@@ -337,6 +337,8 @@ function extractFirstName(text) {
 
   if (/^(sim|ok|beleza|pode|claro|show|tanto faz|nao|não)$/.test(low)) return null;
   if (/^(dor|sono|ansiedade|fibromialgia|insônia|insonia|artrose|artrite|coluna)$/.test(low)) return null;
+  // V24.5: Bloquear palavras emocionais/médicas que podem ser confundidas com nome
+  if (/^(sofro|sofrer|sofrimento|problema|mental|dificuldade|tristeza|depressao|depressão|angustia|angústia|desespero|ajuda|socorro|tratamento|medicamento|remedio|remédio|preciso|obrigad[oa]|brigad[oa])$/i.test(low.split(/\s+/)[0])) return null;
 
   const patterns = [
     /(?:pode\s+(?:me\s+)?chamar?\s+(?:de\s+)?)\s*(.+)/i,
@@ -366,10 +368,10 @@ function extractFirstName(text) {
   if (parts.length < 1 || parts.length > 5) return null;
   if (/^\d+$/.test(candidate)) return null;
 
-  const condWords = /^(dor|sono|ansiedade|fibromialgia|artrose|artrite|enxaqueca|coluna|insônia|insonia|lombar|neuropat)/i;
+  const condWords = /^(dor|sono|ansiedade|fibromialgia|artrose|artrite|enxaqueca|coluna|insônia|insonia|lombar|neuropat|depressao|depressão|tristeza|sofrimento|problema|mental|angustia|angústia)/i;
   if (condWords.test(parts[0]) && parts.length <= 2) return null;
 
-  const notNames = /^(oi|ola|olá|bom|boa|dia|tarde|noite|tudo|bem|obrigad|brigad|quero|preciso|gostaria|tenho|sim|nao|não|legal|caro|certo|entendi|entendo|sera|será|claro|ok|verdade|seria|acho|pode|pois|tipo|vou|vai|meu|minha|mas|antes|deixa|outra|esse|essa|como|qual|quando|quanto|onde|porque|por)$/i;
+  const notNames = /^(oi|ola|olá|bom|boa|dia|tarde|noite|tudo|bem|obrigad|brigad|quero|preciso|gostaria|tenho|sim|nao|não|legal|caro|certo|entendi|entendo|sera|será|claro|ok|verdade|seria|acho|pode|pois|tipo|vou|vai|meu|minha|mas|antes|deixa|outra|esse|essa|como|qual|quando|quanto|onde|porque|por|sofro|sofrer|dificuldade|desespero|socorro|ajuda|tratamento|medicamento|remedio|remédio)$/i;
   if (notNames.test(parts[0])) return null;
 
   return parts[0].charAt(0).toUpperCase() + parts[0].slice(1).toLowerCase();
@@ -570,7 +572,7 @@ function detectIntent(text) {
     asksIsScam:       /\b(golpe|fraude|piramide|pirâmide|e serio|é sério|confiavel|confiável|consulta.*mesmo|e verdade isso|é verdade isso|isso e verdade|isso é verdade)\b/.test(t),
     asksPayMethod:    /\b(parcela|parcelar|forma.*pagamento|aceita.*pix|aceita.*cartao|aceita.*cartão)\b/.test(t),
     saysExpensive:    /\b(caro|caríssim|carissim|achei caro|muito caro|pesado|puxado)\b/.test(t),
-    saysWillSee:      /\b(vou ver|depois te falo|vou confirmar|vou pensar|te aviso|depois vejo|preciso pensar)\b/.test(t),
+    saysWillSee:      /\b(vou ver|depois te falo|vou confirmar|vou pensar|te aviso|depois vejo|preciso pensar|aguarde|aguarda|me da um tempo|me dá um tempo|deixa eu pensar|espera eu|nao reserva ainda|não reserva ainda|nao marca ainda|não marca ainda)\b/.test(t),
     saysUnsure:       /\b(nao tenho certeza|não tenho certeza|nao sei|não sei|sera|será|to na duvida|tô na dúvida|duvida|dúvida)\b/.test(t),
     saysCheaperElsewhere: /\b(mais barato|medico.*barato|médico.*barato|outro.*medico|outro.*médico|pesquisando)\b/.test(t),
     saysCheckSpouse:  /\b(minha?\s+(esposa|marido|mulher)|falar com\s+(esposa|marido|mulher)|vou ver com\s+(esposa|marido|mulher|familia|família)|conversar\s+(com\s+)?(esposa|marido|mulher|familia|família)\s+antes|combinar\s+com)\b/.test(t),
@@ -578,6 +580,18 @@ function detectIntent(text) {
     urgency:          /\b(dor no peito|falta de ar|desmaio|avc|convuls|paralisia|confusao|confusão)\b/.test(t),
     strongPain:       /\b(nao aguento|não aguento|to sofrendo|tô sofrendo|muito ruim|muito dificil|muito difícil|desespero|nao consigo mais|não consigo mais|ajuda|socorro)\b/.test(t),
     focus: detectCondition(text),
+    // V24.5: Encerramento educado (mensagem curta sem intent de compra)
+    endsConversation: (() => {
+      if (/\b(obrigad[oa]|brigad[oa]|valeu|boa noite|bom dia|boa tarde|ate mais|até mais|ate logo|até logo|tchau|falou|fui)\b/.test(t)) {
+        const words = text.trim().split(/\s+/).length;
+        if (words <= 10 && !/\b(marcar|agendar|horario|horário|consulta|pagar|link|valor|preco|preço|quero|preciso)\b/.test(t)) return true;
+      }
+      return false;
+    })(),
+    // V24.5: Risco emocional grave → suspender funil
+    emotionalRisk: /\b(suicid|me matar|quero morrer|nao quero mais viver|não quero mais viver|vontade de morrer|acabar com tudo|pensamento de morte|tirar minha vida|nao aguento mais viver|não aguento mais viver|me machucar|me cortar)\b/.test(t),
+    // V24.5: Sofrimento emocional (sem risco imediato) → cautela
+    emotionalDistress: /\b(problema mental|saude mental|saúde mental|depressao|depressão|tristeza profunda|dificuldade de viver|sofrimento|nao vejo saida|não vejo saída|vontade de desistir)\b/.test(t),
     // V24.4: Detecta menção a dia específico com intenção de disponibilidade
     mentionsDayAvail: (() => {
       const lt = norm(text);
@@ -1110,6 +1124,8 @@ function extractMainQuestion(text) {
    ═══════════════════════════════════════════════════════════════════ */
 
 function shouldShowCTA(state, flags, text) {
+  // V24.5: NUNCA empurrar CTA quando lead pede tempo, encerra ou tem risco emocional
+  if (flags.saysWillSee || flags.endsConversation || flags.saysCheckSpouse || flags.emotionalRisk || flags.emotionalDistress) return false;
   if (flags.wantsBook || flags.asksHours || flags.confirms || flags.intentPay) return true;
   if (hasQuestion(text)) return false;
   if (isSubstantiveQuestion(text)) return false;
@@ -1185,6 +1201,14 @@ Você é humana, acolhedora, profissional, segura e experiente. Você acredita n
 - Fazer mais de 1 pergunta por mensagem
 - Investigar sintomas clínicos em profundidade
 - Repetir a mesma resposta de mensagens anteriores
+- NUNCA diga que a consulta está "confirmada" ou "agendada" — enquanto o pagamento não foi confirmado, use SEMPRE "pré-reserva" ou "pré-reservado". Só use "confirmada" depois do pagamento aprovado.
+
+═══ QUANDO O PACIENTE PEDE TEMPO ═══
+Se o paciente disser "vou pensar", "preciso ver", "aguarde", "obrigada" ou equivalente:
+- Responda CURTO (1-2 linhas), acolhendo
+- NÃO repita opções de plano, agenda ou CTA
+- NÃO tente convencer
+- Encerre ali, sem forçar continuidade
 
 ${KNOWLEDGE_BASE}
 ${conditionContext}
@@ -1569,6 +1593,43 @@ async function processLiaMessage(phone, incomingText) {
   }
 
   /* ═══════════════════════════════════════════════════════════════
+     [CAMADA 0.5] — RISCO EMOCIONAL / SOFRIMENTO PSÍQUICO (V24.5)
+     ═══════════════════════════════════════════════════════════════ */
+
+  else if (flags.emotionalRisk) {
+    const nome = state.nome ? `, ${state.nome}` : "";
+    reply = `Preciso te perguntar algo importante${nome}: você está tendo pensamentos de se machucar ou de não querer mais viver?\n\nSe sim, por favor ligue agora para o *CVV: 188* (24h, gratuito, sigilo total). Você não precisa passar por isso sozinho(a).\n\nSe não, fica tranquilo(a) — me conta melhor o que está sentindo que eu te ajudo a encontrar o caminho certo.`;
+    state.emotional_risk_flagged = true;
+    state.needs_human = true;
+  }
+
+  else if (flags.emotionalDistress && !state.emotional_distress_handled) {
+    const nome = state.nome ? `, ${state.nome}` : "";
+    reply = `Entendo${nome}. O que você está sentindo é real e merece atenção.\n\nAntes de falar sobre tratamento, me conta um pouco mais: como está seu dia a dia com isso? Está conseguindo dormir, trabalhar, fazer suas coisas?`;
+    state.emotional_distress_handled = true;
+    state.lead_profile = "emocional";
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     [CAMADA 0.7] — PAUSA / ENCERRAMENTO EDUCADO (V24.5)
+     ═══════════════════════════════════════════════════════════════ */
+
+  else if (!DATA_COLLECTION_STAGES.includes(state.stage) && flags.endsConversation && !flags.wantsBook && !flags.wantsPrice && !flags.intentPay) {
+    const nome = state.nome ? `, ${state.nome}` : "";
+    reply = `Eu que agradeço${nome} 😊 Quando quiser, é só me chamar por aqui.`;
+  }
+
+  else if (flags.saysWillSee && !flags.wantsBook && !flags.intentPay) {
+    const nome = state.nome ? `, ${state.nome}` : "";
+    reply = `Claro${nome}, fica à vontade para pensar com calma 😊 Quando decidir, me chama por aqui que eu te ajudo.`;
+  }
+
+  else if (flags.saysCheckSpouse && !flags.wantsBook && !flags.intentPay) {
+    const nome = state.nome ? `, ${state.nome}` : "";
+    reply = `Faz todo sentido${nome}. Quando estiver decidido(a), me avisa por aqui que eu organizo tudo 😊`;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
      [CAMADA 1] — REPARO CONVERSACIONAL
      ═══════════════════════════════════════════════════════════════ */
 
@@ -1834,11 +1895,24 @@ async function processLiaMessage(phone, incomingText) {
           state.date_key = suggested[0];
           state.stage = "OFFER_SLOTS";
           reply = await offerSlotsReply(state);
+        // V24.5: Pergunta direta sobre horários sem indicar dia → re-oferecer dias
+        } else if (flags.asksHours && !extractDateKey(incomingText)) {
+          const dayKeys = await getSuggestedDayKeys();
+          if (dayKeys.length) {
+            const opts = dayKeys.map((d) => `*${formatDatePt(d)}*`).join("\n");
+            reply = `Me diz qual dia você prefere que eu te mostro os horários disponíveis dele 😊\n\n${opts}`;
+          } else {
+            reply = await askDayReply();
+          }
         } else if (hasQuestion(incomingText)) {
           const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dia fica melhor para você?" });
           if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceReply(); state.stage = "ASK_PLAN"; }
           else if (ai.reply.startsWith("__")) { reply = await askDayReply(); }
           else { reply = ai.reply; state = mergeState(state, ai.updates); }
+        // V24.5: Se lead pede tempo/encerra em ASK_DAY, respeitar
+        } else if (flags.saysWillSee || flags.endsConversation || flags.saysCheckSpouse) {
+          const nome = state.nome ? `, ${state.nome}` : "";
+          reply = `Sem problema${nome} 😊 Quando decidir o dia, me avisa por aqui que eu organizo tudo.`;
         } else {
           reply = await askDayReply();
         }
@@ -1968,6 +2042,10 @@ async function processLiaMessage(phone, incomingText) {
       } else if (isMedCostQuestion(flags, incomingText)) {
         reply = medCostReply(state);
         state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
+      // V24.5: Respeitar pausa em ASK_PLAN
+      } else if (flags.saysWillSee || flags.endsConversation || flags.saysCheckSpouse) {
+        const nome = state.nome ? `, ${state.nome}` : "";
+        reply = `Sem problema${nome} 😊 Quando decidir, me chama por aqui que eu organizo tudo.`;
       } else {
         const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dessas opções faz mais sentido? Me responde com 1, 2 ou 3" });
         if (ai.reply.startsWith("__")) {
@@ -2126,6 +2204,13 @@ app.post("/lia/respond", async (req, res) => {
 
     const result = await processLiaMessage(phone, incomingText);
 
+    // V24.5: Calcular delay humano baseado no tamanho da resposta
+    const replyLen = (result.reply || "").length;
+    let delay_ms;
+    if (replyLen < 80)       delay_ms = randInt(2000, 4000);   // curta: 2-4s
+    else if (replyLen < 250) delay_ms = randInt(4000, 7000);   // média: 4-7s
+    else                     delay_ms = randInt(6000, 10000);  // longa: 6-10s
+
     return res.json({
       ok: true,
       reply: result.reply,
@@ -2133,12 +2218,14 @@ app.post("/lia/respond", async (req, res) => {
       intent: detectMainIntent(result.flags) || null,
       action: null,
       needs_payment: result.state?.stage === "WAIT_PAYMENT",
-      needs_human: false,
+      needs_human: !!(result.state?.needs_human || result.state?.emotional_risk_flagged),
       payment_link: result.state?.payment?.link || null,
+      delay_ms,
       debug: {
         lead_profile: result.state?.lead_profile || null,
         condition: result.state?.condition || null,
         nome: result.state?.nome || null,
+        emotional_risk: result.state?.emotional_risk_flagged || false,
       },
     });
   } catch (err) {
