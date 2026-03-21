@@ -87,8 +87,9 @@ if (OPENAI_API_KEY) {
 }
 
 const CHAT_MODEL = MODEL_CHAT || "gpt-4.1";
-const MIN_DELAY = Number(MIN_DELAY_SEC || 1);
-const MAX_DELAY = Number(MAX_DELAY_SEC || 4);
+let MIN_DELAY = Number(MIN_DELAY_SEC || 8);
+let MAX_DELAY = Number(MAX_DELAY_SEC || 30);
+if (MIN_DELAY > MAX_DELAY) { [MIN_DELAY, MAX_DELAY] = [MAX_DELAY, MIN_DELAY]; console.warn("⚠️ MIN_DELAY_SEC > MAX_DELAY_SEC — invertidos automaticamente."); }
 const BASE_URL = (PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") || "http://localhost:10000";
 const HOLD_MINUTES = 15;
 const ADMIN_RESET_PHONE_DIGITS = "556581422637";
@@ -98,6 +99,82 @@ const DATA_COLLECTION_STAGES = [
   "ASK_DAY", "OFFER_SLOTS", "ASK_FULLNAME",
   "ASK_BIRTHDATE", "ASK_EMAIL", "ASK_PLAN", "WAIT_PAYMENT"
 ];
+
+/* ═══════════════════════════════════════════════════════════════════
+   V24.6: DEDUPLICAÇÃO — evita processar webhooks duplicados
+   ═══════════════════════════════════════════════════════════════════ */
+const _recentMessages = new Map();
+const DEDUP_TTL_MS = 60000; // 60 segundos
+
+function _dedupKey(phone, text) {
+  const hash = norm(text).replace(/\s+/g, "").slice(0, 120);
+  return `${phone}_${hash}`;
+}
+
+function _dedupCheck(phone, text) {
+  const key = _dedupKey(phone, text);
+  const cached = _recentMessages.get(key);
+  if (cached && (Date.now() - cached.ts) < DEDUP_TTL_MS) return cached.reply;
+  return null;
+}
+
+function _dedupStore(phone, text, reply) {
+  const key = _dedupKey(phone, text);
+  _recentMessages.set(key, { reply, ts: Date.now() });
+  // Cleanup periódico
+  if (_recentMessages.size > 500) {
+    const now = Date.now();
+    for (const [k, v] of _recentMessages) {
+      if (now - v.ts > DEDUP_TTL_MS) _recentMessages.delete(k);
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   V24.6: FILTRO DE MENSAGENS DE SISTEMA
+   Bloqueia msgs do WhatsApp/Meta/operacionais que não são do lead
+   ═══════════════════════════════════════════════════════════════════ */
+function isSystemMessage(text) {
+  if (!text || typeof text !== "string") return true;
+  const t = text.trim();
+  if (!t) return true;
+  // Mensagem só com emojis/espaços/pontuação (sem letras nem números)
+  if (!/[a-zA-ZÀ-ÿ0-9]/.test(t)) return true;
+  const low = t.toLowerCase();
+  // Mensagens clássicas Meta/WhatsApp
+  if (/voc[eê] recebeu uma mensagem/.test(low)) return true;
+  if (/esta empresa usa/.test(low)) return true;
+  if (/mensagens e liga[cç][oõ]es s[aã]o protegidas/.test(low)) return true;
+  if (/toque para saber mais/.test(low)) return true;
+  if (/criptografia de ponta/.test(low)) return true;
+  if (/as mensagens s[aã]o protegidas/.test(low)) return true;
+  if (/mensagem tempor[aá]ria/.test(low)) return true;
+  if (/esta mensagem foi apagada/.test(low)) return true;
+  if (/mensagem de seguran[cç]a/.test(low)) return true;
+  if (/c[oó]digo de seguran[cç]a mudou/.test(low)) return true;
+  // Eventos operacionais / status
+  if (/^\[?(status|system|evento|event|notification)\]?/i.test(low)) return true;
+  if (/^(delivered|sent|read|failed|queued|undelivered)$/i.test(low)) return true;
+  // Mídia sem texto relevante
+  if (/^(\[?(imagem|foto|image|video|vídeo|documento|document|sticker|figurinha|gif|audio|áudio|contato|contact|localiza[cç][aã]o|location)\]?\s*\.?\s*)$/i.test(low)) return true;
+  return false;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   V24.6: DETECTOR DE ENTRADA VIA META ADS
+   Frases típicas de clique em anúncio — NÃO são perguntas reais
+   ═══════════════════════════════════════════════════════════════════ */
+function isMetaAdsEntry(text) {
+  const t = norm(text);
+  // Frases exatas ou quase exatas geradas pelo Meta Ads
+  if (/^(ol[aá]|oi)?\s*(como funciona|gostaria de saber mais|quero saber mais|quero mais informa[cç][oõ]es|me conte mais|saiba mais|tenho interesse|quero conhecer|gostaria de conhecer)\s*[.!?]?\s*$/i.test(t)) return true;
+  if (/^(como funciona a consulta|como funciona o tratamento|como funciona o acompanhamento)\s*[.!?]?\s*$/.test(t)) return true;
+  if (/^(gostaria de agendar|quero agendar uma consulta|quero marcar uma consulta)\s*[.!?]?\s*$/.test(t)) return true;
+  // Mensagens muito curtas com "como funciona" (típico de botão Meta)
+  if (t.length < 50 && /^.{0,10}como funciona/.test(t)) return true;
+  if (t.length < 40 && /^.{0,10}(gostaria|quero|tenho interesse)/.test(t)) return true;
+  return false;
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    PLANS + SCHEDULE (preservado)
@@ -371,7 +448,7 @@ function extractFirstName(text) {
   const condWords = /^(dor|sono|ansiedade|fibromialgia|artrose|artrite|enxaqueca|coluna|insônia|insonia|lombar|neuropat|depressao|depressão|tristeza|sofrimento|problema|mental|angustia|angústia)/i;
   if (condWords.test(parts[0]) && parts.length <= 2) return null;
 
-  const notNames = /^(oi|ola|olá|bom|boa|dia|tarde|noite|tudo|bem|obrigad|brigad|quero|preciso|gostaria|tenho|sim|nao|não|legal|caro|certo|entendi|entendo|sera|será|claro|ok|verdade|seria|acho|pode|pois|tipo|vou|vai|meu|minha|mas|antes|deixa|outra|esse|essa|como|qual|quando|quanto|onde|porque|por|sofro|sofrer|dificuldade|desespero|socorro|ajuda|tratamento|medicamento|remedio|remédio)$/i;
+  const notNames = /^(oi|ola|olá|bom|boa|dia|tarde|noite|tudo|bem|obrigad|brigad|quero|preciso|gostaria|tenho|sim|nao|não|legal|caro|certo|entendi|entendo|sera|será|claro|ok|verdade|seria|acho|pode|pois|tipo|vou|vai|meu|minha|mas|antes|deixa|outra|esse|essa|como|qual|quando|quanto|onde|porque|por|sofro|sofrer|dificuldade|desespero|socorro|ajuda|tratamento|medicamento|remedio|remédio|prefiro|nenhum)$/i;
   if (notNames.test(parts[0])) return null;
 
   return parts[0].charAt(0).toUpperCase() + parts[0].slice(1).toLowerCase();
@@ -980,7 +1057,7 @@ function isMedCostQuestion(flags, text) {
 }
 
 function askNameIntroReply() {
-  return "Oi 😊\nEu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nQual é o seu *primeiro nome*?";
+  return "Oi 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
 }
 
 function askProblemReply(state) {
@@ -1186,6 +1263,8 @@ Você é humana, acolhedora, profissional, segura e experiente. Você acredita n
 
 5. MÁXIMO 7 LINHAS: Seja conciso. WhatsApp não é e-mail.
 
+8. ABERTURA CURTA: Nos primeiros 3 turnos da conversa, limite CADA resposta a no máximo 2 frases curtas. Seja direta e conversacional. NUNCA explique tudo de uma vez. Revele informações aos poucos, como uma vendedora experiente faria.
+
 6. VALIDAÇÃO EMOCIONAL: Quando o paciente compartilhar sofrimento (dor crônica, insônia, ansiedade prolongada, anos de tratamento sem resultado), ANTES de explicar o tratamento, valide com UMA frase curta e empática. Ex: "Conviver com isso por tanto tempo realmente pesa no dia a dia." / "Imagino como deve ser desgastante lidar com isso todo dia." Depois responda normalmente.
 
 ═══ O QUE VOCÊ PODE ═══
@@ -1240,6 +1319,10 @@ function buildUserPrompt({ incomingText, state, flags, stageCTA = "", isRepair =
     ? `\n\nSUA ÚLTIMA RESPOSTA FOI: "${state.last_bot_reply.slice(0, 200)}..."\nNÃO repita o mesmo conteúdo. Se a pergunta for similar, mude o ângulo, acrescente informação nova ou seja mais direto.`
     : "";
 
+  // V24.6: Contar turnos para limitar verbosidade
+  const turnCount = (state.last_3_exchanges || []).length;
+  const brevityWarning = turnCount <= 2 ? "\n\n[REGRA OBRIGATÓRIA: máximo 2 frases curtas nesta resposta. Seja breve e conversacional.]" : "";
+
   return `ESTADO DA CONVERSA:
 ${JSON.stringify({
   nome: state.nome,
@@ -1250,7 +1333,7 @@ ${JSON.stringify({
   slot_time: state.slot_time,
   lead_profile: state.lead_profile || "padrao",
   repair_count: state.repair_count || 0,
-})}
+})}${brevityWarning}
 
 ${history ? `HISTÓRICO RECENTE:\n${history}\n` : ""}
 MENSAGEM DO PACIENTE: ${incomingText}
@@ -1378,13 +1461,14 @@ function mpExtractPhoneFromPayment(payment) {
    ═══════════════════════════════════════════════════════════════════ */
 
 function computeHumanDelay(flags, state) {
+  // V24.6: Delays humanizados — mínimo 8s, máximo 30s
   let base = randInt(MIN_DELAY, MAX_DELAY);
-  if (flags.wantsBook || flags.asksHours || flags.intentPay) base = randInt(1, 3);
-  if (flags.wantsPrice) base = randInt(2, 4);
-  if (flags.strongPain || state.lead_profile === "emocional") base = randInt(1, 2);
+  if (flags.wantsBook || flags.asksHours || flags.intentPay) base = randInt(8, 14);
+  if (flags.wantsPrice) base = randInt(10, 16);
+  if (flags.strongPain || state.lead_profile === "emocional") base = randInt(8, 12);
   const lastAt = Number(state.last_sent_at || 0);
-  if (Date.now() - lastAt < 2000) base += 1;
-  return Math.max(1, base);
+  if (Date.now() - lastAt < 5000) base += 3;
+  return Math.max(8, base);
 }
 
 async function sendWhatsApp(to, from, body, delaySec) {
@@ -1502,6 +1586,8 @@ function initializeState(state, bot) {
   state.last_3_exchanges = state.last_3_exchanges || [];
   state.repair_count = Number(state.repair_count || 0);
   state.questions_answered_since_last_cta = Number(state.questions_answered_since_last_cta || 0);
+  state.name_ask_count = Number(state.name_ask_count || 0);
+  state.name_skipped = !!state.name_skipped;
   state.last_bot_from = bot;
   return state;
 }
@@ -1525,6 +1611,19 @@ function updateConversationHistory(state, patientMsg, liaReply) {
 
 async function processLiaMessage(phone, incomingText) {
   const phoneDigits = String(phone).replace(/\D/g, "");
+
+  // ── V24.6: Filtro de mensagens de sistema (Meta/WhatsApp/operacionais) ──
+  if (isSystemMessage(incomingText)) {
+    console.log(`🚫 Mensagem de sistema ignorada de ${phone}: "${(incomingText || "").slice(0, 60)}"`);
+    return { reply: null, state: {}, flags: {}, filtered: true };
+  }
+
+  // ── V24.6: Deduplicação — mesma msg do mesmo número em 60s → reply cacheado ──
+  const cachedReply = _dedupCheck(phone, incomingText);
+  if (cachedReply) {
+    console.log(`♻️ Dedup: reply cacheado para ${phone}`);
+    return { reply: cachedReply, state: {}, flags: {}, deduplicated: true };
+  }
 
   // ── Reset universal (qualquer lead) ──
   const RESET_COMMANDS = ["reset", "reiniciar", "recomeçar", "recomecar"];
@@ -1733,16 +1832,21 @@ async function processLiaMessage(phone, incomingText) {
 
     // ── Abertura: sem stage e sem nome ──
     if (!reply && !state.stage && !state.nome) {
-      if (hasQuestion(incomingText)) {
+      // V24.6: ANTI-TEXTÃO — Se é entrada via Meta Ads, SEMPRE intro curta + pedir nome
+      if (isMetaAdsEntry(incomingText)) {
+        reply = "Oi 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
+      } else if (hasQuestion(incomingText) && !isMetaAdsEntry(incomingText)) {
         const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
         if (!ai.reply.startsWith("__")) {
-          reply = ai.reply + "\n\nAntes de mais nada, qual é o seu *primeiro nome*? 😊";
+          // V24.6: Limitar resposta GPT na abertura + pedir nome
+          const shortReply = clip(ai.reply, 200);
+          reply = shortReply + "\n\nAntes de mais nada, como posso te chamar? 😊";
           state = mergeState(state, ai.updates);
         } else {
-          reply = askNameIntroReply();
+          reply = "Oi 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
         }
       } else {
-        reply = askNameIntroReply();
+        reply = "Oi 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
       }
       state.stage = "ASK_NAME";
     }
@@ -1787,7 +1891,26 @@ async function processLiaMessage(phone, incomingText) {
             reply = askProblemReply(state);
           }
         } else {
-          if (hasQuestion(incomingText)) {
+          // V24.6: Escape do loop de nome — após 2 tentativas, pular para ASK_PROBLEM
+          state.name_ask_count = (state.name_ask_count || 0) + 1;
+
+          if (state.name_ask_count >= 2) {
+            // Lead recusou dar nome 2+ vezes → contornar com graça
+            state.name_skipped = true;
+            state.stage = "ASK_PROBLEM";
+            // Tentar extrair problema da mensagem atual
+            const pb = extractProblemText(incomingText);
+            if (pb) {
+              state.problem_text = pb;
+              state.condition = detectCondition(pb) || state.focus || null;
+              state.stage = "DIAGNOSTIC";
+              const nextQ = getNextDiagQuestion(state, incomingText);
+              if (nextQ) { reply = `Sem problema 😊\n\n${nextQ}`; }
+              else { state.stage = "BRIDGE"; reply = `Sem problema 😊\n\n${bridgeReply(state)}`; }
+            } else {
+              reply = "Sem problema 😊 Me conta: o que te trouxe aqui? O que tem te incomodado mais?";
+            }
+          } else if (hasQuestion(incomingText)) {
             const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
             if (!ai.reply.startsWith("__")) {
               reply = ai.reply + "\n\nAntes de seguir, me diz seu *primeiro nome* 😊";
@@ -2198,18 +2321,31 @@ app.post("/lia/respond", async (req, res) => {
     }
 
     const incomingText = String(mensagem).trim();
-    if (!incomingText) {
-      return res.status(400).json({ ok: false, error: "mensagem vazia" });
+    if (!incomingText || isSystemMessage(incomingText)) {
+      return res.json({ ok: true, reply: null, filtered: true, delay_ms: 0 });
     }
 
     const result = await processLiaMessage(phone, incomingText);
 
-    // V24.5: Calcular delay humano baseado no tamanho da resposta
+    // V24.6: Se foi filtrado (sistema) ou dedup, retornar sem resposta ou cacheado
+    if (result.filtered) {
+      return res.json({ ok: true, reply: null, filtered: true, delay_ms: 0 });
+    }
+    if (result.deduplicated) {
+      return res.json({ ok: true, reply: result.reply, deduplicated: true, delay_ms: 0 });
+    }
+
+    // V24.6: Armazenar no cache de dedup
+    _dedupStore(phone, incomingText, result.reply);
+
+    // V24.6: Delay humano obrigatório — mínimo 8s, máximo 30s
     const replyLen = (result.reply || "").length;
     let delay_ms;
-    if (replyLen < 80)       delay_ms = randInt(2000, 4000);   // curta: 2-4s
-    else if (replyLen < 250) delay_ms = randInt(4000, 7000);   // média: 4-7s
-    else                     delay_ms = randInt(6000, 10000);  // longa: 6-10s
+    if (replyLen < 80)       delay_ms = randInt(8000, 14000);   // curta: 8-14s
+    else if (replyLen < 250) delay_ms = randInt(12000, 20000);  // média: 12-20s
+    else                     delay_ms = randInt(18000, 30000);  // longa: 18-30s
+    // Floor obrigatório
+    delay_ms = Math.max(delay_ms, 8000);
 
     return res.json({
       ok: true,
@@ -2364,9 +2500,12 @@ app.post("/whatsapp", async (req, res) => {
       stateNow.last_bot_from = bot;
       await saveUserState(phone, stateNow);
 
-      // Enviar via Twilio com delay humano
+      // V24.6: Se filtrado ou dedup, não enviar
+      if (result.filtered || result.deduplicated) return;
+
+      // Enviar via Twilio com delay humano (mínimo 8s)
       const flags = detectIntent(incomingText);
-      const delaySec = computeHumanDelay(flags, result.state);
+      const delaySec = Math.max(computeHumanDelay(flags, result.state), 8);
       await sendWhatsApp(lead, bot, result.reply, delaySec);
 
     } catch (err) {
