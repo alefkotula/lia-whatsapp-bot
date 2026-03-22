@@ -131,6 +131,25 @@ function _dedupStore(phone, text, reply) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   V24.7: DEBOUNCE / BUFFER DE MÚLTIPLAS MENSAGENS
+   Quando lead manda 2-3 msgs seguidas, agrupa em 1 só resposta.
+   Janela de 6s. Msgs anteriores retornam skip_send: true.
+   ═══════════════════════════════════════════════════════════════════ */
+const _inboundBuffer = new Map(); // phone → { messages: [{text, ts}], seq: number }
+const DEBOUNCE_WINDOW_MS = 6000; // 6 segundos de espera
+
+// Cleanup periódico do buffer (segurança contra leaks de memória)
+setInterval(() => {
+  const now = Date.now();
+  for (const [phone, buf] of _inboundBuffer) {
+    const lastMsg = buf.messages[buf.messages.length - 1];
+    if (lastMsg && (now - lastMsg.ts) > 120000) { // 2 min sem atividade → limpar
+      _inboundBuffer.delete(phone);
+    }
+  }
+}, 300000); // a cada 5 min
+
+/* ═══════════════════════════════════════════════════════════════════
    V24.6: FILTRO DE MENSAGENS DE SISTEMA
    Bloqueia msgs do WhatsApp/Meta/operacionais que não são do lead
    ═══════════════════════════════════════════════════════════════════ */
@@ -649,7 +668,9 @@ function detectIntent(text) {
     asksIsScam:       /\b(golpe|fraude|piramide|pirâmide|e serio|é sério|confiavel|confiável|consulta.*mesmo|e verdade isso|é verdade isso|isso e verdade|isso é verdade)\b/.test(t),
     asksPayMethod:    /\b(parcela|parcelar|forma.*pagamento|aceita.*pix|aceita.*cartao|aceita.*cartão)\b/.test(t),
     saysExpensive:    /\b(caro|caríssim|carissim|achei caro|muito caro|pesado|puxado)\b/.test(t),
-    saysWillSee:      /\b(vou ver|depois te falo|vou confirmar|vou pensar|te aviso|depois vejo|preciso pensar|aguarde|aguarda|me da um tempo|me dá um tempo|deixa eu pensar|espera eu|nao reserva ainda|não reserva ainda|nao marca ainda|não marca ainda)\b/.test(t),
+    saysWillSee:      /\b(vou ver|depois te falo|vou confirmar|vou pensar|te aviso|depois vejo|depois eu vejo|preciso pensar|aguarde|aguarda|me da um tempo|me dá um tempo|deixa eu pensar|espera eu|nao reserva ainda|não reserva ainda|nao marca ainda|não marca ainda|depois retorno|agora nao|agora não)\b/.test(t),
+    // V24.7: Casual ack — mensagem INTEIRA é só "ok"/"beleza"/"entendi" etc (sem intent real)
+    isCasualAck:      /^(ok|okk|okay|beleza|blz|ta|tá|certo|entendi|perfeito|uhum|aham|hm+|show|top|massa|valeu|vlw|legal|boa)[\s!.\u{1F600}-\u{1F64F}\u{1F44D}\u{2764}]*$/iu.test(text.trim()),
     saysUnsure:       /\b(nao tenho certeza|não tenho certeza|nao sei|não sei|sera|será|to na duvida|tô na dúvida|duvida|dúvida)\b/.test(t),
     saysCheaperElsewhere: /\b(mais barato|medico.*barato|médico.*barato|outro.*medico|outro.*médico|pesquisando)\b/.test(t),
     saysCheckSpouse:  /\b(minha?\s+(esposa|marido|mulher)|falar com\s+(esposa|marido|mulher)|vou ver com\s+(esposa|marido|mulher|familia|família)|conversar\s+(com\s+)?(esposa|marido|mulher|familia|família)\s+antes|combinar\s+com)\b/.test(t),
@@ -1261,11 +1282,24 @@ Você é humana, acolhedora, profissional, segura e experiente. Você acredita n
 
 4. SEM CTA AUTOMÁTICO: NÃO termine toda mensagem com "Se quiser, posso mostrar horários". Só conduza para agenda quando o paciente estiver pronto ou der sinal.
 
-5. MÁXIMO 7 LINHAS: Seja conciso. WhatsApp não é e-mail.
+5. COMPACTAÇÃO OBRIGATÓRIA:
+   - Resposta ideal: 180 a 450 caracteres (2-4 linhas de WhatsApp)
+   - NUNCA passe de 600 caracteres, a menos que o paciente peça explicação detalhada
+   - 1 resposta = 1 mensagem única. Nunca quebre em múltiplas mensagens
+   - No máximo 1 CTA por resposta
+   - WhatsApp não é e-mail. Seja concisa.
 
-8. ABERTURA CURTA: Nos primeiros 3 turnos da conversa, limite CADA resposta a no máximo 2 frases curtas. Seja direta e conversacional. NUNCA explique tudo de uma vez. Revele informações aos poucos, como uma vendedora experiente faria.
+6. RESPONDA O QUE FOI PERGUNTADO PRIMEIRO:
+   - "como funciona?" → explique objetivamente em 2-3 linhas, sem textão
+   - "quanto custa?" → diga o valor PRIMEIRO, depois complemente se necessário
+   - "tem horário?" → mostre horários PRIMEIRO
+   - Não mande explicação médica longa quando a pergunta for simples
 
-6. VALIDAÇÃO EMOCIONAL: Quando o paciente compartilhar sofrimento (dor crônica, insônia, ansiedade prolongada, anos de tratamento sem resultado), ANTES de explicar o tratamento, valide com UMA frase curta e empática. Ex: "Conviver com isso por tanto tempo realmente pesa no dia a dia." / "Imagino como deve ser desgastante lidar com isso todo dia." Depois responda normalmente.
+7. ABERTURA CURTA: Nos primeiros 3 turnos da conversa, limite CADA resposta a no máximo 2 frases curtas. Seja direta e conversacional. NUNCA explique tudo de uma vez. Revele informações aos poucos, como uma vendedora experiente faria.
+
+8. NÃO REPITA DADOS JÁ COLETADOS: Se o paciente já deu o nome, NÃO peça de novo. Se já explicou o problema, NÃO pergunte de novo. Avance.
+
+9. VALIDAÇÃO EMOCIONAL: Quando o paciente compartilhar sofrimento (dor crônica, insônia, ansiedade prolongada, anos de tratamento sem resultado), ANTES de explicar o tratamento, valide com UMA frase curta e empática. Ex: "Conviver com isso por tanto tempo realmente pesa no dia a dia." / "Imagino como deve ser desgastante lidar com isso todo dia." Depois responda normalmente.
 
 ═══ O QUE VOCÊ PODE ═══
 - Dizer "o que eu vejo aqui com frequência é que os pacientes melhoram"
@@ -1662,6 +1696,11 @@ async function processLiaMessage(phone, incomingText) {
 
   const flags = detectIntent(incomingText);
 
+  // V24.7: Reset farewell_sent quando lead volta com intent real (não é casual ack)
+  if (state.farewell_sent && !flags.isCasualAck && !flags.endsConversation && !flags.saysWillSee) {
+    state.farewell_sent = false;
+  }
+
   // Atualizar focus/condition/problem passivamente
   if (flags.focus && !state.focus) state.focus = flags.focus;
   const detCond = detectCondition(incomingText);
@@ -1710,22 +1749,50 @@ async function processLiaMessage(phone, incomingText) {
   }
 
   /* ═══════════════════════════════════════════════════════════════
-     [CAMADA 0.7] — PAUSA / ENCERRAMENTO EDUCADO (V24.5)
+     [CAMADA 0.7] — PAUSA / ENCERRAMENTO / SILÊNCIO (V24.7)
      ═══════════════════════════════════════════════════════════════ */
 
+  // V24.7: Casual ack ("ok", "beleza", "entendi") fora de coleta de dados → silêncio ou farewell único
+  else if (flags.isCasualAck && !DATA_COLLECTION_STAGES.includes(state.stage) && state.stage !== "ASK_NAME") {
+    if (state.farewell_sent) {
+      // Já mandou farewell antes → silêncio total
+      await saveUserState(phone, state);
+      return { reply: "", state, flags, skip_send: true };
+    }
+    // Primeira vez → farewell curto
+    state.farewell_sent = true;
+    reply = "Perfeito 😊 fico à disposição por aqui.";
+  }
+
   else if (!DATA_COLLECTION_STAGES.includes(state.stage) && flags.endsConversation && !flags.wantsBook && !flags.wantsPrice && !flags.intentPay) {
+    if (state.farewell_sent) {
+      // Já se despediu → silêncio
+      await saveUserState(phone, state);
+      return { reply: "", state, flags, skip_send: true };
+    }
     const nome = state.nome ? `, ${state.nome}` : "";
     reply = `Eu que agradeço${nome} 😊 Quando quiser, é só me chamar por aqui.`;
+    state.farewell_sent = true;
   }
 
   else if (flags.saysWillSee && !flags.wantsBook && !flags.intentPay) {
+    if (state.farewell_sent) {
+      await saveUserState(phone, state);
+      return { reply: "", state, flags, skip_send: true };
+    }
     const nome = state.nome ? `, ${state.nome}` : "";
     reply = `Claro${nome}, fica à vontade para pensar com calma 😊 Quando decidir, me chama por aqui que eu te ajudo.`;
+    state.farewell_sent = true;
   }
 
   else if (flags.saysCheckSpouse && !flags.wantsBook && !flags.intentPay) {
+    if (state.farewell_sent) {
+      await saveUserState(phone, state);
+      return { reply: "", state, flags, skip_send: true };
+    }
     const nome = state.nome ? `, ${state.nome}` : "";
     reply = `Faz todo sentido${nome}. Quando estiver decidido(a), me avisa por aqui que eu organizo tudo 😊`;
+    state.farewell_sent = true;
   }
 
   /* ═══════════════════════════════════════════════════════════════
@@ -2312,39 +2379,92 @@ app.post("/lia/respond", async (req, res) => {
       return res.status(400).json({
         ok: false,
         error: "campos 'telefone' e 'mensagem' são obrigatórios",
+        skip_send: true,
       });
     }
 
     const phone = String(telefone).replace(/\D/g, "");
     if (!phone || phone.length < 10) {
-      return res.status(400).json({ ok: false, error: "telefone inválido" });
+      return res.status(400).json({ ok: false, error: "telefone inválido", skip_send: true });
     }
 
     const incomingText = String(mensagem).trim();
+
+    // ── Filtro de mensagem de sistema → skip_send ──
     if (!incomingText || isSystemMessage(incomingText)) {
-      return res.json({ ok: true, reply: null, filtered: true, delay_ms: 0 });
+      return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
     }
 
-    const result = await processLiaMessage(phone, incomingText);
+    // ══════════════════════════════════════════════════════════════
+    // V24.7: DEBOUNCE — buffer de múltiplas mensagens do mesmo phone
+    // Espera 10s. Se chegar msg mais nova, esta retorna skip_send.
+    // A execução mais recente consolida tudo e responde 1x só.
+    // ══════════════════════════════════════════════════════════════
 
-    // V24.6: Se foi filtrado (sistema) ou dedup, retornar sem resposta ou cacheado
+    // 1) Registrar msg no buffer
+    if (!_inboundBuffer.has(phone)) {
+      _inboundBuffer.set(phone, { messages: [], seq: 0 });
+    }
+    const buf = _inboundBuffer.get(phone);
+    buf.seq += 1;
+    const mySeq = buf.seq;
+    buf.messages.push({ text: incomingText, ts: Date.now() });
+
+    // 2) Aguardar janela de debounce (10s)
+    await new Promise(r => setTimeout(r, DEBOUNCE_WINDOW_MS));
+
+    // 3) Após a espera: verificar se esta execução ainda é a mais recente
+    const bufAfter = _inboundBuffer.get(phone);
+    if (!bufAfter || bufAfter.seq !== mySeq) {
+      // Chegou msg mais nova durante a espera → esta execução é descartada
+      console.log(`⏳ Debounce: skip_send para ${phone} (seq ${mySeq}, atual ${bufAfter?.seq})`);
+      return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
+    }
+
+    // 4) Esta é a execução mais recente → consolidar todas as msgs do buffer
+    const allMessages = bufAfter.messages.map(m => m.text);
+    const consolidatedText = allMessages.length > 1
+      ? allMessages.join(" ")
+      : allMessages[0];
+    const wasConsolidated = allMessages.length > 1;
+
+    // Limpar buffer deste phone
+    _inboundBuffer.delete(phone);
+
+    if (wasConsolidated) {
+      console.log(`📦 Debounce: consolidou ${allMessages.length} msgs de ${phone}: "${consolidatedText.slice(0, 80)}..."`);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Processar a mensagem (consolidada ou única)
+    // ══════════════════════════════════════════════════════════════
+
+    const result = await processLiaMessage(phone, consolidatedText);
+
+    // Se foi filtrado (sistema) → skip_send
     if (result.filtered) {
-      return res.json({ ok: true, reply: null, filtered: true, delay_ms: 0 });
+      return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
     }
+
+    // Se foi dedup (msg idêntica em 60s) → skip_send para n8n não reenviar
     if (result.deduplicated) {
-      return res.json({ ok: true, reply: result.reply, deduplicated: true, delay_ms: 0 });
+      return res.json({ ok: true, reply: "", skip_send: true, deduplicated: true, delay_ms: 0 });
     }
 
-    // V24.6: Armazenar no cache de dedup
-    _dedupStore(phone, incomingText, result.reply);
+    // V24.7: Se processLiaMessage retornou skip_send (silêncio/encerramento)
+    if (result.skip_send) {
+      return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
+    }
 
-    // V24.6: Delay humano obrigatório — mínimo 8s, máximo 30s
+    // Armazenar no cache de dedup
+    _dedupStore(phone, consolidatedText, result.reply);
+
+    // Delay humano obrigatório — mínimo 8s, máximo 30s
     const replyLen = (result.reply || "").length;
     let delay_ms;
     if (replyLen < 80)       delay_ms = randInt(8000, 14000);   // curta: 8-14s
     else if (replyLen < 250) delay_ms = randInt(12000, 20000);  // média: 12-20s
     else                     delay_ms = randInt(18000, 30000);  // longa: 18-30s
-    // Floor obrigatório
     delay_ms = Math.max(delay_ms, 8000);
 
     return res.json({
@@ -2357,11 +2477,13 @@ app.post("/lia/respond", async (req, res) => {
       needs_human: !!(result.state?.needs_human || result.state?.emotional_risk_flagged),
       payment_link: result.state?.payment?.link || null,
       delay_ms,
+      skip_send: false,
       debug: {
         lead_profile: result.state?.lead_profile || null,
         condition: result.state?.condition || null,
         nome: result.state?.nome || null,
         emotional_risk: result.state?.emotional_risk_flagged || false,
+        consolidated_messages: wasConsolidated ? allMessages.length : 1,
       },
     });
   } catch (err) {
@@ -2370,6 +2492,7 @@ app.post("/lia/respond", async (req, res) => {
       ok: false,
       error: "erro interno",
       reply: "Tive uma instabilidade rápida aqui 😊 Me manda de novo em 1 frase: quer *agendar*, *tirar dúvida* ou *ver valores*?",
+      skip_send: false,
     });
   }
 });
@@ -2500,8 +2623,8 @@ app.post("/whatsapp", async (req, res) => {
       stateNow.last_bot_from = bot;
       await saveUserState(phone, stateNow);
 
-      // V24.6: Se filtrado ou dedup, não enviar
-      if (result.filtered || result.deduplicated) return;
+      // V24.7: Se filtrado, dedup, skip_send ou reply vazio, não enviar
+      if (result.filtered || result.deduplicated || result.skip_send || !String(result.reply || "").trim()) return;
 
       // Enviar via Twilio com delay humano (mínimo 8s)
       const flags = detectIntent(incomingText);
