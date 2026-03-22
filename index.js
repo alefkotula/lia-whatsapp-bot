@@ -1899,9 +1899,19 @@ async function processLiaMessage(phone, incomingText) {
 
     // ── Abertura: sem stage e sem nome ──
     if (!reply && !state.stage && !state.nome) {
+      // V24.7: TENTATIVA ANTECIPADA — se o texto consolidado já contém nome, extrair ANTES de pedir
+      const earlyName = extractFirstName(incomingText);
+      if (earlyName) {
+        // Nome detectado no primeiro contato (ex: "Oi meu nome é Maria")
+        state.nome = earlyName;
+        state.name_used_count = 0;
+        state.stage = "ASK_PROBLEM";
+        reply = `Oi, ${earlyName} 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\n` + askProblemReply(state).replace(/^Prazer,\s*\w+\s*😊\s*\n\n/i, "");
+      }
       // V24.6: ANTI-TEXTÃO — Se é entrada via Meta Ads, SEMPRE intro curta + pedir nome
-      if (isMetaAdsEntry(incomingText)) {
+      else if (isMetaAdsEntry(incomingText)) {
         reply = "Oi 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
+        state.stage = "ASK_NAME";
       } else if (hasQuestion(incomingText) && !isMetaAdsEntry(incomingText)) {
         const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
         if (!ai.reply.startsWith("__")) {
@@ -1912,10 +1922,11 @@ async function processLiaMessage(phone, incomingText) {
         } else {
           reply = "Oi 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
         }
+        state.stage = "ASK_NAME";
       } else {
         reply = "Oi 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
+        state.stage = "ASK_NAME";
       }
-      state.stage = "ASK_NAME";
     }
 
     // ── Captura do nome ──
@@ -2373,7 +2384,7 @@ app.get("/mp/thanks", (req, res) => res.send("OK"));
 
 app.post("/lia/respond", async (req, res) => {
   try {
-    const { telefone, mensagem } = req.body || {};
+    const { telefone, mensagem, fromMe } = req.body || {};
 
     if (!telefone || !mensagem) {
       return res.status(400).json({
@@ -2390,6 +2401,76 @@ app.post("/lia/respond", async (req, res) => {
 
     const incomingText = String(mensagem).trim();
 
+    // ══════════════════════════════════════════════════════════════
+    // V24.8: PAUSA MANUAL POR LEAD — Comandos admin (ANTES do debounce)
+    // Comandos: Deixa.eu.pensar | Eu.voltei | status.lia
+    // Requer fromMe === true (mensagem enviada pelo admin no chat do lead)
+    // ══════════════════════════════════════════════════════════════
+    const isAdminMsg = fromMe === true || fromMe === "true";
+    const cmdNorm = incomingText.toLowerCase().trim();
+
+    if (isAdminMsg && cmdNorm === "deixa.eu.pensar") {
+      const st = await getUserState(phone);
+      st.lia_paused = true;
+      st.lia_paused_at = new Date().toISOString();
+      await saveUserState(phone, st);
+      console.log(`⏸️ Admin pausou LIA para ${phone}`);
+      return res.json({
+        ok: true,
+        reply: "⏸️ LIA pausada para este lead. Você assumiu o chat.\nPara reativar: Eu.voltei",
+        skip_send: false,
+        delay_ms: 0,
+        admin_command: "pause",
+      });
+    }
+
+    if (isAdminMsg && cmdNorm === "eu.voltei") {
+      const st = await getUserState(phone);
+      st.lia_paused = false;
+      delete st.lia_paused_at;
+      await saveUserState(phone, st);
+      console.log(`▶️ Admin reativou LIA para ${phone}`);
+      return res.json({
+        ok: true,
+        reply: "▶️ LIA reativada para este lead. Retomando do contexto atual.",
+        skip_send: false,
+        delay_ms: 0,
+        admin_command: "resume",
+      });
+    }
+
+    if (isAdminMsg && cmdNorm === "status.lia") {
+      const st = await getUserState(phone);
+      const paused = st.lia_paused === true;
+      const since = st.lia_paused_at ? ` (desde ${st.lia_paused_at})` : "";
+      const statusMsg = paused
+        ? `⏸️ LIA PAUSADA neste lead${since}\nStage: ${st.stage || "nenhum"} | Nome: ${st.nome || "não coletado"}`
+        : `▶️ LIA ATIVA neste lead\nStage: ${st.stage || "nenhum"} | Nome: ${st.nome || "não coletado"}`;
+      return res.json({
+        ok: true,
+        reply: statusMsg,
+        skip_send: false,
+        delay_ms: 0,
+        admin_command: "status",
+      });
+    }
+
+    // Se mensagem é do admin (fromMe) mas NÃO é comando → ignorar (admin digitando no chat)
+    if (isAdminMsg) {
+      return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // V24.8: CHECK PAUSA — Se lead está pausado, logar mas não responder
+    // ══════════════════════════════════════════════════════════════
+    const quickState = await getUserState(phone);
+    if (quickState.lia_paused === true) {
+      // Logar mensagem do lead para preservar contexto
+      logMessage(phone, "lia", incomingText, "inbound");
+      console.log(`⏸️ Lead ${phone} está pausado. Msg logada, sem resposta: "${incomingText.slice(0, 60)}"`);
+      return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0, paused: true });
+    }
+
     // ── Filtro de mensagem de sistema → skip_send ──
     if (!incomingText || isSystemMessage(incomingText)) {
       return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
@@ -2397,7 +2478,7 @@ app.post("/lia/respond", async (req, res) => {
 
     // ══════════════════════════════════════════════════════════════
     // V24.7: DEBOUNCE — buffer de múltiplas mensagens do mesmo phone
-    // Espera 10s. Se chegar msg mais nova, esta retorna skip_send.
+    // Espera 6s. Se chegar msg mais nova, esta retorna skip_send.
     // A execução mais recente consolida tudo e responde 1x só.
     // ══════════════════════════════════════════════════════════════
 
