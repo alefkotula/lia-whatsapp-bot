@@ -1084,10 +1084,10 @@ function hasMinRapport(state) {
 // V24.10: Helper — preço + rota correta (ASK_PAY_METHOD só com slot)
 function priceAndRoute(state) {
   if (state.slot_time) {
-    return { reply: priceReply(state), stage: "ASK_PAY_METHOD" };
+    return { reply: pricePaymentReply(state), stage: "ASK_PAY_METHOD" };
   }
   return {
-    reply: priceReply(state) + "\n\nSe quiser, eu já posso te mostrar os horários disponíveis 😊",
+    reply: priceInfoReply(state) + "\n\nSe quiser, eu já posso te mostrar os horários disponíveis 😊",
     stage: "ASK_DAY",
   };
 }
@@ -1171,8 +1171,8 @@ function askEmailReply() {
 }
 
 // V24.10: Bloco oficial de preço — oferta única
-function priceReply(state) {
-  const nome = state?.nome ? `, ${state.nome}` : "";
+// V24.10.1: Versão informativa — apenas preço, sem opções 1️⃣/2️⃣
+function priceInfoReply(state) {
   return (
     "A consulta com o Dr. Alef é 100% online, segura e individualizada, com duração média de 45 minutos.\n\n" +
     "Com base na experiência de mais de 6 anos de formação médica na Rússia e especialização internacional em Cannabis Medicinal, ele estruturou uma avaliação clínica que busca entender seu quadro com profundidade.\n\n" +
@@ -1185,7 +1185,15 @@ function priceReply(state) {
     "Como você veio pelo Instagram, hoje consigo te passar a condição especial desta semana:\n\n" +
     "⭐ *Avaliação Especializada Completa:* 3x de R$82,33 no cartão\n" +
     "ou *R$247 no Pix*\n\n" +
-    "Também é possível parcelar em até 12x no cartão, com juros do Mercado Pago.\n\n" +
+    "Também é possível parcelar em até 12x no cartão, com juros do Mercado Pago."
+  );
+}
+
+// V24.10.1: Versão com CTA de pagamento — inclui 1️⃣/2️⃣ (só usar com slot pré-reservado)
+function pricePaymentReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
+  return (
+    priceInfoReply(state) + "\n\n" +
     `Como você prefere seguir${nome}?\n\n` +
     "1️⃣ Te envio o link para ver as opções de parcelamento\n" +
     "2️⃣ Te envio o Pix"
@@ -2166,7 +2174,7 @@ async function processLiaMessage(phone, incomingText) {
           }
         } else if (hasQuestion(incomingText)) {
           const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dia fica melhor para você?" });
-          if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceReply(state); /* permanece em ASK_DAY */ }
+          if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceInfoReply(state); /* permanece em ASK_DAY — sem CTA pagamento */ }
           else if (ai.reply.startsWith("__")) { reply = await askDayReply(); }
           else { reply = ai.reply; state = mergeState(state, ai.updates); }
         // V24.5: Se lead pede tempo/encerra em ASK_DAY, respeitar
@@ -2207,7 +2215,7 @@ async function processLiaMessage(phone, incomingText) {
           state.slot_key = hold.slot_key;
           await releaseOldHeldSlotsForPhone(phone, hold.slot_key);
           state.stage = "ASK_PAY_METHOD";
-          reply = `Perfeito 😊 Vou deixar seu horário pré-reservado para *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, eu libero sua reserva em definitivo.\n\n${priceReply(state)}`;
+          reply = `Perfeito 😊 Vou deixar seu horário pré-reservado para *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, eu libero sua reserva em definitivo.\n\n${pricePaymentReply(state)}`;
         }
       }
 
@@ -2268,7 +2276,7 @@ async function processLiaMessage(phone, incomingText) {
     // ── V24.10: ASK_PLAN legacy redirect → oferta única ──
     else if (state.stage === "ASK_PLAN") {
       state.stage = "ASK_PAY_METHOD";
-      reply = priceReply(state);
+      reply = pricePaymentReply(state);
     }
 
     // ── V24.10: Método de pagamento (Link ou Pix) ──
@@ -2352,7 +2360,7 @@ async function processLiaMessage(phone, incomingText) {
       else if (!state.problem_text) { state.stage = "ASK_PROBLEM"; reply = askProblemReply(state); }
       else if (!state.date_key) { state.stage = "ASK_DAY"; reply = await askDayReply(); }
       else if (!state.slot_time) { state.stage = "OFFER_SLOTS"; reply = await offerSlotsReply(state); }
-      else { state.stage = "ASK_PAY_METHOD"; reply = priceReply(state); }
+      else { state.stage = "ASK_PAY_METHOD"; reply = pricePaymentReply(state); }
     }
 
     else if (flags.wantsPrice) {
