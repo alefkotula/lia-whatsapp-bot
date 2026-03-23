@@ -140,6 +140,8 @@ const DEBOUNCE_WINDOW_MS = 6000; // 6 segundos de espera
 
 // V24.9: Cooldown entre respostas da LIA para o mesmo lead (anti-rajada)
 const _lastBotReplyAt = new Map(); // phone → timestamp planejado da última resposta
+const _lastAudioReplyAt = new Map(); // V24.11: phone → timestamp do último aviso de áudio
+const AUDIO_COOLDOWN_MS = 90_000;     // 90s — 1 resposta de áudio por janela
 const MIN_BOT_GAP_MS = 12000; // 12 segundos mínimo entre respostas para o mesmo lead
 
 // Cleanup periódico do buffer + cooldown (segurança contra leaks de memória)
@@ -183,7 +185,8 @@ function isSystemMessage(text) {
   if (/^\[?(status|system|evento|event|notification)\]?/i.test(low)) return true;
   if (/^(delivered|sent|read|failed|queued|undelivered)$/i.test(low)) return true;
   // Mídia sem texto relevante
-  if (/^(\[?(imagem|foto|image|video|vídeo|documento|document|sticker|figurinha|gif|audio|áudio|contato|contact|localiza[cç][aã]o|location)\]?\s*\.?\s*)$/i.test(low)) return true;
+  // V24.11: audio/áudio removido daqui — interceptado com resposta educada no endpoint
+  if (/^(\[?(imagem|foto|image|video|vídeo|documento|document|sticker|figurinha|gif|contato|contact|localiza[cç][aã]o|location)\]?\s*\.?\s*)$/i.test(low)) return true;
   return false;
 }
 
@@ -221,6 +224,19 @@ const PLANS = {
   },
 };
 const PIX_CNPJ = "46.603.987/0001-30";
+const INSTAGRAM_DR_ALEF = "https://www.instagram.com/dralefkotula/";
+
+// V24.12: Reforço de autoridade via Instagram (máx 1x por conversa)
+function authorityInstagramReply(context = "trust") {
+  const base = "Lá tem conteúdos, estudos, palestras, vídeos e mais detalhes do atendimento — tudo isso reforça a experiência de mais de 6 anos de formação médica na Rússia e a especialização internacional em Cannabis Medicinal.";
+  if (context === "price") {
+    return `Se quiser avaliar com mais segurança, aqui você consegue ver melhor o trabalho do Dr. Alef:\n${INSTAGRAM_DR_ALEF}\n\n${base}`;
+  }
+  if (context === "preclose") {
+    return `Se quiser, também posso te deixar o Instagram do Dr. Alef para você ver mais do trabalho dele:\n${INSTAGRAM_DR_ALEF}\n\n${base}`;
+  }
+  return `Se te ajudar a se sentir mais seguro, aqui você consegue ver melhor o trabalho do Dr. Alef:\n${INSTAGRAM_DR_ALEF}\n\n${base}`;
+}
 
 const FIXED_SCHEDULE = {
   // MARÇO 2026
@@ -655,6 +671,7 @@ function detectIntent(text) {
     asksIfWorks:      /\b(funciona|vale a pena|ajuda mesmo|ajuda pra|ajuda para|costuma ajudar|costuma funcionar|costuma melhorar|realmente ajuda|realmente funciona|melhora mesmo|tem resultado|faz efeito|faz diferenca|faz diferença|resolve mesmo|e eficaz|é eficaz|tem eficacia|tem eficácia|da resultado|dá resultado|funciona mesmo|funciona de verdade)\b/.test(t),
     asksIfForMe:      /\b(serve pra mim|serve para mim|é só para|e so para|é pra caso grave|serve pra quem|funciona pra quem|ajuda quem tem|ajudar quem tem|precisa ter diagnostico|precisa ter diagnóstico|mesmo sem diagnostico|mesmo sem diagnóstico|no meu caso|meu caso|casos como o meu|como o meu|indicado pra|indicado para|pra quem tem)\b/.test(t),
     asksDifferential: /\b(diferença|diferenca|diferencial|por que o dr|por que o doutor|o que muda|o que diferencia|comparando)\b/.test(t),
+    asksInstagram: /\b(instagram|insta|perfil|rede social|pagina do dr|página do dr|tem instagram|tem insta|mais sobre o dr|mais sobre o doutor|conhecer melhor o dr|conhecer melhor o doutor|conhecer o dr|conhecer o doutor)\b/.test(t),
     asksWhatIncludes: /\b(inclui o que|o que inclui|o que ta incluido|o que tá incluído|o que vem|o que tem dentro|explica o plano|explica a opcao|explica a opção)\b/.test(t),
     asksMedCost:      /\b(medicamento.*cust|remedio.*cust|remedío.*cust|caro.*depois|custo.*mensal|quanto.*mes|quanto.*mês|gast.*por mes|gast.*por mês|tratamento.*cust|oleo.*car|óleo.*car|oleo.*cust|óleo.*cust|frasco.*cust|frasco.*car|gota.*cust|gota.*car|quanto.*oleo|quanto.*óleo|quanto.*frasco|8.?000|oito mil|tratamento.*caro|caro.*tratamento|custo.*tratamento|tratamento.*depois|depois.*consulta.*quanto|depois.*consulta.*cust|manter.*tratamento|cabe.*orcamento|cabe.*orçamento|quanto.*fica.*por mes|quanto.*fica.*por mês|costuma.*ficar|normalmente.*fica|faixa.*gast|faixa.*cust)\b/.test(t),
     asksRecipe:       /\b(saio com receita|recebo receita|ja sai com|já sai com|prescrição|prescricao)\b/.test(t),
@@ -979,6 +996,7 @@ FATOS SOBRE O DR. ALEF KOTULA:
 - Formado em medicina em uma das melhores faculdades da Rússia
 - Viveu seis anos na Europa
 - Pós-graduação internacional em cannabis medicinal
+- Instagram: https://www.instagram.com/dralefkotula/ (se perguntarem ou se quiser reforçar credibilidade)
 - Médico com formação sólida e preparo específico para esse tipo de tratamento
 
 FATOS SOBRE O TRATAMENTO:
@@ -1063,7 +1081,7 @@ function maybeUseName(state) {
 // V24.3: Resposta factual sobre custo de medicamento/óleo (centralizada)
 function medCostReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
-  return `Boa pergunta${nome} 😊\n\nO frasco do óleo medicinal custa em média entre R$150 e R$250, e dura de 2 a 3 meses — alguns pacientes usam por até 6 meses.\n\nDepende de quantas gotas o Dr. Alef vai prescrever para você e de quantas vezes por dia. Isso é avaliado na consulta.\n\nA medicina canábica evoluiu muito. Hoje temos produtos fabricados no Brasil, e os preços caíram bastante em comparação com anos atrás.`;
+  return `Boa pergunta${nome}.\n\nO frasco do óleo medicinal custa em média entre R$150 e R$250, e dura de 2 a 3 meses — alguns pacientes usam por até 6 meses.\n\nDepende de quantas gotas o Dr. Alef vai prescrever para você e de quantas vezes por dia. Isso é avaliado na consulta.\n\nA medicina canábica evoluiu muito. Hoje temos produtos fabricados no Brasil, e os preços caíram bastante em comparação com anos atrás.`;
 }
 
 // V24.3: Detecta se a mensagem é sobre custo de medicamento (não consulta)
@@ -1087,21 +1105,21 @@ function priceAndRoute(state) {
     return { reply: pricePaymentReply(state), stage: "ASK_PAY_METHOD" };
   }
   return {
-    reply: priceInfoReply(state) + "\n\nSe quiser, eu já posso te mostrar os horários disponíveis 😊",
+    reply: priceInfoReply(state) + "\n\nSe quiser, eu já posso te mostrar os horários disponíveis.",
     stage: "ASK_DAY",
   };
 }
 
 function askNameIntroReply() {
-  return "Oi 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
+  return "Oi, eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
 }
 
 function askProblemReply(state) {
   const nome = maybeUseName(state);
   const variations = [
-    `${nome ? `Prazer, ${nome} 😊\n\n` : ""}Me conta: o que tem te incomodado mais ultimamente?`,
-    `${nome ? `Prazer, ${nome} 😊\n\n` : ""}Me conta um pouquinho: qual a sua principal queixa hoje?`,
-    `${nome ? `Prazer, ${nome} 😊\n\n` : ""}Para eu te direcionar melhor, me diz: o que tem te incomodado mais?`,
+    `${nome ? `Prazer, ${nome}.\n\n` : ""}Me conta: o que tem te incomodado mais ultimamente?`,
+    `${nome ? `Prazer, ${nome}.\n\n` : ""}Me conta um pouquinho: qual a sua principal queixa hoje?`,
+    `${nome ? `Prazer, ${nome}.\n\n` : ""}Para eu te direcionar melhor, me diz: o que tem te incomodado mais?`,
   ];
   return pickRandom(variations);
 }
@@ -1128,7 +1146,7 @@ function diagQ_tratamento() {
 
 async function askDayReply() {
   const dayKeys = await getSuggestedDayKeys();
-  if (!dayKeys.length) return "No momento os horários desta semana já estão completos. Quer que eu te coloque na lista de prioridade? 😊";
+  if (!dayKeys.length) return "No momento os horários desta semana já estão completos. Quer que eu te coloque na lista de prioridade?";
   const opts = dayKeys.map((d) => `*${formatDatePt(d)}*`).join("\n");
   return `Essa semana ainda tenho horários disponíveis:\n\n${opts}\n\nQual fica melhor para você?`;
 }
@@ -1146,14 +1164,14 @@ async function offerSlotsReply(state, periodMin = null) {
     best = sortSlotsSmart(filtered, dateKey).slice(0, 3);
     if (!best.length) {
       best = await chooseBestSlotsForDate(dateKey, 3);
-      if (!best.length) return "Esse dia acabou de ficar sem vagas 😕 Quer que eu te mostre outra data?";
+      if (!best.length) return "Esse dia acabou de ficar sem vagas. Quer que eu te mostre outra data?";
       state.offered_slots = best;
-      return `Não tenho horários disponíveis após as ${periodMin}h nesse dia, mas tenho:\n\n${best.map((s, i) => `${i + 1}) *${s}*`).join("\n")}\n\nAlgum funciona para você? 😊`;
+      return `Não tenho horários disponíveis após as ${periodMin}h nesse dia, mas tenho:\n\n${best.map((s, i) => `${i + 1}) *${s}*`).join("\n")}\n\nAlgum funciona para você?`;
     }
   } else {
     best = await chooseBestSlotsForDate(dateKey, 3);
   }
-  if (!best.length) return "Esse dia acabou de ficar sem vagas 😕 Quer que eu te mostre outra data?";
+  if (!best.length) return "Esse dia acabou de ficar sem vagas. Quer que eu te mostre outra data?";
   state.offered_slots = best;
   return `Para *${formatDatePt(dateKey)}* tenho:\n\n${best.map((s, i) => `${i + 1}) *${s}*`).join("\n")}\n\nQual fica melhor para você?`;
 }
@@ -1202,18 +1220,18 @@ function pricePaymentReply(state) {
 
 function paymentSentReply(plan, link, state) {
   return (
-    `Aqui está o link para pagamento 😊\n\n` +
+    `Aqui está o link para pagamento.\n\n` +
     `📅 *${prettySlot(state.date_key, state.slot_time)}*\n` +
     `*${plan.label}* — R$${plan.price}\n\n` +
     `${link}\n\n` +
     `Ao abrir, você consegue ver as opções de parcelamento no cartão.\n` +
-    `Assim que o pagamento for confirmado, eu te aviso por aqui 😊`
+    `Assim que o pagamento for confirmado, eu te aviso por aqui.`
   );
 }
 
 function pendingPaymentReply(state) {
   return (
-    `Seu horário está pré-reservado 😊\n\n` +
+    `Seu horário está pré-reservado.\n\n` +
     `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
     `Para confirmar, é só finalizar aqui:\n${state.payment.link}`
   );
@@ -1224,11 +1242,11 @@ function afterPaidReply(state) {
   if (state.nome_completo && state.birthdate && state.email) {
     return "Pagamento confirmado ✅\n\n" +
       `Sua consulta está marcada para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
-      "Mais perto do horário eu envio as orientações 😊\nQualquer dúvida até lá, é só me chamar.";
+      "Mais perto do horário eu envio as orientações.\nQualquer dúvida até lá, é só me chamar.";
   }
   return "Pagamento confirmado ✅\n\n" +
     `Sua consulta está marcada para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
-    "Agora só preciso de alguns dados rápidos para finalizar seu cadastro 😊\n\n" +
+    "Agora só preciso de alguns dados rápidos para finalizar seu cadastro.\n\n" +
     "Qual seu *nome completo*?";
 }
 
@@ -1276,16 +1294,16 @@ function shouldShowCTA(state, flags, text) {
 
 function getStageCTA(state) {
   const s = state.stage;
-  if (s === "ASK_DAY") return "\n\nQual dia fica melhor para você? 😊";
-  if (s === "OFFER_SLOTS") return "\n\nQual desses horários funciona melhor? 😊";
-  if (s === "ASK_FULLNAME") return "\n\nMe passa seu *nome completo* para eu finalizar a reserva 😊";
-  if (s === "ASK_BIRTHDATE") return "\n\nMe manda sua *data de nascimento* para eu prosseguir 😊";
-  if (s === "ASK_EMAIL") return "\n\nMe passa seu *e-mail* para eu completar o cadastro 😊";
+  if (s === "ASK_DAY") return "\n\nQual dia fica melhor para você?";
+  if (s === "OFFER_SLOTS") return "\n\nQual desses horários funciona melhor?";
+  if (s === "ASK_FULLNAME") return "\n\nMe passa seu *nome completo* para eu finalizar a reserva.";
+  if (s === "ASK_BIRTHDATE") return "\n\nMe manda sua *data de nascimento* para eu prosseguir.";
+  if (s === "ASK_EMAIL") return "\n\nMe passa seu *e-mail* para eu completar o cadastro.";
   if (s === "ASK_PAY_METHOD") return "\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?";
   if (s === "ASK_PLAN") return "\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?";
   if (s === "WAIT_PAYMENT" && state.payment?.link) return `\n\nSeu horário está pré-reservado e o link segue ativo:\n${state.payment.link}`;
   if (["ASK_NAME", "ASK_PROBLEM", "DIAGNOSTIC"].includes(s) || !s) return "";
-  return "\n\nSe quiser, eu posso te mostrar os horários disponíveis 😊";
+  return "\n\nSe quiser, eu posso te mostrar os horários disponíveis.";
 }
 
 function getSmartCTA(state, flags, text) {
@@ -1438,7 +1456,7 @@ async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = fa
   try { parsed = JSON.parse(content); } catch { parsed = null; }
 
   if (!parsed || typeof parsed !== "object" || !parsed.reply) {
-    return { reply: "Me conta mais sobre o que está te incomodando 😊", updates: {} };
+    return { reply: "Me conta mais sobre o que está te incomodando.", updates: {} };
   }
 
   const r = String(parsed.reply || "").trim();
@@ -1448,7 +1466,7 @@ async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = fa
   if (r === "URGENTE") return { reply: "__URGENT__", updates: parsed.updates || {} };
 
   if (violatesNoPriceNoLink(r)) {
-    return { reply: "Me conta: qual é a sua principal dúvida agora? 😊", updates: {} };
+    return { reply: "Me conta: qual é a sua principal dúvida agora?", updates: {} };
   }
 
   parsed.reply = clip(r, 900);
@@ -1611,7 +1629,7 @@ function bridgeReply(state) {
   }
 
   const consult = "A avaliação é *100% online*, dura em média *45 minutos* e é individualizada para o seu caso.";
-  const cta = "Se quiser, eu posso te mostrar os horários disponíveis 😊";
+  const cta = "Se quiser, eu posso te mostrar os horários disponíveis.";
 
   return `${intro}\n\n${testimony}${study}${future}\n\n${consult}\n\n${cta}`;
 }
@@ -1663,6 +1681,7 @@ function initializeState(state, bot) {
   state.questions_answered_since_last_cta = Number(state.questions_answered_since_last_cta || 0);
   state.name_ask_count = Number(state.name_ask_count || 0);
   state.name_skipped = !!state.name_skipped;
+  state.sent_instagram_link = !!state.sent_instagram_link;
   state.last_bot_from = bot;
   return state;
 }
@@ -1706,7 +1725,7 @@ async function processLiaMessage(phone, incomingText) {
     await pool.query(`UPDATE wa_users SET state = '{}'::jsonb, updated_at = NOW() WHERE phone = $1`, [phone]);
     await pool.query(`DELETE FROM wa_slot_locks WHERE phone = $1 AND status='held'`, [phone]);
     return {
-      reply: "Conversa reiniciada 😊 Pode começar de novo!",
+      reply: "Conversa reiniciada. Pode começar de novo!",
       state: {},
       flags: {},
       intent: "reset",
@@ -1816,7 +1835,7 @@ async function processLiaMessage(phone, incomingText) {
     }
     // Primeira vez → farewell curto
     state.farewell_sent = true;
-    reply = "Perfeito 😊 fico à disposição por aqui.";
+    reply = "Perfeito, fico à disposição por aqui.";
   }
 
   else if (!DATA_COLLECTION_STAGES.includes(state.stage) && flags.endsConversation && !flags.wantsBook && !flags.wantsPrice && !flags.intentPay) {
@@ -1826,7 +1845,7 @@ async function processLiaMessage(phone, incomingText) {
       return { reply: "", state, flags, skip_send: true };
     }
     const nome = state.nome ? `, ${state.nome}` : "";
-    reply = `Eu que agradeço${nome} 😊 Quando quiser, é só me chamar por aqui.`;
+    reply = `Eu que agradeço${nome}. Quando quiser, é só me chamar por aqui.`;
     state.farewell_sent = true;
   }
 
@@ -1836,7 +1855,7 @@ async function processLiaMessage(phone, incomingText) {
       return { reply: "", state, flags, skip_send: true };
     }
     const nome = state.nome ? `, ${state.nome}` : "";
-    reply = `Claro${nome}, fica à vontade para pensar com calma 😊 Quando decidir, me chama por aqui que eu te ajudo.`;
+    reply = `Claro${nome}, fica à vontade para pensar com calma. Quando decidir, me chama por aqui que eu te ajudo.`;
     state.farewell_sent = true;
   }
 
@@ -1846,7 +1865,7 @@ async function processLiaMessage(phone, incomingText) {
       return { reply: "", state, flags, skip_send: true };
     }
     const nome = state.nome ? `, ${state.nome}` : "";
-    reply = `Faz todo sentido${nome}. Quando estiver decidido(a), me avisa por aqui que eu organizo tudo 😊`;
+    reply = `Faz todo sentido${nome}. Quando estiver decidido(a), me avisa por aqui que eu organizo tudo.`;
     state.farewell_sent = true;
   }
 
@@ -1894,7 +1913,19 @@ async function processLiaMessage(phone, incomingText) {
       stageCTA: ctaHint,
     });
 
-    if (ai.reply === "__NEED_PRICE__") {
+    // V24.12: Lead pede Instagram diretamente → resposta curta e direta
+    if (flags.asksInstagram) {
+      reply = authorityInstagramReply("trust");
+      state.sent_instagram_link = true;
+      state = mergeState(state, ai.updates);
+    }
+    // V24.12: Objeção de confiança → ponte curta + Instagram (sem textão)
+    else if ((flags.asksIfWorks || flags.asksIsScam || flags.asksDifferential) && !state.sent_instagram_link) {
+      reply = "Para você ver melhor o trabalho do Dr. Alef:\n\n" + authorityInstagramReply("trust");
+      state.sent_instagram_link = true;
+      state = mergeState(state, ai.updates);
+    }
+    else if (ai.reply === "__NEED_PRICE__") {
       state.price_ask_count += 1;
       if (hasMinRapport(state)) {
         const pr = priceAndRoute(state);
@@ -1902,7 +1933,7 @@ async function processLiaMessage(phone, incomingText) {
         state.stage = pr.stage;
       } else {
         state.stage = "ASK_PROBLEM";
-        reply = "Claro, já te passo tudo 😊 Mas antes me conta um pouquinho sobre o que te trouxe aqui?";
+        reply = "Claro, já te passo tudo. Mas antes me conta um pouquinho sobre o que te trouxe aqui?";
       }
     } else if (ai.reply === "__NEED_BOOK__") {
       state.stage = "ASK_DAY";
@@ -1967,25 +1998,25 @@ async function processLiaMessage(phone, incomingText) {
         state.nome = earlyName;
         state.name_used_count = 0;
         state.stage = "ASK_PROBLEM";
-        reply = `Oi, ${earlyName} 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\n` + askProblemReply(state).replace(/^Prazer,\s*\w+\s*😊\s*\n\n/i, "");
+        reply = `Oi, ${earlyName}. Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\n` + askProblemReply(state).replace(/^Prazer,\s*\w+\.?\s*\n\n/i, "");
       }
       // V24.6: ANTI-TEXTÃO — Se é entrada via Meta Ads, SEMPRE intro curta + pedir nome
       else if (isMetaAdsEntry(incomingText)) {
-        reply = "Oi 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
+        reply = "Oi, eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
         state.stage = "ASK_NAME";
       } else if (hasQuestion(incomingText) && !isMetaAdsEntry(incomingText)) {
         const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
         if (!ai.reply.startsWith("__")) {
           // V24.6: Limitar resposta GPT na abertura + pedir nome
           const shortReply = clip(ai.reply, 200);
-          reply = shortReply + "\n\nAntes de mais nada, como posso te chamar? 😊";
+          reply = shortReply + "\n\nAntes de mais nada, como posso te chamar?";
           state = mergeState(state, ai.updates);
         } else {
-          reply = "Oi 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
+          reply = "Oi, eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
         }
         state.stage = "ASK_NAME";
       } else {
-        reply = "Oi 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
+        reply = "Oi, eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
         state.stage = "ASK_NAME";
       }
     }
@@ -2011,24 +2042,24 @@ async function processLiaMessage(phone, incomingText) {
           if (state.problem_text) {
             if (state.lead_profile === "quente" || flags.wantsBook) {
               state.stage = "ASK_DAY";
-              reply = `Prazer, ${nm} 😊 Vou te mostrar os horários disponíveis.\n\n` + await askDayReply();
+              reply = `Prazer, ${nm}. Vou te mostrar os horários disponíveis.\n\n` + await askDayReply();
             } else if (state.lead_profile === "pragmatico" || flags.wantsPrice) {
               if (hasMinRapport(state)) {
                 const pr = priceAndRoute(state);
-                reply = `Prazer, ${nm} 😊\n\n${pr.reply}`;
+                reply = `Prazer, ${nm}.\n\n${pr.reply}`;
                 state.stage = pr.stage;
               } else {
                 state.stage = "ASK_PROBLEM";
-                reply = `Prazer, ${nm} 😊 Me conta um pouquinho sobre o que te trouxe aqui?`;
+                reply = `Prazer, ${nm}. Me conta um pouquinho sobre o que te trouxe aqui?`;
               }
             } else {
               state.stage = "DIAGNOSTIC";
               const nextQ = getNextDiagQuestion(state, state.problem_text || incomingText);
               if (nextQ) {
-                reply = `Prazer, ${nm} 😊\n\n${nextQ}`;
+                reply = `Prazer, ${nm}.\n\n${nextQ}`;
               } else {
                 state.stage = "BRIDGE";
-                reply = `Prazer, ${nm} 😊\n\n${bridgeReply(state)}`;
+                reply = `Prazer, ${nm}.\n\n${bridgeReply(state)}`;
               }
             }
           } else {
@@ -2050,21 +2081,21 @@ async function processLiaMessage(phone, incomingText) {
               state.condition = detectCondition(pb) || state.focus || null;
               state.stage = "DIAGNOSTIC";
               const nextQ = getNextDiagQuestion(state, incomingText);
-              if (nextQ) { reply = `Sem problema 😊\n\n${nextQ}`; }
-              else { state.stage = "BRIDGE"; reply = `Sem problema 😊\n\n${bridgeReply(state)}`; }
+              if (nextQ) { reply = `Sem problema.\n\n${nextQ}`; }
+              else { state.stage = "BRIDGE"; reply = `Sem problema.\n\n${bridgeReply(state)}`; }
             } else {
-              reply = "Sem problema 😊 Me conta: o que te trouxe aqui? O que tem te incomodado mais?";
+              reply = "Sem problema. Me conta: o que te trouxe aqui? O que tem te incomodado mais?";
             }
           } else if (hasQuestion(incomingText)) {
             const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
             if (!ai.reply.startsWith("__")) {
-              reply = ai.reply + "\n\nAntes de seguir, me diz seu *primeiro nome* 😊";
+              reply = ai.reply + "\n\nAntes de seguir, me diz seu *primeiro nome*?";
               state = mergeState(state, ai.updates);
             } else {
-              reply = "Antes de tudo, me diz seu *primeiro nome* 😊";
+              reply = "Antes de tudo, me diz seu *primeiro nome*?";
             }
           } else {
-            reply = "Antes de tudo, me diz seu *primeiro nome* 😊";
+            reply = "Antes de tudo, me diz seu *primeiro nome*?";
           }
         }
       }
@@ -2168,12 +2199,12 @@ async function processLiaMessage(phone, incomingText) {
         // V24.10.1: intentPay em ASK_DAY → redirecionar para agenda (sem checkout antes do slot)
         } else if (flags.intentPay) {
           console.log(`[LIA][PAY→AGENDA] ASK_DAY: intentPay sem slot — redirecionando para agenda`);
-          reply = "Antes de te enviar o pagamento, preciso só definir seu horário 😊 Assim consigo garantir a reserva.\n\n" + await askDayReply();
+          reply = "Antes de te enviar o pagamento, preciso só definir seu horário. Assim consigo garantir a reserva.\n\n" + await askDayReply();
         } else if (flags.asksHours && !extractDateKey(incomingText)) {
           const dayKeys = await getSuggestedDayKeys();
           if (dayKeys.length) {
             const opts = dayKeys.map((d) => `*${formatDatePt(d)}*`).join("\n");
-            reply = `Me diz qual dia você prefere que eu te mostro os horários disponíveis dele 😊\n\n${opts}`;
+            reply = `Me diz qual dia você prefere que eu te mostro os horários disponíveis dele.\n\n${opts}`;
           } else {
             reply = await askDayReply();
           }
@@ -2185,7 +2216,7 @@ async function processLiaMessage(phone, incomingText) {
         // V24.5: Se lead pede tempo/encerra em ASK_DAY, respeitar
         } else if (flags.saysWillSee || flags.endsConversation || flags.saysCheckSpouse) {
           const nome = state.nome ? `, ${state.nome}` : "";
-          reply = `Sem problema${nome} 😊 Quando decidir o dia, me avisa por aqui que eu organizo tudo.`;
+          reply = `Sem problema${nome}. Quando decidir o dia, me avisa por aqui que eu organizo tudo.`;
         } else {
           reply = await askDayReply();
         }
@@ -2205,10 +2236,10 @@ async function processLiaMessage(phone, incomingText) {
         if (available.includes(requestedTime)) chosen = requestedTime;
         else {
           const best2 = await chooseBestSlotsForDate(state.date_key, 3);
-          reply = `Esse horário não está disponível. O mais próximo que tenho é:\n${best2.map((s,i) => `${i+1}) *${s}*`).join("\n")}\n\nQual fica melhor? 😊`;
+          reply = `Esse horário não está disponível. O mais próximo que tenho é:\n${best2.map((s,i) => `${i+1}) *${s}*`).join("\n")}\n\nQual fica melhor?`;
         }
       } else if (/\b(outro|nenhum|tem mais)\b/.test(norm(incomingText))) {
-        reply = `Sem problema 😊 Que horário em *${formatDatePt(state.date_key)}* funciona melhor para você?`;
+        reply = `Sem problema. Que horário em *${formatDatePt(state.date_key)}* funciona melhor para você?`;
       }
 
       if (chosen && !reply) {
@@ -2220,7 +2251,7 @@ async function processLiaMessage(phone, incomingText) {
           state.slot_key = hold.slot_key;
           await releaseOldHeldSlotsForPhone(phone, hold.slot_key);
           state.stage = "ASK_PAY_METHOD";
-          reply = `Perfeito 😊 Vou deixar seu horário pré-reservado para *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, eu libero sua reserva em definitivo.\n\n${pricePaymentReply(state)}`;
+          reply = `Vou deixar seu horário pré-reservado para *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, eu libero sua reserva em definitivo.\n\n${pricePaymentReply(state)}`;
         }
       }
 
@@ -2228,13 +2259,13 @@ async function processLiaMessage(phone, incomingText) {
         // V24.10.1: intentPay em OFFER_SLOTS sem slot → redirecionar para escolha de horário
         if (flags.intentPay) {
           console.log(`[LIA][PAY→AGENDA] OFFER_SLOTS: intentPay sem slot_time — redirecionando para escolha`);
-          reply = "Perfeito 😊 Pra te enviar o pagamento, só preciso que você escolha um horário primeiro.\n\n" + await offerSlotsReply(state);
+          reply = "Pra te enviar o pagamento, só preciso que você escolha um horário primeiro.\n\n" + await offerSlotsReply(state);
         } else if (hasQuestion(incomingText)) {
           const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual desses horários funciona melhor?" });
           if (ai.reply.startsWith("__")) { reply = await offerSlotsReply(state); }
           else { reply = ai.reply; state = mergeState(state, ai.updates); }
         } else {
-          reply = "Qual horário fica melhor? Pode me responder com *1, 2, 3* ou com o horário exato 😊";
+          reply = "Qual horário fica melhor? Pode me responder com *1, 2, 3* ou com o horário exato.";
         }
       }
     }
@@ -2248,7 +2279,7 @@ async function processLiaMessage(phone, incomingText) {
         reply = askBirthdateReply(state);
       } else if (hasQuestion(incomingText)) {
         const ai = await runLia({ incomingText, state, flags, stageCTA: "Me passa seu nome completo para finalizar a reserva" });
-        if (!ai.reply.startsWith("__")) { reply = ai.reply + "\n\nMe passa seu *nome completo* 😊"; state = mergeState(state, ai.updates); }
+        if (!ai.reply.startsWith("__")) { reply = ai.reply + "\n\nMe passa seu *nome completo*."; state = mergeState(state, ai.updates); }
         else { reply = "Me manda seu *nome completo* certinho, por favor."; }
       } else {
         reply = "Me manda seu *nome completo* certinho, por favor.";
@@ -2274,7 +2305,7 @@ async function processLiaMessage(phone, incomingText) {
           reply = afterPaidReply(state);
         } else {
           const pr = priceAndRoute(state);
-          reply = `Obrigada 😊\n\n${pr.reply}`;
+          reply = `Obrigada.\n\n${pr.reply}`;
           state.stage = pr.stage;
         }
       } else {
@@ -2295,7 +2326,7 @@ async function processLiaMessage(phone, incomingText) {
       if (!state.slot_time || !state.date_key) {
         console.log(`[LIA][PAY→AGENDA] ASK_PAY_METHOD: sem slot — redirecionando para ASK_DAY`);
         state.stage = "ASK_DAY";
-        reply = "Antes de te enviar o pagamento, só preciso definir seu horário 😊\n\n" + await askDayReply();
+        reply = "Antes de te enviar o pagamento, só preciso definir seu horário.\n\n" + await askDayReply();
       } else {
         const low = norm(incomingText);
         const wantsLink = /\b(1|link|cartao|cartão|parcela|parcelar|parcelado|parcelas|parcelamento|credito|crédito|me manda|manda o|quero o link|link de pagamento|quero pagar no cartao|quero pagar no cartão)\b/.test(low);
@@ -2322,13 +2353,23 @@ async function processLiaMessage(phone, incomingText) {
             status: "pending_pix", plan_key: "avaliacao",
             created_at: Date.now(), method: "pix",
           };
-          reply = `Perfeito 😊 Aqui estão os dados para o Pix:\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*\n\nQuando fizer o pagamento, me envia o comprovante por aqui que eu confirmo na hora 😊`;
+          reply = `Aqui estão os dados para o Pix.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*\n\nQuando fizer o pagamento, me envia o comprovante por aqui que eu confirmo na hora.`;
           state.stage = "WAIT_PAYMENT";
         } else if (saysExpensive) {
-          reply = `Entendo 😊 Só pra você saber, dá pra parcelar em *3x de R$91,58* no cartão. No link você consegue ver também outras opções, como 2x de R$135,41, 4x de R$68,77 e até 12x.\n\nSe preferir à vista, o Pix é *R$247*.\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
+          if (!state.sent_instagram_link) {
+            reply = `Entendo. Só pra você saber, dá pra parcelar em *3x de R$91,58* no cartão. No link você consegue ver também outras opções, como 2x de R$135,41, 4x de R$68,77 e até 12x.\n\nSe preferir à vista, o Pix é *R$247*.\n\n${authorityInstagramReply("price")}\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
+            state.sent_instagram_link = true;
+          } else {
+            reply = `Entendo. Só pra você saber, dá pra parcelar em *3x de R$91,58* no cartão. No link você consegue ver também outras opções, como 2x de R$135,41, 4x de R$68,77 e até 12x.\n\nSe preferir à vista, o Pix é *R$247*.\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
+          }
         } else if (flags.saysWillSee || flags.endsConversation || flags.saysCheckSpouse) {
           const nome = state.nome ? `, ${state.nome}` : "";
-          reply = `Sem problema${nome} 😊 Seu horário fica pré-reservado por enquanto. Quando decidir, me chama por aqui.`;
+          if (!state.sent_instagram_link) {
+            reply = `Sem problema${nome}. Seu horário fica pré-reservado por enquanto.\n\n${authorityInstagramReply("preclose")}\n\nQuando decidir, me chama por aqui.`;
+            state.sent_instagram_link = true;
+          } else {
+            reply = `Sem problema${nome}. Seu horário fica pré-reservado por enquanto. Quando decidir, me chama por aqui.`;
+          }
         } else if (hasQuestion(incomingText)) {
           const ai = await runLia({ incomingText, state, flags, stageCTA: "Como prefere pagar: 1️⃣ link ou 2️⃣ Pix?" });
           if (!ai.reply.startsWith("__")) { reply = ai.reply + "\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?"; state = mergeState(state, ai.updates); }
@@ -2352,7 +2393,7 @@ async function processLiaMessage(phone, incomingText) {
       if (isPendingLink && wantsPix && !wantsLink) {
         console.log(`[LIA_PAY] TROCA link→pix`);
         state.payment = { ...state.payment, status: "pending_pix", method: "pix", switched_at: Date.now() };
-        reply = `Perfeito 😊 Se preferir, podemos fazer no Pix.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*\n\nAssim que fizer o pagamento, me envie o comprovante por aqui para eu confirmar sua reserva.`;
+        reply = `Sem problema. Se preferir, podemos fazer no Pix.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*\n\nAssim que fizer o pagamento, me envie o comprovante por aqui para eu confirmar sua reserva.`;
       }
       // TROCA: Pix → link
       else if (isPendingPix && wantsLink && !wantsPix) {
@@ -2366,9 +2407,9 @@ async function processLiaMessage(phone, incomingText) {
         if (/\b(paguei|enviei|comprovante|feito|transferi|mandei|pago)\b/.test(low)) {
           state.payment.pix_comprovante_sent = true;
           state.needs_human = true;
-          reply = "Perfeito 😊 Recebi sua confirmação. Vou verificar o pagamento e te aviso por aqui assim que estiver confirmado.";
+          reply = "Recebi sua confirmação. Vou verificar o pagamento e te aviso por aqui assim que estiver confirmado.";
         } else {
-          reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante 😊\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*`;
+          reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*`;
         }
       }
       // Link pendente
@@ -2383,7 +2424,7 @@ async function processLiaMessage(phone, incomingText) {
       }
       // Fallback
       else {
-        reply = "Me conta: como posso te ajudar agora? 😊";
+        reply = "Me conta: como posso te ajudar agora?";
       }
     }
 
@@ -2400,10 +2441,10 @@ async function processLiaMessage(phone, incomingText) {
       state.price_ask_count += 1;
       if (!state.nome) {
         if (state.price_ask_count >= 2) { const pr = priceAndRoute(state); reply = pr.reply; state.stage = pr.stage; }
-        else { state.stage = "ASK_NAME"; reply = "Claro, vou te passar as opções 😊 Antes, me diz seu *primeiro nome*?"; }
+        else { state.stage = "ASK_NAME"; reply = "Claro, vou te passar as opções. Antes, me diz seu *primeiro nome*?"; }
       } else if (!hasMinRapport(state) && state.price_ask_count < 2) {
         state.stage = "ASK_PROBLEM";
-        reply = "Claro, já te passo os valores 😊 Mas antes, me conta o que te trouxe aqui?";
+        reply = "Claro, já te passo os valores. Mas antes, me conta o que te trouxe aqui?";
       } else {
         const pr = priceAndRoute(state);
         reply = pr.reply;
@@ -2413,13 +2454,13 @@ async function processLiaMessage(phone, incomingText) {
 
     else if (flags.intentPay) {
       if (state.payment?.status === "pending" && state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
-      else if (state.payment?.status === "pending_pix") { reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante 😊\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*`; state.stage = "WAIT_PAYMENT"; }
-      else if (!state.date_key) { state.stage = "ASK_DAY"; reply = `Perfeito 😊 Antes do pagamento, vou reservar seu horário.\n\n${await askDayReply()}`; }
+      else if (state.payment?.status === "pending_pix") { reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*`; state.stage = "WAIT_PAYMENT"; }
+      else if (!state.date_key) { state.stage = "ASK_DAY"; reply = `Antes do pagamento, vou reservar seu horário.\n\n${await askDayReply()}`; }
       else { const pr = priceAndRoute(state); reply = pr.reply; state.stage = pr.stage; }
     }
 
     else if (flags.refuses) {
-      reply = "Tranquilo, sem problema 😊 Se quiser tirar qualquer dúvida ou entender melhor como funciona, estou aqui.";
+      reply = "Tranquilo, sem problema. Se quiser tirar qualquer dúvida ou entender melhor como funciona, estou aqui.";
     }
 
     else if (isMedCostQuestion(flags, incomingText)) {
@@ -2443,7 +2484,7 @@ async function processLiaMessage(phone, incomingText) {
           state.stage = pr.stage;
         } else {
           state.stage = "ASK_PROBLEM";
-          reply = "Claro, já te passo tudo 😊 Mas antes me conta um pouquinho sobre o que te trouxe aqui?";
+          reply = "Claro, já te passo tudo. Mas antes me conta um pouquinho sobre o que te trouxe aqui?";
         }
       } else if (ai.reply === "__NEED_BOOK__") {
         if (!state.nome) { state.stage = "ASK_NAME"; reply = askNameIntroReply(); }
@@ -2451,7 +2492,7 @@ async function processLiaMessage(phone, incomingText) {
         else { state.stage = "ASK_DAY"; reply = await askDayReply(); }
       } else if (ai.reply === "__NEED_PAY__") {
         if (state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
-        else { reply = "Perfeito 😊 Antes de finalizar, preciso reservar seu horário." + getStageCTA(state); }
+        else { reply = "Antes de finalizar, preciso reservar seu horário." + getStageCTA(state); }
       } else if (ai.reply === "__URGENT__") {
         reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Procure um pronto-socorro ou SAMU (192).";
       } else {
@@ -2511,7 +2552,8 @@ app.get("/mp/thanks", (req, res) => res.send("OK"));
 
 app.post("/lia/respond", async (req, res) => {
   try {
-    const { telefone, mensagem, fromMe } = req.body || {};
+    const { telefone, mensagem, fromMe, messageType, mediaType, type, mimetype } = req.body || {};
+    const incomingMsgType = String(messageType || mediaType || type || mimetype || "").toLowerCase().trim();
 
     if (!telefone || !mensagem) {
       return res.status(400).json({
@@ -2601,6 +2643,31 @@ app.post("/lia/respond", async (req, res) => {
     // ── Filtro de mensagem de sistema → skip_send ──
     if (!incomingText || isSystemMessage(incomingText)) {
       return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // V24.11: INTERCEPTAÇÃO DE ÁUDIO / VOZ / PTT
+    // Detecção robusta: campo de tipo (n8n) OU fallback textual (Evolution API)
+    // ══════════════════════════════════════════════════════════════
+    const isAudioMsg =
+      /^(audio|ptt|voice|audiomessage|pttmessage|voicemessage|audio\/ogg|audio\/opus|audio\/mpeg|audio\/mp4)$/.test(incomingMsgType)
+      || /^(\[?(audio|áudio|voice|voz|ptt)\]?\s*\.?\s*)$/i.test(incomingText);
+
+    if (isAudioMsg) {
+      console.log(`[LIA] Áudio detectado de ${phone} (incomingMsgType=${incomingMsgType})`);
+      const now = Date.now();
+      const lastAudioReply = _lastAudioReplyAt.get(phone) || 0;
+      if (now - lastAudioReply < AUDIO_COOLDOWN_MS) {
+        console.log(`[LIA] Áudio repetido de ${phone} — cooldown ativo (${Math.round((now - lastAudioReply) / 1000)}s atrás)`);
+        return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
+      }
+      _lastAudioReplyAt.set(phone, now);
+      return res.json({
+        ok: true,
+        reply: "Recebi seu áudio.\nNo momento, não estou conseguindo ouvir mensagens de voz por aqui.\nSe puder, me escreve em texto que eu continuo te atendendo.",
+        skip_send: false,
+        delay_ms: 2000,
+      });
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -2720,7 +2787,7 @@ app.post("/lia/respond", async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: "erro interno",
-      reply: "Tive uma instabilidade rápida aqui 😊 Me manda de novo em 1 frase: quer *agendar*, *tirar dúvida* ou *ver valores*?",
+      reply: "Tive uma instabilidade rápida aqui. Me manda de novo em 1 frase: quer *agendar*, *tirar dúvida* ou *ver valores*?",
       skip_send: false,
     });
   }
@@ -2840,8 +2907,8 @@ app.post("/whatsapp", async (req, res) => {
         } else if (!incomingText || incomingText.length < 2) {
           const state = initializeState(await getUserState(phone), bot);
           const mediaReply = state.nome
-            ? `${state.nome}, por enquanto eu só consigo ler mensagens de texto e áudio 😊 Me manda sua dúvida digitando que eu te ajudo.`
-            : "Por enquanto eu só consigo ler mensagens de texto e áudio 😊 Me manda sua dúvida digitando que eu te ajudo.";
+            ? `${state.nome}, por enquanto eu só consigo ler mensagens de texto. Me manda sua dúvida digitando que eu te ajudo.`
+            : "Por enquanto eu só consigo ler mensagens de texto. Me manda sua dúvida digitando que eu te ajudo.";
           state.last_bot_reply = mediaReply;
           state.last_sent_at = Date.now();
           await saveUserState(phone, state);
@@ -2873,7 +2940,7 @@ app.post("/whatsapp", async (req, res) => {
         const bot = req.body.To || "";
         await twilioClient.messages.create({
           to: lead, from: bot,
-          body: "Tive uma instabilidade rápida aqui 😊 Me manda de novo em 1 frase: quer *agendar*, *tirar dúvida* ou *ver valores*?",
+          body: "Tive uma instabilidade rápida aqui. Me manda de novo em 1 frase: quer *agendar*, *tirar dúvida* ou *ver valores*?",
         });
       } catch {}
     }
