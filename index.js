@@ -96,8 +96,8 @@ const ADMIN_RESET_PHONE_DIGITS = "556581422637";
 
 // V24.2: Stages de coleta de dados — Camada 2 NÃO deve interceptar perguntas nestes stages
 const DATA_COLLECTION_STAGES = [
-  "ASK_DAY", "OFFER_SLOTS", "ASK_FULLNAME",
-  "ASK_BIRTHDATE", "ASK_EMAIL", "ASK_PLAN", "WAIT_PAYMENT"
+  "ASK_DAY", "OFFER_SLOTS", "ASK_PAY_METHOD",
+  "ASK_FULLNAME", "ASK_BIRTHDATE", "ASK_EMAIL", "ASK_PLAN", "WAIT_PAYMENT"
 ];
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -138,7 +138,11 @@ function _dedupStore(phone, text, reply) {
 const _inboundBuffer = new Map(); // phone → { messages: [{text, ts}], seq: number }
 const DEBOUNCE_WINDOW_MS = 6000; // 6 segundos de espera
 
-// Cleanup periódico do buffer (segurança contra leaks de memória)
+// V24.9: Cooldown entre respostas da LIA para o mesmo lead (anti-rajada)
+const _lastBotReplyAt = new Map(); // phone → timestamp planejado da última resposta
+const MIN_BOT_GAP_MS = 12000; // 12 segundos mínimo entre respostas para o mesmo lead
+
+// Cleanup periódico do buffer + cooldown (segurança contra leaks de memória)
 setInterval(() => {
   const now = Date.now();
   for (const [phone, buf] of _inboundBuffer) {
@@ -146,6 +150,10 @@ setInterval(() => {
     if (lastMsg && (now - lastMsg.ts) > 120000) { // 2 min sem atividade → limpar
       _inboundBuffer.delete(phone);
     }
+  }
+  // Limpar cooldown entries antigas (>5 min)
+  for (const [phone, ts] of _lastBotReplyAt) {
+    if (now - ts > 300000) _lastBotReplyAt.delete(phone);
   }
 }, 300000); // a cada 5 min
 
@@ -192,6 +200,8 @@ function isMetaAdsEntry(text) {
   // Mensagens muito curtas com "como funciona" (típico de botão Meta)
   if (t.length < 50 && /^.{0,10}como funciona/.test(t)) return true;
   if (t.length < 40 && /^.{0,10}(gostaria|quero|tenho interesse)/.test(t)) return true;
+  // V24.10: Entradas via Instagram
+  if (/^.{0,15}(vim pelo instagram|vi no instagram|vi o video|vi o vídeo|vim pelo insta)/i.test(t)) return true;
   return false;
 }
 
@@ -199,32 +209,18 @@ function isMetaAdsEntry(text) {
    PLANS + SCHEDULE (preservado)
    ═══════════════════════════════════════════════════════════════════ */
 
+// V24.10: Oferta única — sem 3 planos
 const PLANS = {
-  full: {
-    key: "full",
-    label: "Acompanhamento Médico Especializado",
-    subtitle: "Consulta + Retorno ~30 dias",
-    price: 447,
+  avaliacao: {
+    key: "avaliacao",
+    label: "Avaliação Especializada Completa",
+    subtitle: "45 min — online",
+    price: 247,
     short: "1",
-    description: "consulta com o Dr. Alef agora + retorno em ~30 dias para acompanhar evolução e ajustar tratamento",
-  },
-  basic: {
-    key: "basic",
-    label: "Avaliação Médica Especializada",
-    subtitle: "45 min",
-    price: 347,
-    short: "2",
-    description: "avaliação inicial completa de 45 minutos para entender seu caso e definir os próximos passos",
-  },
-  retorno: {
-    key: "retorno",
-    label: "Consulta de Ajuste",
-    subtitle: "Retorno avulso",
-    price: 200,
-    short: "3",
-    description: "retorno para quem já é paciente e precisa de ajuste",
+    description: "avaliação clínica completa de 45 minutos por videochamada",
   },
 };
+const PIX_CNPJ = "46.603.987/0001-30";
 
 const FIXED_SCHEDULE = {
   // MARÇO 2026
@@ -645,7 +641,7 @@ function detectIntent(text) {
 
   return {
     wantsPrice:       /\b(preco|preço|valor|quanto custa|investimento|custa|valores|quanto e|quanto é)\b/.test(t),
-    intentPay:        /\b(como (pagar|fa[cç]o para pagar)|pagamento|pix|cartao|cartão|credito|crédito|debito|débito|boleto|link|parcel|parcela|quero pagar|posso pagar|manda o link|me manda o link)\b/.test(t)
+    intentPay:        /\b(como (pagar|fa[cç]o para pagar)|pagamento|pix|cartao|cartão|credito|crédito|debito|débito|link|parcel|parcela|quero pagar|posso pagar|manda o link|me manda o link)\b/.test(t)
                       && !/\b(nao tenho condicao de pagar|não tenho condição de pagar|nao consigo pagar|não consigo pagar|caro demais para pagar|muito caro para pagar)\b/.test(t),
     wantsBook:        /\b(quero marcar|quero agendar|vou marcar|vou agendar|queria marcar|queria agendar|gostaria de (marcar|agendar)|posso (marcar|agendar)|preciso (marcar|agendar)|bora (marcar|agendar)|confirmar consulta|quero consulta|quero uma vaga|me agenda|tem horario|tem horário)\b/.test(t),
     asksHours:        /\b(horarios|horário|horario|que horas|vagas|disponibilidade)\b/.test(t),
@@ -1001,10 +997,10 @@ FATOS SOBRE ACESSO:
 - O paciente não precisa descobrir isso sozinho
 
 FATOS SOBRE PAGAMENTO:
-- Opção 1: Acompanhamento (consulta + retorno ~30 dias) — R$447 (87% escolhem)
-- Opção 2: Avaliação inicial (45 min) — R$347
-- Opção 3: Retorno avulso — R$200
-- Aceita cartão, Pix e boleto
+- Avaliação Especializada Completa — R$247 (condição especial via Instagram)
+- Parcelamento: 3x de R$82,33 no cartão, ou até 12x via Mercado Pago
+- Pix: R$247 — CNPJ 46.603.987/0001-30
+- Aceita cartão e Pix (não aceita boleto)
 - A consulta é particular (não cobre plano, mas pode ter reembolso dependendo do convênio)
 - Pode remarcar com antecedência
 
@@ -1077,6 +1073,25 @@ function isMedCostQuestion(flags, text) {
   return false;
 }
 
+// V24.10: Helper — rapport mínimo atingido?
+function hasMinRapport(state) {
+  return !!(
+    state.problem_text &&
+    (state.diag_has_tempo || state.diag_has_impacto || state.diag_has_tratamento)
+  );
+}
+
+// V24.10: Helper — preço + rota correta (ASK_PAY_METHOD só com slot)
+function priceAndRoute(state) {
+  if (state.slot_time) {
+    return { reply: priceReply(state), stage: "ASK_PAY_METHOD" };
+  }
+  return {
+    reply: priceReply(state) + "\n\nSe quiser, eu já posso te mostrar os horários disponíveis 😊",
+    stage: "ASK_DAY",
+  };
+}
+
 function askNameIntroReply() {
   return "Oi 😊 Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
 }
@@ -1144,7 +1159,7 @@ async function offerSlotsReply(state, periodMin = null) {
 }
 
 function askFullNameReply(state) {
-  return `Perfeito. Vou reservar *${prettySlot(state.date_key, state.slot_time)}* para você 😊\n\nSó preciso de alguns dados rápidos.\n\nQual seu *nome completo*?`;
+  return "Para eu finalizar seu cadastro, qual seu *nome completo*?";
 }
 
 function askBirthdateReply(state) {
@@ -1155,24 +1170,35 @@ function askEmailReply() {
   return "E qual *e-mail* você prefere para receber as orientações?";
 }
 
-function priceReply() {
+// V24.10: Bloco oficial de preço — oferta única
+function priceReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
   return (
-    "Hoje trabalhamos com estas opções:\n\n" +
-    `1️⃣ *${PLANS.full.label}* (${PLANS.full.subtitle}) — *R$${PLANS.full.price}* *(87% dos pacientes escolhem essa)* ⭐\n` +
-    `2️⃣ *${PLANS.basic.label}* (${PLANS.basic.subtitle}) — *R$${PLANS.basic.price}*\n` +
-    `3️⃣ *${PLANS.retorno.label}* (${PLANS.retorno.subtitle}) — *R$${PLANS.retorno.price}*\n\n` +
-    "Qual faz mais sentido para você? Me responde com *1, 2 ou 3* 😊"
+    "A consulta com o Dr. Alef é 100% online, segura e individualizada, com duração média de 45 minutos.\n\n" +
+    "Com base na experiência de mais de 6 anos de formação médica na Rússia e especialização internacional em Cannabis Medicinal, ele estruturou uma avaliação clínica que busca entender seu quadro com profundidade.\n\n" +
+    "Durante a consulta, ele:\n" +
+    "1) Revisa todo o seu histórico de saúde\n" +
+    "2) Entende como os sintomas impactam sua rotina\n" +
+    "3) Analisa tratamentos que você já tentou\n" +
+    "4) Verifica medicações em uso e possíveis interações\n" +
+    "5) Define objetivos claros de melhora, alinhados ao seu caso\n\n" +
+    "Como você veio pelo Instagram, hoje consigo te passar a condição especial desta semana:\n\n" +
+    "⭐ *Avaliação Especializada Completa:* 3x de R$82,33 no cartão\n" +
+    "ou *R$247 no Pix*\n\n" +
+    "Também é possível parcelar em até 12x no cartão, com juros do Mercado Pago.\n\n" +
+    `Como você prefere seguir${nome}?\n\n` +
+    "1️⃣ Te envio o link para ver as opções de parcelamento\n" +
+    "2️⃣ Te envio o Pix"
   );
 }
 
 function paymentSentReply(plan, link, state) {
   return (
-    `Perfeito, pré-reserva feita ✅\n\n` +
-    `📅 *${prettySlot(state.date_key, state.slot_time)}*\n\n` +
-    `Plano: *${plan.label}* — R$${plan.price}\n\n` +
-    `Para confirmar sua consulta, é só finalizar aqui:\n${link}\n\n` +
-    `Assim que o pagamento entrar, eu confirmo tudo por aqui 😊\n\n` +
-    `Se tiver qualquer dificuldade, me avisa que eu te ajudo.`
+    `Aqui está o link para pagamento 😊\n\n` +
+    `📅 *${prettySlot(state.date_key, state.slot_time)}*\n` +
+    `*${plan.label}* — R$${plan.price}\n\n` +
+    `${link}\n\n` +
+    `Assim que o pagamento for confirmado, eu te aviso por aqui 😊`
   );
 }
 
@@ -1184,12 +1210,17 @@ function pendingPaymentReply(state) {
   );
 }
 
+// V24.10: afterPaidReply → pede dados se faltam, confirma se completo
 function afterPaidReply(state) {
-  return (
-    "Pagamento confirmado ✅\n\n" +
+  if (state.nome_completo && state.birthdate && state.email) {
+    return "Pagamento confirmado ✅\n\n" +
+      `Sua consulta está marcada para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
+      "Mais perto do horário eu envio as orientações 😊\nQualquer dúvida até lá, é só me chamar.";
+  }
+  return "Pagamento confirmado ✅\n\n" +
     `Sua consulta está marcada para *${prettySlot(state.date_key, state.slot_time)}*.\n\n` +
-    "Mais perto do horário eu envio as orientações 😊\nQualquer dúvida até lá, é só me chamar."
-  );
+    "Agora só preciso de alguns dados rápidos para finalizar seu cadastro 😊\n\n" +
+    "Qual seu *nome completo*?";
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1230,7 +1261,7 @@ function shouldShowCTA(state, flags, text) {
   if (isRepairSignal(text)) return false;
   const answered = Number(state.questions_answered_since_last_cta || 0);
   if (answered >= 3) return true;
-  if (["ASK_FULLNAME", "ASK_BIRTHDATE", "ASK_EMAIL", "ASK_PLAN", "WAIT_PAYMENT"].includes(state.stage)) return true;
+  if (["ASK_FULLNAME", "ASK_BIRTHDATE", "ASK_EMAIL", "ASK_PLAN", "ASK_PAY_METHOD", "WAIT_PAYMENT"].includes(state.stage)) return true;
   return false;
 }
 
@@ -1241,7 +1272,8 @@ function getStageCTA(state) {
   if (s === "ASK_FULLNAME") return "\n\nMe passa seu *nome completo* para eu finalizar a reserva 😊";
   if (s === "ASK_BIRTHDATE") return "\n\nMe manda sua *data de nascimento* para eu prosseguir 😊";
   if (s === "ASK_EMAIL") return "\n\nMe passa seu *e-mail* para eu completar o cadastro 😊";
-  if (s === "ASK_PLAN") return "\n\nQual dessas opções faz mais sentido? Me responde com *1, 2 ou 3* 😊";
+  if (s === "ASK_PAY_METHOD") return "\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?";
+  if (s === "ASK_PLAN") return "\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?";
   if (s === "WAIT_PAYMENT" && state.payment?.link) return `\n\nSeu horário está pré-reservado e o link segue ativo:\n${state.payment.link}`;
   if (["ASK_NAME", "ASK_PROBLEM", "DIAGNOSTIC"].includes(s) || !s) return "";
   return "\n\nSe quiser, eu posso te mostrar os horários disponíveis 😊";
@@ -1679,6 +1711,12 @@ async function processLiaMessage(phone, incomingText) {
     st.payment.status = "approved";
     st.payment.simulated = true;
     if (st.slot_key) await markSlotPaid(st.slot_key, phone);
+    // V24.10: Dados APÓS pagamento
+    if (!st.nome_completo || !st.birthdate || !st.email) {
+      st.stage = "ASK_FULLNAME";
+    } else {
+      st.stage = "CONFIRMED";
+    }
     await saveUserState(phone, st);
     return {
       reply: afterPaidReply(st),
@@ -1724,6 +1762,14 @@ async function processLiaMessage(phone, incomingText) {
      ═══════════════════════════════════════════════════════════════ */
 
   if (state.payment?.status === "approved") {
+    // V24.10: Dados APÓS pagamento — se faltam, redirecionar para coleta
+    if (!state.nome_completo || !state.birthdate || !state.email) {
+      if (!state.nome_completo) state.stage = "ASK_FULLNAME";
+      else if (!state.birthdate) state.stage = "ASK_BIRTHDATE";
+      else state.stage = "ASK_EMAIL";
+    } else {
+      state.stage = "CONFIRMED";
+    }
     reply = afterPaidReply(state);
   }
   else if (flags.urgency) {
@@ -1841,8 +1887,14 @@ async function processLiaMessage(phone, incomingText) {
 
     if (ai.reply === "__NEED_PRICE__") {
       state.price_ask_count += 1;
-      reply = priceReply();
-      state.stage = "ASK_PLAN";
+      if (hasMinRapport(state)) {
+        const pr = priceAndRoute(state);
+        reply = pr.reply;
+        state.stage = pr.stage;
+      } else {
+        state.stage = "ASK_PROBLEM";
+        reply = "Claro, já te passo tudo 😊 Mas antes me conta um pouquinho sobre o que te trouxe aqui?";
+      }
     } else if (ai.reply === "__NEED_BOOK__") {
       state.stage = "ASK_DAY";
       reply = await askDayReply();
@@ -1874,7 +1926,7 @@ async function processLiaMessage(phone, incomingText) {
 
     // ── V24.4: Atalho — paciente menciona dia específico → oferecer horários ──
     if (flags.mentionsDayAvail
-      && !["OFFER_SLOTS","ASK_FULLNAME","ASK_BIRTHDATE","ASK_EMAIL","ASK_PLAN","WAIT_PAYMENT"].includes(state.stage)
+      && !["OFFER_SLOTS","ASK_PAY_METHOD","ASK_FULLNAME","ASK_BIRTHDATE","ASK_EMAIL","ASK_PLAN","WAIT_PAYMENT"].includes(state.stage)
     ) {
       const mentionedDate = extractDateKey(incomingText);
       if (mentionedDate) {
@@ -1952,8 +2004,14 @@ async function processLiaMessage(phone, incomingText) {
               state.stage = "ASK_DAY";
               reply = `Prazer, ${nm} 😊 Vou te mostrar os horários disponíveis.\n\n` + await askDayReply();
             } else if (state.lead_profile === "pragmatico" || flags.wantsPrice) {
-              state.stage = "ASK_PLAN";
-              reply = `Prazer, ${nm} 😊\n\n${priceReply()}`;
+              if (hasMinRapport(state)) {
+                const pr = priceAndRoute(state);
+                reply = `Prazer, ${nm} 😊\n\n${pr.reply}`;
+                state.stage = pr.stage;
+              } else {
+                state.stage = "ASK_PROBLEM";
+                reply = `Prazer, ${nm} 😊 Me conta um pouquinho sobre o que te trouxe aqui?`;
+              }
             } else {
               state.stage = "DIAGNOSTIC";
               const nextQ = getNextDiagQuestion(state, state.problem_text || incomingText);
@@ -2052,12 +2110,13 @@ async function processLiaMessage(phone, incomingText) {
         reply = await askDayReply();
       } else if (flags.wantsPrice) {
         state.price_ask_count += 1;
-        reply = priceReply();
-        state.stage = "ASK_PLAN";
+        const pr = priceAndRoute(state);
+        reply = pr.reply;
+        state.stage = pr.stage;
       } else {
         const ai = await runLia({ incomingText, state, flags, stageCTA: "Se quiser, eu posso te mostrar os horários disponíveis" });
         if (ai.reply === "__NEED_BOOK__") { state.stage = "ASK_DAY"; reply = await askDayReply(); }
-        else if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceReply(); state.stage = "ASK_PLAN"; }
+        else if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; const pr = priceAndRoute(state); reply = pr.reply; state.stage = pr.stage; }
         else { reply = ai.reply; state = mergeState(state, ai.updates); }
       }
     }
@@ -2107,7 +2166,7 @@ async function processLiaMessage(phone, incomingText) {
           }
         } else if (hasQuestion(incomingText)) {
           const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dia fica melhor para você?" });
-          if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceReply(); state.stage = "ASK_PLAN"; }
+          if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceReply(state); /* permanece em ASK_DAY */ }
           else if (ai.reply.startsWith("__")) { reply = await askDayReply(); }
           else { reply = ai.reply; state = mergeState(state, ai.updates); }
         // V24.5: Se lead pede tempo/encerra em ASK_DAY, respeitar
@@ -2147,8 +2206,8 @@ async function processLiaMessage(phone, incomingText) {
           state.slot_time = chosen;
           state.slot_key = hold.slot_key;
           await releaseOldHeldSlotsForPhone(phone, hold.slot_key);
-          state.stage = "ASK_FULLNAME";
-          reply = askFullNameReply(state);
+          state.stage = "ASK_PAY_METHOD";
+          reply = `Perfeito 😊 Vou deixar seu horário pré-reservado para *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, eu libero sua reserva em definitivo.\n\n${priceReply(state)}`;
         }
       }
 
@@ -2192,75 +2251,85 @@ async function processLiaMessage(phone, incomingText) {
       const em = extractEmail(incomingText);
       if (em) {
         state.email = em;
-        state.stage = "ASK_PLAN";
-        reply = `Obrigada 😊\n\nHorário pré-reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, sua reserva fica garantida 😊\n\n${priceReply()}`;
+        // V24.10: Se pagamento já aprovado (coleta pós-pag), finalizar
+        if (state.payment?.status === "approved") {
+          state.stage = "CONFIRMED";
+          reply = afterPaidReply(state);
+        } else {
+          const pr = priceAndRoute(state);
+          reply = `Obrigada 😊\n\n${pr.reply}`;
+          state.stage = pr.stage;
+        }
       } else {
         reply = "Me manda seu *e-mail* certinho, por favor.";
       }
     }
 
-    // ── Escolha do plano ──
+    // ── V24.10: ASK_PLAN legacy redirect → oferta única ──
     else if (state.stage === "ASK_PLAN") {
-      const planKey = extractPlanChoice(incomingText);
+      state.stage = "ASK_PAY_METHOD";
+      reply = priceReply(state);
+    }
 
-      if (planKey) {
-        state.selected_plan_key = planKey;
-        const holdCheck = state.date_key && state.slot_time ? await acquireSlotHold(state.date_key, state.slot_time, phone) : { ok: true };
-        if (state.date_key && !holdCheck.ok) {
-          state.slot_time = null;
-          state.slot_key = null;
-          state.stage = "OFFER_SLOTS";
-          reply = "Esse horário acabou de ser preenchido 😕 Vou te mostrar outras opções.\n\n" + (await offerSlotsReply(state));
-        } else {
-          if (holdCheck.slot_key) state.slot_key = holdCheck.slot_key;
-
-          if (!state.date_key) {
-            state.stage = "ASK_DAY";
-            reply = `Perfeito 😊 Vou organizar sua reserva.\n\n${await askDayReply()}`;
-          } else if (!state.slot_time) {
-            state.stage = "OFFER_SLOTS";
-            reply = await offerSlotsReply(state);
-          } else if (!state.nome_completo) {
-            state.stage = "ASK_FULLNAME";
-            reply = askFullNameReply(state);
-          } else if (!state.birthdate) {
-            state.stage = "ASK_BIRTHDATE";
-            reply = askBirthdateReply(state);
-          } else if (!state.email) {
-            state.stage = "ASK_EMAIL";
-            reply = askEmailReply();
-          } else {
-            const pref = await mpCreatePreference({ phone, planKey });
-            state.payment = {
-              status: "pending", plan_key: planKey,
-              preference_id: pref.preference_id, link: pref.link,
-              external_reference: pref.external_reference, created_at: Date.now(),
-            };
-            reply = paymentSentReply(pref.plan, pref.link, state);
-            state.stage = "WAIT_PAYMENT";
-          }
-        }
-      } else if (isMedCostQuestion(flags, incomingText)) {
-        reply = medCostReply(state);
-        state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
-      // V24.5: Respeitar pausa em ASK_PLAN
-      } else if (flags.saysWillSee || flags.endsConversation || flags.saysCheckSpouse) {
-        const nome = state.nome ? `, ${state.nome}` : "";
-        reply = `Sem problema${nome} 😊 Quando decidir, me chama por aqui que eu organizo tudo.`;
+    // ── V24.10: Método de pagamento (Link ou Pix) ──
+    else if (state.stage === "ASK_PAY_METHOD") {
+      // Proteção: precisa de slot antes de pagar
+      if (!state.slot_time || !state.date_key) {
+        state.stage = "ASK_DAY";
+        reply = "Antes de te enviar o pagamento, só preciso definir seu horário 😊\n\n" + await askDayReply();
       } else {
-        const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dessas opções faz mais sentido? Me responde com 1, 2 ou 3" });
-        if (ai.reply.startsWith("__")) {
-          reply = "Se quiser, eu posso te explicar a diferença entre as opções. Qual faz mais sentido: *1, 2 ou 3*?";
+        const low = norm(incomingText);
+        const wantsLink = /\b(1|link|cartao|cartão|parcela|parcelar|parcelado|parcelas|credito|crédito)\b/.test(low);
+        const wantsPix = /\b(2|pix)\b/.test(low);
+        const saysExpensive = /\b(caro|cara|muito|puxado|puxada|desconto|barato|barata|menos|menor)\b/.test(low);
+
+        if (wantsLink) {
+          state.selected_plan_key = "avaliacao";
+          const pref = await mpCreatePreference({ phone, planKey: "avaliacao" });
+          state.payment = {
+            status: "pending", plan_key: "avaliacao",
+            preference_id: pref.preference_id, link: pref.link,
+            external_reference: pref.external_reference, created_at: Date.now(),
+            method: "link",
+          };
+          reply = paymentSentReply(PLANS.avaliacao, pref.link, state);
+          state.stage = "WAIT_PAYMENT";
+        } else if (wantsPix) {
+          state.selected_plan_key = "avaliacao";
+          state.payment = {
+            status: "pending_pix", plan_key: "avaliacao",
+            created_at: Date.now(), method: "pix",
+          };
+          reply = `Perfeito 😊 Aqui estão os dados para o Pix:\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*\n\nQuando fizer o pagamento, me envia o comprovante por aqui que eu confirmo na hora 😊`;
+          state.stage = "WAIT_PAYMENT";
+        } else if (saysExpensive) {
+          reply = `Entendo 😊 Só pra você saber, dá pra parcelar em *3x de R$82,33* no cartão, ou até 12x pelo link do Mercado Pago.\n\nSe preferir à vista, o Pix é *R$247*.\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
+        } else if (flags.saysWillSee || flags.endsConversation || flags.saysCheckSpouse) {
+          const nome = state.nome ? `, ${state.nome}` : "";
+          reply = `Sem problema${nome} 😊 Seu horário fica pré-reservado por enquanto. Quando decidir, me chama por aqui.`;
+        } else if (hasQuestion(incomingText)) {
+          const ai = await runLia({ incomingText, state, flags, stageCTA: "Como prefere pagar: 1️⃣ link ou 2️⃣ Pix?" });
+          if (!ai.reply.startsWith("__")) { reply = ai.reply + "\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?"; state = mergeState(state, ai.updates); }
+          else { reply = "Como prefere pagar: 1️⃣ *link* (cartão/parcelado) ou 2️⃣ *Pix*?"; }
         } else {
-          reply = ai.reply;
-          state = mergeState(state, ai.updates);
+          reply = "Como prefere pagar: 1️⃣ *link* (cartão/parcelado) ou 2️⃣ *Pix*?";
         }
       }
     }
 
     // ── Aguardando pagamento ──
     else if (state.stage === "WAIT_PAYMENT") {
-      if (state.payment?.status === "pending" && state.payment?.link) {
+      // V24.10: Pix pendente — aguardando comprovante
+      if (state.payment?.status === "pending_pix") {
+        const t = norm(incomingText);
+        if (/\b(paguei|enviei|comprovante|feito|transferi|mandei|pago)\b/.test(t)) {
+          state.payment.pix_comprovante_sent = true;
+          state.needs_human = true;
+          reply = "Perfeito 😊 Recebi sua confirmação. Vou verificar o pagamento e te aviso por aqui assim que estiver confirmado.";
+        } else {
+          reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante 😊\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*`;
+        }
+      } else if (state.payment?.status === "pending" && state.payment?.link) {
         if (flags.intentPay || flags.confirms) {
           reply = pendingPaymentReply(state);
         } else {
@@ -2283,21 +2352,29 @@ async function processLiaMessage(phone, incomingText) {
       else if (!state.problem_text) { state.stage = "ASK_PROBLEM"; reply = askProblemReply(state); }
       else if (!state.date_key) { state.stage = "ASK_DAY"; reply = await askDayReply(); }
       else if (!state.slot_time) { state.stage = "OFFER_SLOTS"; reply = await offerSlotsReply(state); }
-      else { state.stage = "ASK_PLAN"; reply = priceReply(); }
+      else { state.stage = "ASK_PAY_METHOD"; reply = priceReply(state); }
     }
 
     else if (flags.wantsPrice) {
       state.price_ask_count += 1;
       if (!state.nome) {
-        if (state.price_ask_count >= 2) { state.stage = "ASK_PLAN"; reply = priceReply(); }
+        if (state.price_ask_count >= 2) { const pr = priceAndRoute(state); reply = pr.reply; state.stage = pr.stage; }
         else { state.stage = "ASK_NAME"; reply = "Claro, vou te passar as opções 😊 Antes, me diz seu *primeiro nome*?"; }
-      } else { reply = priceReply(); state.stage = "ASK_PLAN"; }
+      } else if (!hasMinRapport(state) && state.price_ask_count < 2) {
+        state.stage = "ASK_PROBLEM";
+        reply = "Claro, já te passo os valores 😊 Mas antes, me conta o que te trouxe aqui?";
+      } else {
+        const pr = priceAndRoute(state);
+        reply = pr.reply;
+        state.stage = pr.stage;
+      }
     }
 
     else if (flags.intentPay) {
       if (state.payment?.status === "pending" && state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
+      else if (state.payment?.status === "pending_pix") { reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante 😊\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*`; state.stage = "WAIT_PAYMENT"; }
       else if (!state.date_key) { state.stage = "ASK_DAY"; reply = `Perfeito 😊 Antes do pagamento, vou reservar seu horário.\n\n${await askDayReply()}`; }
-      else { state.stage = "ASK_PLAN"; reply = priceReply(); }
+      else { const pr = priceAndRoute(state); reply = pr.reply; state.stage = pr.stage; }
     }
 
     else if (flags.refuses) {
@@ -2319,8 +2396,14 @@ async function processLiaMessage(phone, incomingText) {
 
       if (ai.reply === "__NEED_PRICE__") {
         state.price_ask_count += 1;
-        reply = priceReply();
-        state.stage = "ASK_PLAN";
+        if (hasMinRapport(state)) {
+          const pr = priceAndRoute(state);
+          reply = pr.reply;
+          state.stage = pr.stage;
+        } else {
+          state.stage = "ASK_PROBLEM";
+          reply = "Claro, já te passo tudo 😊 Mas antes me conta um pouquinho sobre o que te trouxe aqui?";
+        }
       } else if (ai.reply === "__NEED_BOOK__") {
         if (!state.nome) { state.stage = "ASK_NAME"; reply = askNameIntroReply(); }
         else if (!state.problem_text) { state.stage = "ASK_PROBLEM"; reply = askProblemReply(state); }
@@ -2402,14 +2485,14 @@ app.post("/lia/respond", async (req, res) => {
     const incomingText = String(mensagem).trim();
 
     // ══════════════════════════════════════════════════════════════
-    // V24.8: PAUSA MANUAL POR LEAD — Comandos admin (ANTES do debounce)
+    // V24.9: PAUSA MANUAL POR LEAD — Comandos admin (ANTES do debounce)
     // Comandos: Deixa.eu.pensar | Eu.voltei | status.lia
-    // Requer fromMe === true (mensagem enviada pelo admin no chat do lead)
+    // Funciona com fromMe OU por texto exato (comandos únicos com pontos)
     // ══════════════════════════════════════════════════════════════
     const isAdminMsg = fromMe === true || fromMe === "true";
     const cmdNorm = incomingText.toLowerCase().trim();
 
-    if (isAdminMsg && cmdNorm === "deixa.eu.pensar") {
+    if (cmdNorm === "deixa.eu.pensar") {
       const st = await getUserState(phone);
       st.lia_paused = true;
       st.lia_paused_at = new Date().toISOString();
@@ -2424,7 +2507,7 @@ app.post("/lia/respond", async (req, res) => {
       });
     }
 
-    if (isAdminMsg && cmdNorm === "eu.voltei") {
+    if (cmdNorm === "eu.voltei") {
       const st = await getUserState(phone);
       st.lia_paused = false;
       delete st.lia_paused_at;
@@ -2439,7 +2522,7 @@ app.post("/lia/respond", async (req, res) => {
       });
     }
 
-    if (isAdminMsg && cmdNorm === "status.lia") {
+    if (cmdNorm === "status.lia") {
       const st = await getUserState(phone);
       const paused = st.lia_paused === true;
       const since = st.lia_paused_at ? ` (desde ${st.lia_paused_at})` : "";
@@ -2502,6 +2585,16 @@ app.post("/lia/respond", async (req, res) => {
       return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
     }
 
+    // V24.9: Re-checar pausa APÓS debounce (admin pode ter pausado durante o sleep)
+    const recheckState = await getUserState(phone);
+    if (recheckState.lia_paused === true) {
+      _inboundBuffer.delete(phone);
+      const allTexts = bufAfter.messages.map(m => m.text).join(" ");
+      logMessage(phone, "lia", allTexts, "inbound");
+      console.log(`⏸️ Lead ${phone} pausado durante debounce. Msgs logadas, sem resposta.`);
+      return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0, paused: true });
+    }
+
     // 4) Esta é a execução mais recente → consolidar todas as msgs do buffer
     const allMessages = bufAfter.messages.map(m => m.text);
     const consolidatedText = allMessages.length > 1
@@ -2547,6 +2640,17 @@ app.post("/lia/respond", async (req, res) => {
     else if (replyLen < 250) delay_ms = randInt(12000, 20000);  // média: 12-20s
     else                     delay_ms = randInt(18000, 30000);  // longa: 18-30s
     delay_ms = Math.max(delay_ms, 8000);
+
+    // V24.9: Cooldown anti-rajada — mínimo 12s entre respostas para o mesmo lead
+    const lastReplyAt = _lastBotReplyAt.get(phone) || 0;
+    const plannedSendAt = Date.now() + delay_ms;
+    const gapFromLast = plannedSendAt - lastReplyAt;
+    if (lastReplyAt > 0 && gapFromLast < MIN_BOT_GAP_MS) {
+      delay_ms += (MIN_BOT_GAP_MS - gapFromLast);
+      console.log(`🕐 Cooldown anti-rajada: delay_ms ajustado para ${delay_ms}ms (gap era ${gapFromLast}ms) — phone ${phone}`);
+    }
+    // Registrar momento planejado de envio
+    _lastBotReplyAt.set(phone, Date.now() + delay_ms);
 
     return res.json({
       ok: true,
@@ -2622,7 +2726,13 @@ app.post("/mp/webhook", async (req, res) => {
       state.payment.plan_key = payment?.metadata?.plan_key || state.payment.plan_key || null;
 
       if (status === "approved" && state.slot_key) await markSlotPaid(state.slot_key, phone);
-      if (status === "approved") state.stage = "CONFIRMED";
+      if (status === "approved") {
+        if (!state.nome_completo || !state.birthdate || !state.email) {
+          state.stage = "ASK_FULLNAME";
+        } else {
+          state.stage = "CONFIRMED";
+        }
+      }
       await saveUserState(phone, state);
 
       if (status === "approved") {
