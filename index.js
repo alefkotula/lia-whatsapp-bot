@@ -998,7 +998,7 @@ FATOS SOBRE ACESSO:
 
 FATOS SOBRE PAGAMENTO:
 - Avaliação Especializada Completa — R$247 (condição especial via Instagram)
-- Parcelamento: 3x de R$82,33 no cartão, ou até 12x via Mercado Pago
+- Parcelamento: 3x de R$91,58, 2x de R$135,41, 4x de R$68,77, ou até 12x — via Mercado Pago
 - Pix: R$247 — CNPJ 46.603.987/0001-30
 - Aceita cartão e Pix (não aceita boleto)
 - A consulta é particular (não cobre plano, mas pode ter reembolso dependendo do convênio)
@@ -1183,9 +1183,9 @@ function priceInfoReply(state) {
     "4) Verifica medicações em uso e possíveis interações\n" +
     "5) Define objetivos claros de melhora, alinhados ao seu caso\n\n" +
     "Como você veio pelo Instagram, hoje consigo te passar a condição especial desta semana:\n\n" +
-    "⭐ *Avaliação Especializada Completa:* 3x de R$82,33 no cartão\n" +
-    "ou *R$247 no Pix*\n\n" +
-    "Também é possível parcelar em até 12x no cartão, com juros do Mercado Pago."
+    "⭐ *Avaliação Especializada Completa:* R$247 no Pix\n" +
+    "ou *3x de R$91,58* no cartão\n\n" +
+    "Se preferir, no link você consegue ver também outras opções de parcelamento, como 2x de R$135,41 e 4x de R$68,77, além de até 12x com juros do Mercado Pago."
   );
 }
 
@@ -1206,6 +1206,7 @@ function paymentSentReply(plan, link, state) {
     `📅 *${prettySlot(state.date_key, state.slot_time)}*\n` +
     `*${plan.label}* — R$${plan.price}\n\n` +
     `${link}\n\n` +
+    `Ao abrir, você consegue ver as opções de parcelamento no cartão.\n` +
     `Assim que o pagamento for confirmado, eu te aviso por aqui 😊`
   );
 }
@@ -2164,6 +2165,10 @@ async function processLiaMessage(phone, incomingText) {
           state.stage = "OFFER_SLOTS";
           reply = await offerSlotsReply(state);
         // V24.5: Pergunta direta sobre horários sem indicar dia → re-oferecer dias
+        // V24.10.1: intentPay em ASK_DAY → redirecionar para agenda (sem checkout antes do slot)
+        } else if (flags.intentPay) {
+          console.log(`[LIA][PAY→AGENDA] ASK_DAY: intentPay sem slot — redirecionando para agenda`);
+          reply = "Antes de te enviar o pagamento, preciso só definir seu horário 😊 Assim consigo garantir a reserva.\n\n" + await askDayReply();
         } else if (flags.asksHours && !extractDateKey(incomingText)) {
           const dayKeys = await getSuggestedDayKeys();
           if (dayKeys.length) {
@@ -2220,7 +2225,11 @@ async function processLiaMessage(phone, incomingText) {
       }
 
       if (!reply) {
-        if (hasQuestion(incomingText)) {
+        // V24.10.1: intentPay em OFFER_SLOTS sem slot → redirecionar para escolha de horário
+        if (flags.intentPay) {
+          console.log(`[LIA][PAY→AGENDA] OFFER_SLOTS: intentPay sem slot_time — redirecionando para escolha`);
+          reply = "Perfeito 😊 Pra te enviar o pagamento, só preciso que você escolha um horário primeiro.\n\n" + await offerSlotsReply(state);
+        } else if (hasQuestion(incomingText)) {
           const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual desses horários funciona melhor?" });
           if (ai.reply.startsWith("__")) { reply = await offerSlotsReply(state); }
           else { reply = ai.reply; state = mergeState(state, ai.updates); }
@@ -2281,17 +2290,21 @@ async function processLiaMessage(phone, incomingText) {
 
     // ── V24.10: Método de pagamento (Link ou Pix) ──
     else if (state.stage === "ASK_PAY_METHOD") {
+      console.log(`[LIA][ASK_PAY_METHOD] Entrada: phone=${phone}, slot_time=${state.slot_time}, date_key=${state.date_key}`);
       // Proteção: precisa de slot antes de pagar
       if (!state.slot_time || !state.date_key) {
+        console.log(`[LIA][PAY→AGENDA] ASK_PAY_METHOD: sem slot — redirecionando para ASK_DAY`);
         state.stage = "ASK_DAY";
         reply = "Antes de te enviar o pagamento, só preciso definir seu horário 😊\n\n" + await askDayReply();
       } else {
         const low = norm(incomingText);
-        const wantsLink = /\b(1|link|cartao|cartão|parcela|parcelar|parcelado|parcelas|credito|crédito)\b/.test(low);
-        const wantsPix = /\b(2|pix)\b/.test(low);
+        const wantsLink = /\b(1|link|cartao|cartão|parcela|parcelar|parcelado|parcelas|parcelamento|credito|crédito|me manda|manda o|quero o link|link de pagamento|quero pagar no cartao|quero pagar no cartão)\b/.test(low);
+        const wantsPix = /\b(2|pix|prefiro pix|quero pix|quero pagar no pix|pagar no pix|mudar para pix|trocar para pix)\b/.test(low);
         const saysExpensive = /\b(caro|cara|muito|puxado|puxada|desconto|barato|barata|menos|menor)\b/.test(low);
+        console.log(`[LIA_PAY] ASK_PAY_METHOD input: "${low.substring(0,80)}", wantsLink=${wantsLink}, wantsPix=${wantsPix}, saysExpensive=${saysExpensive}`);
 
         if (wantsLink) {
+          console.log(`[LIA_PAY] ASK_PAY_METHOD: Link escolhido — gerando preference MP`);
           state.selected_plan_key = "avaliacao";
           const pref = await mpCreatePreference({ phone, planKey: "avaliacao" });
           state.payment = {
@@ -2303,6 +2316,7 @@ async function processLiaMessage(phone, incomingText) {
           reply = paymentSentReply(PLANS.avaliacao, pref.link, state);
           state.stage = "WAIT_PAYMENT";
         } else if (wantsPix) {
+          console.log(`[LIA_PAY] ASK_PAY_METHOD: Pix escolhido — exibindo CNPJ`);
           state.selected_plan_key = "avaliacao";
           state.payment = {
             status: "pending_pix", plan_key: "avaliacao",
@@ -2311,7 +2325,7 @@ async function processLiaMessage(phone, incomingText) {
           reply = `Perfeito 😊 Aqui estão os dados para o Pix:\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*\n\nQuando fizer o pagamento, me envia o comprovante por aqui que eu confirmo na hora 😊`;
           state.stage = "WAIT_PAYMENT";
         } else if (saysExpensive) {
-          reply = `Entendo 😊 Só pra você saber, dá pra parcelar em *3x de R$82,33* no cartão, ou até 12x pelo link do Mercado Pago.\n\nSe preferir à vista, o Pix é *R$247*.\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
+          reply = `Entendo 😊 Só pra você saber, dá pra parcelar em *3x de R$91,58* no cartão. No link você consegue ver também outras opções, como 2x de R$135,41, 4x de R$68,77 e até 12x.\n\nSe preferir à vista, o Pix é *R$247*.\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
         } else if (flags.saysWillSee || flags.endsConversation || flags.saysCheckSpouse) {
           const nome = state.nome ? `, ${state.nome}` : "";
           reply = `Sem problema${nome} 😊 Seu horário fica pré-reservado por enquanto. Quando decidir, me chama por aqui.`;
@@ -2325,31 +2339,50 @@ async function processLiaMessage(phone, incomingText) {
       }
     }
 
-    // ── Aguardando pagamento ──
+    // ── Aguardando pagamento (V24.10.2: suporte troca link↔pix) ──
     else if (state.stage === "WAIT_PAYMENT") {
-      // V24.10: Pix pendente — aguardando comprovante
-      if (state.payment?.status === "pending_pix") {
-        const t = norm(incomingText);
-        if (/\b(paguei|enviei|comprovante|feito|transferi|mandei|pago)\b/.test(t)) {
+      console.log(`[LIA_PAY] WAIT_PAYMENT entrada: phone=${phone}, status=${state.payment?.status}, method=${state.payment?.method}`);
+      const low = norm(incomingText);
+      const wantsLink = /\b(1|link|cartao|cartão|parcela|parcelar|parcelado|parcelas|parcelamento|credito|crédito|me manda|manda o|quero o link|link de pagamento|quero pagar no cartao|quero pagar no cartão)\b/.test(low);
+      const wantsPix = /\b(2|pix|prefiro pix|quero pix|quero pagar no pix|pagar no pix|mudar para pix|trocar para pix)\b/.test(low);
+      const isPendingLink = ["pending", "pending_link", "pending_checkout"].includes(state.payment?.status);
+      const isPendingPix = state.payment?.status === "pending_pix";
+
+      // TROCA: link/checkout → Pix
+      if (isPendingLink && wantsPix && !wantsLink) {
+        console.log(`[LIA_PAY] TROCA link→pix`);
+        state.payment = { ...state.payment, status: "pending_pix", method: "pix", switched_at: Date.now() };
+        reply = `Perfeito 😊 Se preferir, podemos fazer no Pix.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*\n\nAssim que fizer o pagamento, me envie o comprovante por aqui para eu confirmar sua reserva.`;
+      }
+      // TROCA: Pix → link
+      else if (isPendingPix && wantsLink && !wantsPix) {
+        console.log(`[LIA_PAY] TROCA pix→link — gerando preference MP`);
+        const pref = await mpCreatePreference({ phone, planKey: "avaliacao" });
+        state.payment = { ...state.payment, status: "pending", method: "link", preference_id: pref.preference_id, link: pref.link, external_reference: pref.external_reference, switched_at: Date.now() };
+        reply = paymentSentReply(PLANS.avaliacao, pref.link, state);
+      }
+      // Pix pendente — comprovante
+      else if (isPendingPix) {
+        if (/\b(paguei|enviei|comprovante|feito|transferi|mandei|pago)\b/.test(low)) {
           state.payment.pix_comprovante_sent = true;
           state.needs_human = true;
           reply = "Perfeito 😊 Recebi sua confirmação. Vou verificar o pagamento e te aviso por aqui assim que estiver confirmado.";
         } else {
           reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante 😊\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*`;
         }
-      } else if (state.payment?.status === "pending" && state.payment?.link) {
+      }
+      // Link pendente
+      else if (isPendingLink && state.payment?.link) {
         if (flags.intentPay || flags.confirms) {
           reply = pendingPaymentReply(state);
         } else {
           const ai = await runLia({ incomingText, state, flags, stageCTA: `Seu horário está pré-reservado. Para confirmar é só finalizar aqui: ${state.payment.link}` });
-          if (ai.reply.startsWith("__")) {
-            reply = pendingPaymentReply(state);
-          } else {
-            reply = ai.reply;
-            state = mergeState(state, ai.updates);
-          }
+          if (ai.reply.startsWith("__")) { reply = pendingPaymentReply(state); }
+          else { reply = ai.reply; state = mergeState(state, ai.updates); }
         }
-      } else {
+      }
+      // Fallback
+      else {
         reply = "Me conta: como posso te ajudar agora? 😊";
       }
     }
@@ -2439,6 +2472,9 @@ async function processLiaMessage(phone, incomingText) {
 
   if (state.payment?.status === "approved") {
     // OK — repetir afterPaidReply é comportamento correto
+  } else if (flags.intentPay && ["ASK_DAY", "OFFER_SLOTS"].includes(state.stage)) {
+    // V24.10.1: intentPay redirecionando para agenda — NÃO substituir pelo fallback genérico
+    console.log(`[LIA][ANTI-REPEAT] Skip ensureNoRepeat: intentPay + ${state.stage}`);
   } else {
     reply = await ensureNoRepeat(reply, state, incomingText, flags);
   }
