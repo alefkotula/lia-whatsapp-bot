@@ -1199,9 +1199,16 @@ function askEmailReply() {
 // V25: Bloco oficial de preço — versão informativa (sem CTA de pagamento)
 function priceInfoReply(state) {
   return (
-    "A avaliação com o Dr. Alef é 100% online, 45 min e individualizada.\n" +
-    "Ele revisa seu histórico completo, entende os sintomas e define os objetivos do tratamento.\n\n" +
-    "Condição especial desta semana:\n\n" +
+    "🌟O Dr. Alef Kotula é a escolha ideal para resolver seu sofrimento.\n\n" +
+    "Com base na experiência de mais de 6 anos de formação médica na\n" +
+    "🇷🇺Rússia🇷🇺 e Especialização Internacional em Cannabis Medicinal Internacional🌎\n\n" +
+    "Ele durante a consulta:\n" +
+    "1) Revisa todo o seu histórico de saúde\n" +
+    "2) Entende como os sintomas impactam sua rotina\n" +
+    "3) Analisa tratamentos que você já tentou\n" +
+    "4) Verifica medicações em uso e possíveis interações\n" +
+    "5) Define objetivos claros de melhora, alinhados ao seu caso\n\n" +
+    "Como você veio pelo Instagram, hoje consigo te passar a condição especial desta semana:\n\n" +
     "⭐ *Avaliação Especializada Completa:* R$247 no Pix\n" +
     "ou parcelado no cartão — no link você vê todas as opções de parcelamento."
   );
