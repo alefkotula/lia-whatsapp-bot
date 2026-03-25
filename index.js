@@ -1245,14 +1245,22 @@ function askEmailReply() {
   return "E qual *e-mail* você prefere para receber as orientações?";
 }
 
-// V26: Bloco de preço — mais humano, mais curto, sem lista numerada
+// V26: Bloco oficial de preço — texto completo com credenciais e lista (como aprovado pelo Alef)
 function priceInfoReply(state) {
-  const variations = [
-    "A avaliação com o Dr. Alef é 100% online, dura uns 45 minutos e é bem completa — ele revisa seu histórico, entende seus sintomas, analisa o que você já tentou e define um plano de tratamento pro seu caso.\n\nCondição especial desta semana:\n⭐ *R$247* no Pix ou parcelado no cartão (até 12x pelo Mercado Pago).",
-    "A consulta é online, individual, dura em torno de 45 min. O Dr. Alef realmente mergulha no seu caso — revisa tudo, entende o que funciona e o que não funcionou pra você.\n\nEssa semana tá com condição especial:\n⭐ *R$247* à vista ou parcelado em até 12x.",
-    "É uma avaliação online de 45 min onde o Dr. Alef analisa todo o seu caso com profundidade — histórico, sintomas, medicações, tudo. É bem personalizada.\n\nO valor tá em *R$247* no Pix ou parcelado no cartão.",
-  ];
-  return pickRandom(variations);
+  return (
+    "🌟O Dr. Alef Kotula é a escolha ideal para resolver seu sofrimento.\n\n" +
+    "Com base na experiência de mais de 6 anos de formação médica na\n" +
+    "🇷🇺Rússia🇷🇺 e Especialização Internacional em Cannabis Medicinal Internacional🌎\n\n" +
+    "Ele durante a consulta:\n" +
+    "1) Revisa todo o seu histórico de saúde\n" +
+    "2) Entende como os sintomas impactam sua rotina\n" +
+    "3) Analisa tratamentos que você já tentou\n" +
+    "4) Verifica medicações em uso e possíveis interações\n" +
+    "5) Define objetivos claros de melhora, alinhados ao seu caso\n\n" +
+    "Como você veio pelo Instagram, hoje consigo te passar a condição especial desta semana:\n\n" +
+    "⭐ *Avaliação Especializada Completa:* R$247 no Pix\n" +
+    "ou parcelado no cartão — no link você vê todas as opções de parcelamento."
+  );
 }
 
 // V26: Versão curta do preço — variações humanas
@@ -1266,15 +1274,15 @@ function priceShortReply(state) {
   return pickRandom(variations);
 }
 
-// V26: CTA de pagamento — variações naturais
+// V26: CTA de pagamento — texto completo + opções
 function pricePaymentReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
-  const variations = [
-    priceInfoReply(state) + `\n\nComo prefere pagar${nome}?\n\n1️⃣ Link (cartão/parcelado)\n2️⃣ Pix`,
-    priceInfoReply(state) + `\n\nPra seguir${nome}, é só escolher:\n\n1️⃣ Te mando o link pra ver as parcelas\n2️⃣ Te passo o Pix`,
-    priceInfoReply(state) + `\n\nQual forma fica melhor${nome}?\n\n1️⃣ Cartão (parcelo em até 12x)\n2️⃣ Pix à vista`,
-  ];
-  return pickRandom(variations);
+  return (
+    priceInfoReply(state) + "\n\n" +
+    `Como você prefere seguir${nome}?\n\n` +
+    "1️⃣ Te envio o link para ver as opções de parcelamento\n" +
+    "2️⃣ Te envio o Pix"
+  );
 }
 
 // V25: paymentSentReply funciona com ou sem slot
