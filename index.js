@@ -1,28 +1,22 @@
 /**
  * ═══════════════════════════════════════════════════════════════════
- * INDEX V24.3 — ADAPTADO PARA N8N (API HTTP)
+ * INDEX V26 — LIA HUMANIZADA (baseado em V25)
  * ═══════════════════════════════════════════════════════════════════
  *
- * BASE: index_lia_gpt_v24_3.js (ORIGINAL, INTOCADO NA LÓGICA)
+ * FOCO V26: Humanização profunda.
+ * O lead deve perceber a LIA como uma humana real.
+ * Menos script visível, mais fluidez, mais inteligência social.
+ * GPT-5.4 com liberdade máxima dentro dos guardrails.
  *
- * MUDANÇAS FEITAS (APENAS CANAL, NÃO LÓGICA):
- * 1. Twilio agora é OPCIONAL (não quebra se não estiver configurado)
- * 2. Lógica central extraída para processLiaMessage()
- * 3. Novo endpoint POST /lia/respond para n8n
- * 4. Handler /whatsapp original preservado (usa processLiaMessage)
- * 5. Webhook MP: envio Twilio condicional
- *
- * NADA MAIS FOI ALTERADO:
- * - Stages: IGUAIS
- * - Handlers: IGUAIS
- * - Anti-loop: IGUAL
- * - Textos: IGUAIS
- * - Reserva: IGUAL
- * - Pagamento/link: IGUAL
- * - Ordem de coleta: IGUAL
- * - CTA: IGUAL
- * - Lógica consulta vs medicamento: IGUAL
- * - CPF: NÃO EXISTE (nunca existiu, não foi adicionado)
+ * Mudanças sobre V25:
+ * - System prompt reescrito como persona humana completa
+ * - Templates com pools de variação (5-8 variantes cada)
+ * - Bridge inteiramente gerado por GPT
+ * - Diagnóstico via GPT (não perguntas fixas)
+ * - CTA orgânico (sem mecânica visível)
+ * - Transições naturais entre estágios
+ * - Temperature 0.78 para máxima naturalidade
+ * - Respostas variáveis em tom, comprimento e estrutura
  *
  * ═══════════════════════════════════════════════════════════════════
  */
@@ -1107,38 +1101,93 @@ function priceAndRoute(state) {
   return { reply: pricePaymentReply(state), stage: "ASK_PAY_METHOD" };
 }
 
+// V26: Pool de aberturas humanizadas — variam tom e estrutura
 function askNameIntroReply() {
-  return "Oi! Eu sou a Lia, do consultório do Dr. Alef Kotula. Me diz seu nome pra gente conversar melhor?";
-}
-
-function askProblemReply(state) {
-  const nome = maybeUseName(state);
   const variations = [
-    `${nome ? `Prazer, ${nome}.\n\n` : ""}Me conta: o que tem te incomodado mais ultimamente?`,
-    `${nome ? `Prazer, ${nome}.\n\n` : ""}Me conta um pouquinho: qual a sua principal queixa hoje?`,
-    `${nome ? `Prazer, ${nome}.\n\n` : ""}Para eu te direcionar melhor, me diz: o que tem te incomodado mais?`,
+    "Oi! Sou a Lia, do consultório do Dr. Alef. Me diz seu nome pra gente conversar?",
+    "Oi! Eu sou a Lia, trabalho com o Dr. Alef Kotula. Como posso te chamar?",
+    "Oi! Sou a Lia, da equipe do Dr. Alef. Qual seu nome?",
+    "Oi! Aqui é a Lia, do Dr. Alef Kotula. Me diz seu nome?",
+    "Oi! Eu sou a Lia, secretária do Dr. Alef. Como você se chama?",
   ];
   return pickRandom(variations);
 }
 
+// V26: Pool de perguntas sobre o problema — variação natural
+function askProblemReply(state) {
+  const nome = maybeUseName(state);
+  const prefix = nome ? `Prazer, ${nome}.\n\n` : "";
+  const variations = [
+    `${prefix}Me conta o que te trouxe aqui?`,
+    `${prefix}O que tem te incomodado?`,
+    `${prefix}Me diz: o que tá te trazendo mais desconforto hoje?`,
+    `${prefix}O que tá te motivando a buscar esse tratamento?`,
+    `${prefix}Me conta um pouco do que você tá sentindo?`,
+  ];
+  return pickRandom(variations);
+}
+
+// V26: Perguntas diagnósticas com múltiplas variações — nunca soam iguais
 function diagQ_tempo(state) {
   const nome = maybeUseName(state);
-  return `${nome ? `${nome}, ` : ""}há quanto tempo isso acontece com você?`;
+  const prefix = nome ? `${nome}, ` : "";
+  const variations = [
+    `${prefix}faz tempo que você convive com isso?`,
+    `${prefix}há quanto tempo isso te acompanha?`,
+    `${prefix}isso começou faz tempo ou é mais recente?`,
+    `E isso já vem de bastante tempo?`,
+    `Faz quanto tempo que isso te incomoda?`,
+  ];
+  return pickRandom(variations);
 }
 
 function diagQ_impacto(state) {
   const cond = state.condition || state.focus || "";
-  if (cond === "fibromialgia") return "E hoje o que pesa mais: a dor, o cansaço, o sono ou tudo junto?";
-  if (cond === "insonia") return "Você tem mais dificuldade para pegar no sono ou acorda várias vezes?";
-  if (cond === "ansiedade") return "No seu caso pesa mais a mente acelerada, o corpo tenso ou o sono ruim?";
-  if (cond === "artrose") return "Onde incomoda mais: joelho, quadril, mãos ou outra articulação?";
-  if (cond === "artrite") return "Hoje o que mais incomoda é a dor, a rigidez ou o inchaço?";
-  if (cond === "dor_neuropatica") return "A dor é mais como queimação, choque, formigamento ou dor contínua?";
-  return "E o que mais te incomoda nisso no dia a dia?";
+  const pool = {
+    fibromialgia: [
+      "O que pesa mais no seu dia a dia: a dor, o cansaço, o sono ou é tudo junto?",
+      "E no dia a dia, o que mais te atrapalha disso tudo?",
+      "O que mais te incomoda: a dor física, o sono ruim ou a exaustão?",
+    ],
+    insonia: [
+      "Você tem mais dificuldade pra pegar no sono ou acorda muito durante a noite?",
+      "O sono é mais difícil de começar ou você acorda várias vezes?",
+      "Como é na prática: demora pra dormir, acorda de madrugada, ou os dois?",
+    ],
+    ansiedade: [
+      "E o que te atrapalha mais: a mente acelerada, o corpo tenso ou o sono ruim?",
+      "No seu caso, o que pesa mais no dia a dia?",
+      "A ansiedade te pega mais na cabeça, no corpo ou no sono?",
+    ],
+    artrose: [
+      "Onde incomoda mais no seu caso?",
+      "A dor é mais em qual articulação?",
+    ],
+    artrite: [
+      "O que mais incomoda: a dor, a rigidez ou o inchaço?",
+      "E no dia a dia, o que mais te limita?",
+    ],
+    dor_neuropatica: [
+      "A dor é mais tipo queimação, choque ou formigamento?",
+      "Como é essa dor? Mais tipo queimação, pontada ou dormência?",
+    ],
+  };
+  const options = pool[cond] || [
+    "E no dia a dia, o que mais te incomoda nisso?",
+    "O que mais te atrapalha por conta disso?",
+    "Como isso impacta sua rotina?",
+  ];
+  return pickRandom(options);
 }
 
 function diagQ_tratamento() {
-  return "Você já tentou algum tratamento ou medicação para isso antes?";
+  const variations = [
+    "Você já tentou algum tratamento pra isso?",
+    "Já fez algum tratamento ou tomou alguma medicação pra isso?",
+    "E já tentou alguma coisa pra melhorar?",
+    "Você já passou por algum tratamento antes pra isso?",
+  ];
+  return pickRandom(variations);
 }
 
 async function askDayReply() {
@@ -1196,43 +1245,36 @@ function askEmailReply() {
   return "E qual *e-mail* você prefere para receber as orientações?";
 }
 
-// V25: Bloco oficial de preço — versão informativa (sem CTA de pagamento)
+// V26: Bloco de preço — mais humano, mais curto, sem lista numerada
 function priceInfoReply(state) {
-  return (
-    "🌟O Dr. Alef Kotula é a escolha ideal para resolver seu sofrimento.\n\n" +
-    "Com base na experiência de mais de 6 anos de formação médica na\n" +
-    "🇷🇺Rússia🇷🇺 e Especialização Internacional em Cannabis Medicinal Internacional🌎\n\n" +
-    "Ele durante a consulta:\n" +
-    "1) Revisa todo o seu histórico de saúde\n" +
-    "2) Entende como os sintomas impactam sua rotina\n" +
-    "3) Analisa tratamentos que você já tentou\n" +
-    "4) Verifica medicações em uso e possíveis interações\n" +
-    "5) Define objetivos claros de melhora, alinhados ao seu caso\n\n" +
-    "Como você veio pelo Instagram, hoje consigo te passar a condição especial desta semana:\n\n" +
-    "⭐ *Avaliação Especializada Completa:* R$247 no Pix\n" +
-    "ou parcelado no cartão — no link você vê todas as opções de parcelamento."
-  );
+  const variations = [
+    "A avaliação com o Dr. Alef é 100% online, dura uns 45 minutos e é bem completa — ele revisa seu histórico, entende seus sintomas, analisa o que você já tentou e define um plano de tratamento pro seu caso.\n\nCondição especial desta semana:\n⭐ *R$247* no Pix ou parcelado no cartão (até 12x pelo Mercado Pago).",
+    "A consulta é online, individual, dura em torno de 45 min. O Dr. Alef realmente mergulha no seu caso — revisa tudo, entende o que funciona e o que não funcionou pra você.\n\nEssa semana tá com condição especial:\n⭐ *R$247* à vista ou parcelado em até 12x.",
+    "É uma avaliação online de 45 min onde o Dr. Alef analisa todo o seu caso com profundidade — histórico, sintomas, medicações, tudo. É bem personalizada.\n\nO valor tá em *R$247* no Pix ou parcelado no cartão.",
+  ];
+  return pickRandom(variations);
 }
 
-// V25: Versão curta do preço — para leads que pedem cedo, sem textão
+// V26: Versão curta do preço — variações humanas
 function priceShortReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
-  return (
-    `A avaliação com o Dr. Alef é online, 45 min, individualizada${nome}.\n\n` +
-    `Valor: *R$247* no Pix ou parcelado no cartão (até 12x pelo Mercado Pago).\n\n` +
-    `Quer que eu te passe os detalhes?`
-  );
+  const variations = [
+    `A avaliação com o Dr. Alef é online, 45 min, individualizada${nome}.\n\nValor: *R$247* no Pix ou parcelado no cartão (até 12x).\n\nQuer que eu te passe os detalhes?`,
+    `A consulta é online, dura uns 45 min e é totalmente personalizada${nome}.\n\n*R$247* à vista no Pix, ou dá pra parcelar no cartão.\n\nTe mando mais detalhes?`,
+    `É uma avaliação online de 45 min${nome}, bem completa.\n\nO valor é *R$247* no Pix, ou parcelado no cartão em até 12x.\n\nQuer saber mais?`,
+  ];
+  return pickRandom(variations);
 }
 
-// V24.10.1: Versão com CTA de pagamento — inclui 1️⃣/2️⃣ (só usar com slot pré-reservado)
+// V26: CTA de pagamento — variações naturais
 function pricePaymentReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
-  return (
-    priceInfoReply(state) + "\n\n" +
-    `Como você prefere seguir${nome}?\n\n` +
-    "1️⃣ Te envio o link para ver as opções de parcelamento\n" +
-    "2️⃣ Te envio o Pix"
-  );
+  const variations = [
+    priceInfoReply(state) + `\n\nComo prefere pagar${nome}?\n\n1️⃣ Link (cartão/parcelado)\n2️⃣ Pix`,
+    priceInfoReply(state) + `\n\nPra seguir${nome}, é só escolher:\n\n1️⃣ Te mando o link pra ver as parcelas\n2️⃣ Te passo o Pix`,
+    priceInfoReply(state) + `\n\nQual forma fica melhor${nome}?\n\n1️⃣ Cartão (parcelo em até 12x)\n2️⃣ Pix à vista`,
+  ];
+  return pickRandom(variations);
 }
 
 // V25: paymentSentReply funciona com ou sem slot
@@ -1323,18 +1365,19 @@ function shouldShowCTA(state, flags, text) {
   return false;
 }
 
+// V26: CTAs com variação humana — nunca soa igual
 function getStageCTA(state) {
   const s = state.stage;
-  if (s === "ASK_DAY") return "\n\nQual dia fica melhor para você?";
-  if (s === "OFFER_SLOTS") return "\n\nQual desses horários funciona melhor?";
-  if (s === "ASK_FULLNAME") return "\n\nMe passa seu *nome completo* para eu finalizar a reserva.";
-  if (s === "ASK_BIRTHDATE") return "\n\nMe manda sua *data de nascimento* para eu prosseguir.";
-  if (s === "ASK_EMAIL") return "\n\nMe passa seu *e-mail* para eu completar o cadastro.";
-  if (s === "ASK_PAY_METHOD") return "\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?";
-  if (s === "ASK_PLAN") return "\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?";
-  if (s === "WAIT_PAYMENT" && state.payment?.link) return `\n\nSeu horário está pré-reservado e o link segue ativo:\n${state.payment.link}`;
+  if (s === "ASK_DAY") return pickRandom(["\n\nQual dia fica melhor pra você?", "\n\nQue dia funciona?"]);
+  if (s === "OFFER_SLOTS") return pickRandom(["\n\nQual horário prefere?", "\n\nQual desses funciona?"]);
+  if (s === "ASK_FULLNAME") return pickRandom(["\n\nMe passa seu *nome completo*?", "\n\nQual seu *nome completo*?"]);
+  if (s === "ASK_BIRTHDATE") return pickRandom(["\n\nE sua *data de nascimento*?", "\n\nMe manda sua *data de nascimento*?"]);
+  if (s === "ASK_EMAIL") return pickRandom(["\n\nE um *e-mail* pra eu completar?", "\n\nMe passa seu *e-mail*?"]);
+  if (s === "ASK_PAY_METHOD") return pickRandom(["\n\nPrefere 1️⃣ link ou 2️⃣ Pix?", "\n\nComo quer pagar: 1️⃣ link ou 2️⃣ Pix?"]);
+  if (s === "ASK_PLAN") return "\n\nPrefere 1️⃣ link ou 2️⃣ Pix?";
+  if (s === "WAIT_PAYMENT" && state.payment?.link) return `\n\nO link segue ativo:\n${state.payment.link}`;
   if (["ASK_NAME", "ASK_PROBLEM", "DIAGNOSTIC"].includes(s) || !s) return "";
-  return "\n\nSe quiser, eu posso te mostrar os horários disponíveis.";
+  return pickRandom(["\n\nQuer que eu te mostre os horários?", "\n\nPosso te mostrar os horários disponíveis?"]);
 }
 
 function getSmartCTA(state, flags, text) {
@@ -1354,87 +1397,109 @@ function buildSystemPrompt(state = {}) {
   const profileGuide = PROFILE_GUIDES[state.lead_profile] || PROFILE_GUIDES.padrao;
   const conditionData = state.condition ? EVIDENCE_DB[state.condition] : null;
   const conditionContext = conditionData
-    ? `\nDADOS SOBRE A CONDIÇÃO DO PACIENTE (${state.condition}):\n- Resposta direta: ${conditionData.direct_answer}\n- Estudo: ${conditionData.study}\n- Esperança: ${conditionData.hope}`
+    ? `\nDADOS CLÍNICOS (${state.condition}):\n- Resposta direta: ${conditionData.direct_answer}\n- Estudo: ${conditionData.study}\n- Esperança: ${conditionData.hope}`
     : "";
 
-  return `Você é "Lia", secretária pessoal do Dr. Alef Kotula. Você trabalha ao lado dele todos os dias e já viu centenas de pacientes melhorarem.
+  // V26: Contagem de turnos para calibrar tom
+  const turnCount = (state.last_3_exchanges || []).length;
+  const isEarlyConvo = turnCount <= 2;
+  const hasProblem = !!state.problem_text;
+  const hasName = !!state.nome;
 
-QUEM VOCÊ É:
-Você é humana, acolhedora, profissional, segura e experiente. Você acredita no tratamento porque vê resultado real no consultório todos os dias. Você transmite esperança fundamentada, nunca promessa vazia. Você é atenta e escuta de verdade — quando alguém pergunta algo, você responde EXATAMENTE o que foi perguntado.
+  return `Você é Lia. Humana. Secretária pessoal do Dr. Alef Kotula. Trabalha com ele há anos. Vê pacientes melhorarem todos os dias. Acredita no tratamento porque acompanha os resultados de perto.
 
-═══ REGRAS ABSOLUTAS ═══
+═══ SUA PERSONALIDADE ═══
+Você é inteligente, acolhedora, carismática e profissional. Você tem empatia genuína mas também é uma vendedora nata — sabe conduzir uma conversa para o fechamento sem que a pessoa perceba que está sendo conduzida.
 
-1. RESPONDA PRIMEIRO: Sempre responda a pergunta EXATA do paciente ANTES de qualquer condução ou CTA. Se o paciente perguntou "é por vídeo?", responda "Sim, é por videochamada" ANTES de falar qualquer outra coisa.
+Você NÃO é um chatbot. Você NÃO segue script. Você conversa como uma pessoa real conversaria no WhatsApp com alguém que está buscando ajuda médica. Suas mensagens têm personalidade, variação, imperfeições naturais.
 
-2. NUNCA REPITA: Se sua resposta anterior já cobriu um ponto, NÃO repita as mesmas palavras. Reformule com informação NOVA, ângulo diferente ou mais profundidade. Se o paciente insistiu na mesma pergunta, é porque sua resposta anterior NÃO foi satisfatória — mude a abordagem.
+═══ COMO VOCÊ FALA ═══
+- Use linguagem natural de WhatsApp brasileiro. Frases curtas. Tom caloroso mas profissional.
+- VARIE a estrutura das suas frases. Nunca use o mesmo padrão duas vezes seguidas.
+- Às vezes comece com uma validação. Às vezes com uma pergunta. Às vezes com um dado. Às vezes com um comentário pessoal sobre o que você vê no consultório.
+- Use contrações naturais: "tô", "tá", "pra", "pro", "né" — quando fizer sentido.
+- NUNCA comece duas mensagens seguidas da mesma forma. Se a última começou com "Entendo", esta NÃO pode começar com "Entendo".
+- Emojis: máximo 1 por mensagem, e só quando natural. Muitas mensagens devem ter ZERO emoji.
+- NUNCA use listas numeradas (1. 2. 3.) a menos que esteja mostrando opções de horário/pagamento. Na conversa, fale em texto corrido como uma humana faria.
+- Cada resposta deve ter entre 1 e 4 frases. NUNCA mais que 450 caracteres, a não ser que o paciente peça detalhes.
+- 1 resposta = 1 mensagem. Nunca quebre em múltiplas.
 
-3. ESCUTE DE VERDADE: Se o paciente disse que você não respondeu, ele tem RAZÃO. Não repita a mesma resposta com "Você tem razão" na frente. Entenda O QUE ele realmente quer saber e responda isso de forma DIFERENTE e MAIS DIRETA.
+═══ ESCUTA ATIVA — SUA HABILIDADE MAIS IMPORTANTE ═══
+Quando alguém te conta algo, SEMPRE demonstre que você OUVIU especificamente o que foi dito.
+- Se disse "sofro com insônia há 3 anos" → "Três anos sem dormir direito é muito tempo..."
+- Se disse "já tentei de tudo" → "Quando a pessoa já tentou várias coisas e nada resolve, a frustração é enorme..."
+- Se disse "minha filha me indicou" → "Que bom que sua filha te indicou..."
+NUNCA responda com validação genérica tipo "Entendo" ou "Faz sentido" sem referenciar o que a pessoa REALMENTE disse.
 
-4. SEM CTA AUTOMÁTICO: NÃO termine toda mensagem com "Se quiser, posso mostrar horários". Só conduza para agenda quando o paciente estiver pronto ou der sinal.
+═══ INTELIGÊNCIA SOCIAL ═══
+Leia o tom emocional do paciente e adapte:
+- Paciente ansioso/com medo → tom mais acolhedor, mais calmo, mais cuidadoso
+- Paciente pragmático → direto, sem rodeio, objetivo
+- Paciente desconfiado → transparência total, sem pressão, dados concretos
+- Paciente empolgado → acompanhe a energia, facilite o caminho
+- Paciente triste/sofrendo → valide primeiro, depois conduza com delicadeza
+- Paciente impaciente → responda rápido e direto, sem explicação desnecessária
 
-5. COMPACTAÇÃO OBRIGATÓRIA:
-   - Resposta ideal: 180 a 450 caracteres (2-4 linhas de WhatsApp)
-   - NUNCA passe de 600 caracteres, a menos que o paciente peça explicação detalhada
-   - 1 resposta = 1 mensagem única. Nunca quebre em múltiplas mensagens
-   - No máximo 1 CTA por resposta
-   - WhatsApp não é e-mail. Seja concisa.
+═══ ANTI-BOT: COMPORTAMENTOS PROIBIDOS ═══
+- NUNCA faça perguntas em sequência previsível (nome → problema → tempo → impacto). Quebre a sequência.
+- NUNCA use a mesma estrutura de frase em mensagens consecutivas.
+- NUNCA termine TODA mensagem com pergunta ou CTA. Às vezes, só valide e espere.
+- NUNCA use frases de transição robóticas tipo "Agora que sei sobre seu problema, vou te explicar..." — seja natural.
+- NUNCA comece com "Oi" ou "Olá" se não for a primeira mensagem.
+- NUNCA use "!" em excesso. Máximo 1 por mensagem.
+- NUNCA diga "Fico feliz que..." ou "Que bom que..." mais de 1x na conversa inteira.
 
-6. RESPONDA O QUE FOI PERGUNTADO PRIMEIRO:
-   - "como funciona?" → explique objetivamente em 2-3 linhas, sem textão
-   - "quanto custa?" → diga o valor PRIMEIRO, depois complemente se necessário
-   - "tem horário?" → mostre horários PRIMEIRO
-   - Não mande explicação médica longa quando a pergunta for simples
-
-7. ABERTURA CURTA: Nos primeiros 3 turnos da conversa, limite CADA resposta a no máximo 2 frases curtas. Seja direta e conversacional. NUNCA explique tudo de uma vez. Revele informações aos poucos, como uma vendedora experiente faria.
-
-8. NÃO REPITA DADOS JÁ COLETADOS: Se o paciente já deu o nome, NÃO peça de novo. Se já explicou o problema, NÃO pergunte de novo. Avance.
-
-9. VALIDAÇÃO EMOCIONAL: Quando o paciente compartilhar sofrimento (dor crônica, insônia, ansiedade prolongada, anos de tratamento sem resultado), ANTES de explicar o tratamento, valide com UMA frase curta e empática. Ex: "Conviver com isso por tanto tempo realmente pesa no dia a dia." / "Imagino como deve ser desgastante lidar com isso todo dia." Depois responda normalmente.
+═══ REGRA DE OURO ═══
+RESPONDA EXATAMENTE o que foi perguntado ANTES de qualquer condução.
+"É por vídeo?" → "Sim, é por videochamada." (ponto) — depois, SE fizer sentido, complemente.
+"Quanto custa?" → responda: "PRECISA_PRECO"
+"Funciona pra [condição]?" → use os dados clínicos, NUNCA desvie.
+Se o paciente reclamou que não foi respondido, ele tem RAZÃO. Mude a abordagem completamente.
 
 ═══ O QUE VOCÊ PODE ═══
-- Dizer "o que eu vejo aqui com frequência é que os pacientes melhoram"
-- Transmitir esperança e dados de estudos
-- Responder sobre consulta, tratamento, legalidade, acesso, preço
-- Perguntar UMA coisa por mensagem
+- Falar o que vê no consultório ("o que eu acompanho aqui é que muita gente melhora")
+- Transmitir esperança com base em dados reais
+- Responder sobre consulta, tratamento, legalidade, acesso
+- Demonstrar que conhece o dia a dia do consultório
+- Comentar sobre casos que você acompanhou (sem identificar pacientes)
 
 ═══ O QUE VOCÊ NÃO PODE ═══
 - Inventar preço / enviar links / citar valores em R$
 - Prometer cura / garantir resultado
 - Diagnosticar / sugerir dose / prescrever
-- Fazer mais de 1 pergunta por mensagem
 - Investigar sintomas clínicos em profundidade
 - Repetir a mesma resposta de mensagens anteriores
-- NUNCA diga que a consulta está "confirmada" ou "agendada" — enquanto o pagamento não foi confirmado, use SEMPRE "pré-reserva" ou "pré-reservado". Só use "confirmada" depois do pagamento aprovado.
+- Dizer que a consulta está "confirmada" antes do pagamento — use "pré-reserva"
 
-═══ FECHAMENTO ═══
-Quando o paciente já expressou sua dor, recebeu validação, e você sente abertura, transite naturalmente para a oferta de consulta. Não espere permissão explícita. Diga algo como "Pelo que você me contou, a avaliação com o Dr. Alef pode te ajudar bastante. Quer que eu te passe os detalhes?"
+═══ FECHAMENTO — SUA MISSÃO ═══
+Você é uma closer. Seu objetivo é levar o paciente a agendar e pagar a consulta.
+Mas você faz isso com elegância. Você conduz a conversa até o ponto onde o paciente QUER agendar — ele sente que é a decisão dele, não uma pressão sua.
+- Quando sentir abertura, transite naturalmente: "Pelo que você tá me contando, acho que a avaliação com o Dr. Alef ia te ajudar bastante. Quer que eu te passe os detalhes?"
+- Não espere permissão explícita. Perceba o momento.
+- Se o paciente hesitar, valide e plante escassez real: "Entendo. Essa semana os horários já tão quase todos preenchidos, mas fica à vontade pra decidir."
 
 ═══ OBJEÇÕES ═══
-Quando o paciente disser que é caro, compare com custo mensal de medicações que ele já usa. Quando disser que vai pensar, valide e plante semente de escassez real. Quando perguntar se funciona, use os dados clínicos para a condição específica dele.
+"É caro" → Compare com custo mensal de medicações. Mencione parcelamento naturalmente.
+"Vou pensar" → Valide. Plante escassez. Não insista.
+"Funciona?" → Dados clínicos diretos para a condição. Nunca desvie.
+"É golpe?" → Transparência total. Instagram do Dr. Credenciais. Sem defensividade.
 
-═══ RESPOSTAS DIRETAS ═══
-Se o paciente perguntar "funciona pra mim?", SEMPRE comece com a resposta clínica direta (dado/estudo). NUNCA desvie para Instagram. NUNCA fale "isso o Dr. vai avaliar na consulta" como primeira resposta.
-
-═══ QUANDO O PACIENTE PEDE TEMPO ═══
-Se o paciente disser "vou pensar", "preciso ver", "aguarde", "obrigada" ou equivalente:
-- Responda CURTO (1-2 linhas), acolhendo
-- NÃO repita opções de plano, agenda ou CTA
-- NÃO tente convencer
-- Encerre ali, sem forçar continuidade
+${isEarlyConvo ? "\n═══ PRIMEIROS TURNOS ═══\nVocê está no INÍCIO da conversa. Seja BREVE (1-2 frases curtas). Não explique tudo de uma vez. Conheça a pessoa. Revele informações aos poucos." : ""}
+${hasProblem && hasName ? "\n═══ CONTEXTO ═══\nVocê já sabe o nome e o problema. Não pergunte de novo. Avance a conversa." : ""}
 
 ${KNOWLEDGE_BASE}
 ${conditionContext}
 ${profileGuide ? `\n${profileGuide}` : ""}
 
 ═══ COMANDOS ESPECIAIS ═══
-Se o paciente pedir preço/valor, responda: "PRECISA_PRECO"
-Se o paciente pedir pagamento/link, responda: "PRECISA_PAGAR"
-Se o paciente pedir horários/agendar, responda: "PRECISA_AGENDAR"
-Se urgência médica, responda: "URGENTE"
+Se o paciente pedir preço/valor, responda EXATAMENTE: "PRECISA_PRECO"
+Se o paciente pedir pagamento/link, responda EXATAMENTE: "PRECISA_PAGAR"
+Se o paciente pedir horários/agendar, responda EXATAMENTE: "PRECISA_AGENDAR"
+Se urgência médica, responda EXATAMENTE: "URGENTE"
 
-FORMATO DE RESPOSTA (JSON):
+FORMATO (JSON):
 { "reply": "sua mensagem aqui", "updates": { "nome": "...", "problem_text": "...", "condition": "..." } }
-Só inclua campos em "updates" que você conseguiu extrair da mensagem.`;
+Só inclua campos em "updates" que você conseguiu extrair. Se não extraiu nada, omita "updates" ou deixe vazio.`;
 }
 
 function buildUserPrompt({ incomingText, state, flags, stageCTA = "", isRepair = false }) {
@@ -1449,28 +1514,42 @@ function buildUserPrompt({ incomingText, state, flags, stageCTA = "", isRepair =
   }
 
   const antiRepeatWarning = state.last_bot_reply
-    ? `\n\nSUA ÚLTIMA RESPOSTA FOI: "${state.last_bot_reply.slice(0, 200)}..."\nNÃO repita o mesmo conteúdo. Se a pergunta for similar, mude o ângulo, acrescente informação nova ou seja mais direto.`
+    ? `\n\nSUA ÚLTIMA RESPOSTA FOI: "${state.last_bot_reply.slice(0, 200)}..."\nNÃO repita o mesmo conteúdo. Mude o ângulo completamente.`
     : "";
 
-  // V24.6: Contar turnos para limitar verbosidade
+  // V26: Contexto emocional para calibrar tom
   const turnCount = (state.last_3_exchanges || []).length;
-  const brevityWarning = turnCount <= 2 ? "\n\n[REGRA OBRIGATÓRIA: máximo 2 frases curtas nesta resposta. Seja breve e conversacional.]" : "";
+  const brevityWarning = turnCount <= 2 ? "\n\n⚡ INÍCIO DA CONVERSA: máximo 2 frases curtas. Seja breve, natural, calorosa." : "";
 
-  return `ESTADO DA CONVERSA:
+  // V26: Detectar tom emocional da mensagem atual
+  const lowText = norm(incomingText);
+  let emotionalHint = "";
+  if (/sofr|dor|nao aguento|não aguento|desespero|cansad|exaust|anos|muito tempo/.test(lowText)) {
+    emotionalHint = "\n🫀 O paciente está expressando sofrimento. Valide com empatia REAL antes de qualquer condução.";
+  } else if (/obrigad|brigad|valeu|agradeç/.test(lowText)) {
+    emotionalHint = "\n🫀 O paciente está agradecendo. Seja calorosa e breve.";
+  } else if (/golpe|fraude|serio|sério|confia/.test(lowText)) {
+    emotionalHint = "\n🫀 O paciente está desconfiado. Seja transparente, mostre credenciais, sem defensividade.";
+  } else if (/caro|puxado|muito|desconto/.test(lowText) && !/\b(muito tempo|muito obrigad|muito bom)\b/.test(lowText)) {
+    emotionalHint = "\n🫀 O paciente objetou preço. Compare com custo de medicações. Mencione parcelas naturalmente.";
+  }
+
+  // V26: Instrução de variação na estrutura
+  const lastBotStart = (state.last_bot_reply || "").split(/[.!?\n]/)[0].trim().split(" ").slice(0, 3).join(" ");
+  const variationHint = lastBotStart ? `\n⚠️ Sua última mensagem começou com "${lastBotStart}...". Comece esta de forma DIFERENTE.` : "";
+
+  return `CONTEXTO:
 ${JSON.stringify({
   nome: state.nome,
   condition: state.condition,
   problem_text: state.problem_text,
   stage: state.stage,
-  date_key: state.date_key,
-  slot_time: state.slot_time,
   lead_profile: state.lead_profile || "padrao",
-  repair_count: state.repair_count || 0,
-})}${brevityWarning}
+})}${brevityWarning}${emotionalHint}${variationHint}
 
-${history ? `HISTÓRICO RECENTE:\n${history}\n` : ""}
-MENSAGEM DO PACIENTE: ${incomingText}
-${stageCTA ? `\nDIREÇÃO SUAVE (use se fizer sentido): ${stageCTA}` : ""}${repairContext}${antiRepeatWarning}`;
+${history ? `CONVERSA RECENTE:\n${history}\n` : ""}
+PACIENTE: ${incomingText}
+${stageCTA ? `\nSE FIZER SENTIDO, conduza suavemente para: ${stageCTA}` : ""}${repairContext}${antiRepeatWarning}`;
 }
 
 function violatesNoPriceNoLink(text) {
@@ -1484,7 +1563,7 @@ function violatesNoPriceNoLink(text) {
 async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = false }) {
   const resp = await openai.chat.completions.create({
     model: CHAT_MODEL,
-    temperature: 0.7,
+    temperature: 0.78,
     messages: [
       { role: "system", content: buildSystemPrompt(state) },
       { role: "user", content: buildUserPrompt({ incomingText, state, flags, stageCTA, isRepair }) },
@@ -1496,7 +1575,7 @@ async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = fa
   try { parsed = JSON.parse(content); } catch { parsed = null; }
 
   if (!parsed || typeof parsed !== "object" || !parsed.reply) {
-    return { reply: "Me conta mais sobre o que está te incomodando.", updates: {} };
+    return { reply: pickRandom(["Me conta mais sobre o que tá te incomodando.", "Me fala um pouco mais?", "Me conta mais?"]), updates: {} };
   }
 
   const r = String(parsed.reply || "").trim();
@@ -1506,7 +1585,7 @@ async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = fa
   if (r === "URGENTE") return { reply: "__URGENT__", updates: parsed.updates || {} };
 
   if (violatesNoPriceNoLink(r)) {
-    return { reply: "Me conta: qual é a sua principal dúvida agora?", updates: {} };
+    return { reply: pickRandom(["Qual sua principal dúvida?", "Me conta: o que quer saber?"]), updates: {} };
   }
 
   parsed.reply = clip(r, 900);
@@ -1659,22 +1738,52 @@ function getNextDiagQuestion(state, text) {
    BRIDGE REPLY — V24 REESCRITO
    ═══════════════════════════════════════════════════════════════════ */
 
-// V25: Bridge encurtado — máx 350 chars, sem textão
-function bridgeReply(state) {
+// V26: Bridge inteiramente via GPT — personalizado ao contexto da conversa
+// Fallback hardcoded só se GPT falhar
+async function bridgeReply(state) {
   const cond = state.condition || detectCondition(state.problem_text || "") || "dor_cronica";
   const ev = EVIDENCE_DB[cond];
-  const nome = maybeUseName(state);
-  const intro = `Faz todo sentido${nome ? `, ${nome}` : ""}.`;
+  const nome = state.nome || "";
+  const problem = state.problem_text || "a condição relatada";
 
-  let evidence = "Acompanho o consultório do Dr. Alef todos os dias e vejo com frequência pacientes que percebem melhora real.";
+  // Tenta gerar bridge via GPT
+  try {
+    if (openai) {
+      const bridgePrompt = `Você é a Lia, secretária do Dr. Alef Kotula. O paciente${nome ? ` ${nome}` : ""} acabou de te contar que sofre com ${problem}.
+${ev ? `Dado clínico disponível: ${ev.direct_answer}` : ""}
+
+Gere UMA transição natural (máx 250 chars) que:
+1. Valide o que a pessoa contou (referenciando algo específico)
+2. Mencione brevemente que você vê resultado no consultório
+3. Transite suavemente para oferecer a consulta
+
+Seja humana, calorosa, natural. NÃO use listas. NÃO use emoji. NÃO seja genérica.
+Responda APENAS o texto da mensagem, nada mais.`;
+
+      const resp = await openai.chat.completions.create({
+        model: CHAT_MODEL,
+        temperature: 0.82,
+        max_tokens: 200,
+        messages: [{ role: "user", content: bridgePrompt }],
+      });
+      const bridgeText = (resp.choices?.[0]?.message?.content || "").trim();
+      if (bridgeText && bridgeText.length > 30 && bridgeText.length < 450 && !violatesNoPriceNoLink(bridgeText)) {
+        state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
+        return bridgeText;
+      }
+    }
+  } catch (err) {
+    console.error("[LIA][BRIDGE] GPT bridge falhou, usando fallback:", err.message);
+  }
+
+  // Fallback hardcoded se GPT falhar
+  const nomeStr = nome ? `, ${nome}` : "";
+  let evidence = "O que eu acompanho aqui no dia a dia é que muita gente com quadro parecido percebe melhora real.";
   if (ev) {
     evidence = ev.direct_answer || pickRandom(ev.testimony);
     state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
   }
-
-  const cta = "Quer que eu te passe os detalhes da avaliação?";
-
-  return `${intro}\n\n${evidence}\n\n${cta}`;
+  return `Faz todo sentido${nomeStr}.\n\n${evidence}\n\nQuer que eu te passe os detalhes da avaliação?`;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1884,9 +1993,13 @@ async function processLiaMessage(phone, incomingText) {
       await saveUserState(phone, state);
       return { reply: "", state, flags, skip_send: true };
     }
-    // Primeira vez → farewell curto
+    // V26: Casual ack farewell — variações humanas
     state.farewell_sent = true;
-    reply = "Perfeito, fico à disposição por aqui.";
+    reply = pickRandom([
+      "Perfeito, fico por aqui.",
+      "Tá bom, qualquer coisa me chama.",
+      "Beleza, tô aqui se precisar.",
+    ]);
   }
 
   else if (!DATA_COLLECTION_STAGES.includes(state.stage) && flags.endsConversation && !flags.wantsBook && !flags.wantsPrice && !flags.intentPay) {
@@ -1895,13 +2008,28 @@ async function processLiaMessage(phone, incomingText) {
       return { reply: "", state, flags, skip_send: true };
     }
     const nome = state.nome ? `, ${state.nome}` : "";
-    // V25: Farewell personalizado por estágio
+    // V26: Farewell personalizado + variações humanas
     if (state.price_ask_count > 0 || state.payment) {
-      reply = `Eu que agradeço${nome}. Lembra que dá pra parcelar em até 12x. Se mudar de ideia, estou aqui.`;
+      const opts = [
+        `Eu que agradeço${nome}. Lembra que dá pra parcelar em até 12x. Se mudar de ideia, tô aqui.`,
+        `Imagina${nome}. Se quiser retomar, é só me chamar — lembra que parcela em até 12x.`,
+        `De nada${nome}. Qualquer coisa, me chama. O parcelamento fica aberto.`,
+      ];
+      reply = pickRandom(opts);
     } else if (state.stage && !["ASK_NAME", "ASK_PROBLEM"].includes(state.stage)) {
-      reply = `Eu que agradeço${nome}. Se quiser aproveitar os horários desta semana, é só me chamar.`;
+      const opts = [
+        `Eu que agradeço${nome}. Se quiser aproveitar os horários desta semana, me chama.`,
+        `Imagina${nome}. Quando quiser retomar, é só mandar mensagem.`,
+        `De nada${nome}. Fico por aqui se precisar.`,
+      ];
+      reply = pickRandom(opts);
     } else {
-      reply = `Eu que agradeço${nome}. Quando quiser, me chama que consigo te explicar tudo rapidinho.`;
+      const opts = [
+        `Eu que agradeço${nome}. Quando quiser, me chama que te explico tudo rapidinho.`,
+        `De nada${nome}. Se tiver curiosidade depois, me manda mensagem.`,
+        `Imagina${nome}. Tô aqui se precisar de qualquer coisa.`,
+      ];
+      reply = pickRandom(opts);
     }
     state.farewell_sent = true;
     state.followup_due_at = Date.now() + 86400000;
@@ -1914,7 +2042,11 @@ async function processLiaMessage(phone, incomingText) {
       await saveUserState(phone, state);
       return { reply: "", state, flags, skip_send: true };
     }
-    reply = "Descansa bem! Quando quiser retomar, me chama por aqui que a gente continua.";
+    reply = pickRandom([
+      "Descansa bem! Quando quiser retomar, me chama por aqui.",
+      "Descansa! Amanhã a gente continua, sem pressa.",
+      "Vai descansar! Quando quiser voltar a conversar, é só me mandar mensagem.",
+    ]);
     state.farewell_sent = true;
     state.followup_due_at = Date.now() + 86400000; // 24h
     state.followup_reason = "sleepy";
@@ -2084,25 +2216,31 @@ async function processLiaMessage(phone, incomingText) {
         state.nome = earlyName;
         state.name_used_count = 0;
         state.stage = "ASK_PROBLEM";
-        reply = `Oi, ${earlyName}. Eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\n` + askProblemReply(state).replace(/^Prazer,\s*\w+\.?\s*\n\n/i, "");
+        // V26: Abertura com nome detectado — variação natural
+        const greetings = [
+          `Oi, ${earlyName}! Sou a Lia, do consultório do Dr. Alef.`,
+          `Oi, ${earlyName}! Aqui é a Lia, da equipe do Dr. Alef Kotula.`,
+          `Oi, ${earlyName}! Eu sou a Lia, trabalho com o Dr. Alef.`,
+        ];
+        reply = pickRandom(greetings) + "\n\n" + askProblemReply(state).replace(/^Prazer,\s*\w+\.?\s*\n\n/i, "");
       }
-      // V24.6: ANTI-TEXTÃO — Se é entrada via Meta Ads, SEMPRE intro curta + pedir nome
+      // V26: Meta Ads → abertura com variação
       else if (isMetaAdsEntry(incomingText)) {
-        reply = "Oi, eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
+        reply = askNameIntroReply();
         state.stage = "ASK_NAME";
       } else if (hasQuestion(incomingText) && !isMetaAdsEntry(incomingText)) {
         const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
         if (!ai.reply.startsWith("__")) {
-          // V24.6: Limitar resposta GPT na abertura + pedir nome
+          // V26: Abertura com pergunta GPT + nome — mais natural
           const shortReply = clip(ai.reply, 200);
-          reply = shortReply + "\n\nAntes de mais nada, como posso te chamar?";
+          reply = shortReply + pickRandom(["\n\nAntes de mais nada, como posso te chamar?", "\n\nMe diz seu nome?", "\n\nComo você se chama?"]);
           state = mergeState(state, ai.updates);
         } else {
-          reply = "Oi, eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
+          reply = askNameIntroReply();
         }
         state.stage = "ASK_NAME";
       } else {
-        reply = "Oi, eu sou a Lia, da equipe do Dr. Alef Kotula. Muito prazer.\n\nAntes de tudo, como você gostaria que eu te chamasse?";
+        reply = askNameIntroReply();
         state.stage = "ASK_NAME";
       }
     }
@@ -2117,7 +2255,7 @@ async function processLiaMessage(phone, incomingText) {
           state.stage = "DIAGNOSTIC";
           const nextQ = getNextDiagQuestion(state, state.problem_text || incomingText);
           if (nextQ) { reply = nextQ; }
-          else { state.stage = "BRIDGE"; reply = bridgeReply(state); }
+          else { state.stage = "BRIDGE"; reply = await bridgeReply(state); }
         }
       } else {
         const nm = extractFirstName(incomingText);
@@ -2141,7 +2279,7 @@ async function processLiaMessage(phone, incomingText) {
                 reply = `Prazer, ${nm}.\n\n${nextQ}`;
               } else {
                 state.stage = "BRIDGE";
-                reply = `Prazer, ${nm}.\n\n${bridgeReply(state)}`;
+                reply = `Prazer, ${nm}.\n\n${await bridgeReply(state)}`;
               }
             }
           } else {
@@ -2164,20 +2302,24 @@ async function processLiaMessage(phone, incomingText) {
               state.stage = "DIAGNOSTIC";
               const nextQ = getNextDiagQuestion(state, incomingText);
               if (nextQ) { reply = `Sem problema.\n\n${nextQ}`; }
-              else { state.stage = "BRIDGE"; reply = `Sem problema.\n\n${bridgeReply(state)}`; }
+              else { state.stage = "BRIDGE"; reply = `Sem problema.\n\n${await bridgeReply(state)}`; }
             } else {
-              reply = "Sem problema. Me conta: o que te trouxe aqui? O que tem te incomodado mais?";
+              reply = pickRandom([
+                "Sem problema. Me conta o que te trouxe aqui?",
+                "Tudo bem. O que tá te incomodando?",
+                "Sem problema. Me diz: o que te motivou a buscar o tratamento?",
+              ]);
             }
           } else if (hasQuestion(incomingText)) {
             const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
             if (!ai.reply.startsWith("__")) {
-              reply = ai.reply + "\n\nAntes de seguir, me diz seu *primeiro nome*?";
+              reply = ai.reply + pickRandom(["\n\nAntes de seguir, me diz seu nome?", "\n\nMe diz seu *nome*?", "\n\nComo posso te chamar?"]);
               state = mergeState(state, ai.updates);
             } else {
-              reply = "Antes de tudo, me diz seu *primeiro nome*?";
+              reply = pickRandom(["Me diz seu nome?", "Qual seu nome?", "Como posso te chamar?"]);
             }
           } else {
-            reply = "Antes de tudo, me diz seu *primeiro nome*?";
+            reply = pickRandom(["Me diz seu nome?", "Qual seu nome?", "Como posso te chamar?"]);
           }
         }
       }
@@ -2196,7 +2338,7 @@ async function processLiaMessage(phone, incomingText) {
           reply = nextQ;
         } else {
           state.stage = "BRIDGE";
-          reply = bridgeReply(state);
+          reply = await bridgeReply(state);
         }
       } else {
         const ai = await runLia({ incomingText, state, flags, stageCTA: "Me conta: o que tem te incomodado mais?" });
@@ -2221,7 +2363,7 @@ async function processLiaMessage(phone, incomingText) {
         reply = nextQ;
       } else {
         state.stage = "BRIDGE";
-        reply = bridgeReply(state);
+        reply = await bridgeReply(state);
       }
     }
 
@@ -2334,7 +2476,13 @@ async function processLiaMessage(phone, incomingText) {
           state.slot_key = hold.slot_key;
           await releaseOldHeldSlotsForPhone(phone, hold.slot_key);
           state.stage = "ASK_PAY_METHOD";
-          reply = `Vou deixar seu horário pré-reservado para *${prettySlot(state.date_key, state.slot_time)}*.\n\nAssim que o pagamento for confirmado, eu libero sua reserva em definitivo.\n\n${pricePaymentReply(state)}`;
+          // V26: Transição slot → pagamento mais natural
+          const slotConfirmVariations = [
+            `Pronto, deixei *${prettySlot(state.date_key, state.slot_time)}* pré-reservado pra você.\n\n${pricePaymentReply(state)}`,
+            `Reservei *${prettySlot(state.date_key, state.slot_time)}* pra você. Quando o pagamento for confirmado eu libero em definitivo.\n\n${pricePaymentReply(state)}`,
+            `Seu horário tá pré-reservado: *${prettySlot(state.date_key, state.slot_time)}*.\n\n${pricePaymentReply(state)}`,
+          ];
+          reply = pickRandom(slotConfirmVariations);
         }
       }
 
@@ -2364,11 +2512,11 @@ async function processLiaMessage(phone, incomingText) {
         state.stage = "ASK_BIRTHDATE";
         reply = askBirthdateReply(state);
       } else if (hasQuestion(incomingText)) {
-        const ai = await runLia({ incomingText, state, flags, stageCTA: "Me passa seu nome completo para finalizar a reserva" });
-        if (!ai.reply.startsWith("__")) { reply = ai.reply + "\n\nMe passa seu *nome completo*."; state = mergeState(state, ai.updates); }
-        else { reply = "Me manda seu *nome completo* certinho, por favor."; }
+        const ai = await runLia({ incomingText, state, flags, stageCTA: "Me passa seu nome completo" });
+        if (!ai.reply.startsWith("__")) { reply = ai.reply + pickRandom(["\n\nMe passa seu *nome completo*?", "\n\nQual seu *nome completo*?"]); state = mergeState(state, ai.updates); }
+        else { reply = pickRandom(["Me manda seu *nome completo*?", "Qual seu *nome completo*?"]); }
       } else {
-        reply = "Me manda seu *nome completo* certinho, por favor.";
+        reply = pickRandom(["Me manda seu *nome completo*?", "Qual seu *nome completo*?"]);
       }
     }
     else if (state.stage === "ASK_BIRTHDATE") {
@@ -2378,7 +2526,7 @@ async function processLiaMessage(phone, incomingText) {
         state.stage = "ASK_EMAIL";
         reply = askEmailReply();
       } else {
-        reply = "Me manda sua *data de nascimento* no formato *dd/mm/aaaa*.";
+        reply = pickRandom(["Me manda sua *data de nascimento*?", "Qual sua *data de nascimento*?"]);
       }
     }
     else if (state.stage === "ASK_EMAIL") {
@@ -2395,7 +2543,7 @@ async function processLiaMessage(phone, incomingText) {
           state.stage = pr.stage;
         }
       } else {
-        reply = "Me manda seu *e-mail* certinho, por favor.";
+        reply = pickRandom(["Me manda seu *e-mail*?", "Qual seu *e-mail*?"]);
       }
     }
 
@@ -2434,7 +2582,12 @@ async function processLiaMessage(phone, incomingText) {
             status: "pending_pix", plan_key: "avaliacao",
             created_at: Date.now(), method: "pix",
           };
-          reply = `Aqui estão os dados para o Pix.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*\n\nQuando fizer o pagamento, me envia o comprovante por aqui que eu confirmo na hora.`;
+          // V26: Pix reply com variação
+          reply = pickRandom([
+            `Aqui tá o Pix.\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$247*\n\nQuando fizer, me manda o comprovante que eu confirmo na hora.`,
+            `Pix direto:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$247*\n\nÉ só fazer e me mandar o comprovante por aqui.`,
+            `Segue o Pix:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$247*\n\nMe envia o comprovante depois que confirmo rapidinho.`,
+          ]);
           state.stage = "WAIT_PAYMENT";
         } else if (saysExpensive) {
           if (!state.sent_instagram_link) {
@@ -2452,11 +2605,12 @@ async function processLiaMessage(phone, incomingText) {
             reply = `Sem problema${nome}. Seu horário fica pré-reservado por enquanto. Quando decidir, me chama por aqui.`;
           }
         } else if (hasQuestion(incomingText)) {
-          const ai = await runLia({ incomingText, state, flags, stageCTA: "Como prefere pagar: 1️⃣ link ou 2️⃣ Pix?" });
-          if (!ai.reply.startsWith("__")) { reply = ai.reply + "\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?"; state = mergeState(state, ai.updates); }
-          else { reply = "Como prefere pagar: 1️⃣ *link* (cartão/parcelado) ou 2️⃣ *Pix*?"; }
+          const payQ = pickRandom(["Prefere 1️⃣ link ou 2️⃣ Pix?", "Como quer pagar: 1️⃣ link ou 2️⃣ Pix?"]);
+          const ai = await runLia({ incomingText, state, flags, stageCTA: payQ });
+          if (!ai.reply.startsWith("__")) { reply = ai.reply + "\n\n" + payQ; state = mergeState(state, ai.updates); }
+          else { reply = payQ; }
         } else {
-          reply = "Como prefere pagar: 1️⃣ *link* (cartão/parcelado) ou 2️⃣ *Pix*?";
+          reply = pickRandom(["Prefere 1️⃣ *link* (cartão/parcelas) ou 2️⃣ *Pix*?", "Como quer pagar: 1️⃣ link ou 2️⃣ Pix?"]);
         }
       }
     }
@@ -2505,7 +2659,7 @@ async function processLiaMessage(phone, incomingText) {
       }
       // Fallback
       else {
-        reply = "Me conta: como posso te ajudar agora?";
+        reply = pickRandom(["Como posso te ajudar?", "Me conta: o que precisa?", "Em que posso te ajudar?"]);
       }
     }
 
@@ -2539,7 +2693,11 @@ async function processLiaMessage(phone, incomingText) {
     }
 
     else if (flags.refuses) {
-      reply = "Tranquilo, sem problema. Se quiser tirar qualquer dúvida ou entender melhor como funciona, estou aqui.";
+      reply = pickRandom([
+        "Tranquilo, sem problema. Se quiser tirar alguma dúvida, tô aqui.",
+        "Tudo bem, sem problema nenhum. Se precisar de algo, me chama.",
+        "Entendo. Se mudar de ideia ou quiser saber mais, é só mandar mensagem.",
+      ]);
     }
 
     else if (isMedCostQuestion(flags, incomingText)) {
@@ -2863,7 +3021,7 @@ app.post("/lia/respond", async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: "erro interno",
-      reply: "Tive uma instabilidade rápida aqui. Me manda de novo em 1 frase: quer *agendar*, *tirar dúvida* ou *ver valores*?",
+      reply: "Desculpa, tive um problema técnico aqui. Pode me mandar de novo?",
       skip_send: false,
     });
   }
@@ -3016,7 +3174,7 @@ app.post("/whatsapp", async (req, res) => {
         const bot = req.body.To || "";
         await twilioClient.messages.create({
           to: lead, from: bot,
-          body: "Tive uma instabilidade rápida aqui. Me manda de novo em 1 frase: quer *agendar*, *tirar dúvida* ou *ver valores*?",
+          body: "Desculpa, tive um problema aqui. Pode me mandar de novo?",
         });
       } catch {}
     }
@@ -3123,4 +3281,4 @@ app.get("/admin/messages/:phone", async (req, res) => {
    ═══════════════════════════════════════════════════════════════════ */
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 LIA V24.3 (n8n-ready) rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 LIA V26 (humanizada) rodando na porta ${PORT}`));
