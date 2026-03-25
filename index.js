@@ -239,8 +239,7 @@ function authorityInstagramReply(context = "trust") {
 }
 
 const FIXED_SCHEDULE = {
-  // MARÇO 2026
-  "24-03": { dayName: "terça-feira",  slots: ["16h","17h","18h","19h","20h","21h","22h"] },
+  // MARÇO 2026 (24-03 terça removido — já passou)
   "25-03": { dayName: "quarta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h","22h"] },
   "26-03": { dayName: "quinta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h","22h"] },
   "27-03": { dayName: "sexta-feira",  slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h","22h"] },
