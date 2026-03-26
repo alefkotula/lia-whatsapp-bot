@@ -153,6 +153,12 @@ setInterval(() => {
   }
 }, 300000); // a cada 5 min
 
+// V27: Safety filter — remove tokens internos que vazaram para o texto visível
+function sanitizeReply(text) {
+  if (!text) return text;
+  return text.replace(/PRECISA_PRECO|PRECISA_PAGAR|PRECISA_AGENDAR|__NEED_PRICE__|__NEED_PAY__|__NEED_BOOK__|__URGENT__/g, "").replace(/\s{2,}/g, " ").trim();
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    V24.6: FILTRO DE MENSAGENS DE SISTEMA
    Bloqueia msgs do WhatsApp/Meta/operacionais que não são do lead
@@ -199,7 +205,40 @@ function isMetaAdsEntry(text) {
   if (t.length < 40 && /^.{0,10}(gostaria|quero|tenho interesse)/.test(t)) return true;
   // V24.10: Entradas via Instagram
   if (/^.{0,15}(vim pelo instagram|vi no instagram|vi o video|vi o vídeo|vim pelo insta)/i.test(t)) return true;
+  // V27: Entradas via formulário Meta (ads com lead form)
+  if (/preenchi\s+(seu|o)\s+formul[aá]rio/i.test(t)) return true;
+  if (/gostaria de saber mais sobre sua empresa/i.test(t)) return true;
+  if (/nome_completo:|telefone:.*\+55|h[aá]_quanto_tempo/i.test(t)) return true;
   return false;
+}
+
+// V27: Extrai dados estruturados do formulário Meta
+function parseMetaFormData(text) {
+  if (!text) return null;
+  const fields = {};
+  const nameMatch = text.match(/nome_completo:\s*(.+)/i);
+  if (nameMatch) fields.nome_completo = nameMatch[1].trim();
+  const condMatch = text.match(/o_que_voc[eê]_quer_resolver[^:]*:\s*(.+)/i);
+  if (condMatch) fields.condition = condMatch[1].trim();
+  const tempoMatch = text.match(/h[aá]_quanto_tempo[^:]*:\s*(.+)/i);
+  if (tempoMatch) fields.tempo = tempoMatch[1].trim();
+  const interesseMatch = text.match(/voc[eê]_tem_interesse[^:]*:\s*(.+)/i);
+  if (interesseMatch) fields.interesse = interesseMatch[1].trim();
+  const tentouMatch = text.match(/voc[eê]_j[aá]_tentou[^:]*:\s*(.+)/i);
+  if (tentouMatch) fields.tentou_tratamento = tentouMatch[1].trim();
+  if (Object.keys(fields).length >= 2) return fields;
+  return null;
+}
+
+// V27: Extrai primeiro nome limpo do nome_completo do formulário
+function extractFormFirstName(nomeCompleto) {
+  if (!nomeCompleto) return null;
+  // Remove lixo concatenado (ex: "Tina SilvasimAfoncinaSebastianasilva")
+  const parts = nomeCompleto.split(/\s+/);
+  if (!parts.length) return null;
+  let first = parts[0].replace(/[^a-záéíóúâêîôûãõçñ]/gi, "");
+  if (first.length < 2) return null;
+  return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -472,7 +511,8 @@ function extractFirstName(text) {
   const condWords = /^(dor|sono|ansiedade|fibromialgia|artrose|artrite|enxaqueca|coluna|insônia|insonia|lombar|neuropat|depressao|depressão|tristeza|sofrimento|problema|mental|angustia|angústia)/i;
   if (condWords.test(parts[0]) && parts.length <= 2) return null;
 
-  const notNames = /^(oi|ola|olá|bom|boa|dia|tarde|noite|tudo|bem|obrigad|brigad|quero|preciso|gostaria|tenho|sim|nao|não|legal|caro|certo|entendi|entendo|sera|será|claro|ok|verdade|seria|acho|pode|pois|tipo|vou|vai|meu|minha|mas|antes|deixa|outra|esse|essa|como|qual|quando|quanto|onde|porque|por|sofro|sofrer|dificuldade|desespero|socorro|ajuda|tratamento|medicamento|remedio|remédio|prefiro|nenhum|sobre|amanha|amanhã|agora|depois|durante|aqui|la|lá|ali|talvez|assim|entao|então|ainda|sempre|nunca|algo|alguem|alguém|ate|até|ontem|hoje|logo|ja|já|ai|aí|volta|volto|conversa|converso|falo|falar|penso|pensar|dormir|dormo|durmo|vamos|fico|demais|muito|pouco)$/i;
+  // V27: Blocklist expandida — inclui "todos", "dias", "sinto", "cada", temporais e verbos comuns
+  const notNames = /^(oi|ola|olá|bom|boa|dia|dias|tarde|noite|noites|tudo|bem|obrigad|brigad|quero|preciso|gostaria|tenho|sim|nao|não|legal|caro|certo|entendi|entendo|sera|será|claro|ok|verdade|seria|acho|pode|pois|tipo|vou|vai|meu|minha|mas|antes|deixa|outra|outro|esse|essa|como|qual|quando|quanto|onde|porque|por|sofro|sofrer|dificuldade|desespero|socorro|ajuda|tratamento|medicamento|remedio|remédio|prefiro|nenhum|nenhuma|sobre|amanha|amanhã|agora|depois|durante|aqui|la|lá|ali|talvez|assim|entao|então|ainda|sempre|nunca|algo|alguem|alguém|ate|até|ontem|hoje|logo|ja|já|ai|aí|volta|volto|conversa|converso|falo|falar|penso|pensar|dormir|dormo|durmo|vamos|fico|demais|muito|pouco|todos|todo|toda|todas|cada|sinto|faz|faço|horas|vezes|anos|meses|semanas|tempo|gente|pessoa|pessoas|vida|coisa|forma|desde|quase|bastante|realmente|apenas|mesmo|olha|olho|estou|estava|tenha|seria|seria|tambem|também|pra|pois|nem|sei|sabia|morrer|viver|consegue|consigo|posso|desculpa)$/i;
   if (notNames.test(parts[0])) return null;
   // V25: Rejeitar candidatos de 1 caractere (provavelmente não é nome)
   if (parts[0].length < 2) return null;
@@ -581,6 +621,7 @@ function extractPeriodFilter(text) {
   return null;
 }
 
+// V27: Reconhece "22", "22h", "22:00", "22 horas", "20horas" etc
 function extractHourOnly(text) {
   const low = norm(text);
   const m = low.match(/\b([01]?\d|2[0-3])[:h]([0-5]\d)\b/);
@@ -588,16 +629,38 @@ function extractHourOnly(text) {
     const hh = Number(m[1]), mm = Number(m[2]);
     return mm === 0 ? `${hh}h` : `${pad2(hh)}:${pad2(mm)}`;
   }
-  const m2 = low.match(/\b([01]?\d|2[0-3])\s?h\b/);
+  const m2 = low.match(/\b([01]?\d|2[0-3])\s?h(?:oras?)?\b/);
   if (m2) return `${Number(m2[1])}h`;
+  // V27: Número bare entre 7-23 sem "h" — provável horário (ex: "22", "20", "21")
+  const m3 = low.match(/^(\d{1,2})$/);
+  if (m3) {
+    const h = Number(m3[1]);
+    if (h >= 7 && h <= 23) return `${h}h`;
+  }
+  // V27: "22 horas", "20 horas" sem h colado
+  const m4 = low.match(/\b(\d{1,2})\s*horas?\b/);
+  if (m4) {
+    const h = Number(m4[1]);
+    if (h >= 7 && h <= 23) return `${h}h`;
+  }
   return null;
 }
 
+// V27: Reescrita — "22" NÃO deve ser capturado como opção 2
 function extractNumericChoice(text) {
-  const t = norm(text);
-  if (/\b1\b|primeiro|primeira/.test(t)) return 1;
-  if (/\b2\b|segundo|segunda/.test(t)) return 2;
-  if (/\b3\b|terceiro|terceira/.test(t)) return 3;
+  const t = norm(text).trim();
+  // Número isolado (1, 2 ou 3 exatos — sem dígitos adjacentes)
+  if (/(?<!\d)1(?!\d)/.test(t) && !/(?<!\d)1\d/.test(t)) { if (/(?<!\d)1(?!\d)|primeiro|primeira/i.test(t)) return 1; }
+  if (/(?<!\d)2(?!\d)/.test(t) && !/(?<!\d)2\d|\d2(?!\d)/.test(t)) { if (/(?<!\d)2(?!\d)|segundo|segunda/i.test(t)) return 2; }
+  if (/(?<!\d)3(?!\d)/.test(t) && !/(?<!\d)3\d|\d3(?!\d)/.test(t)) { if (/(?<!\d)3(?!\d)|terceiro|terceira/i.test(t)) return 3; }
+  // Aceitar "1ficar", "2ok" etc (número colado com letra, mas NÃO "22", "21", etc)
+  if (/^1[a-záéíóú]/i.test(t)) return 1;
+  if (/^2[a-záéíóú]/i.test(t)) return 2;
+  if (/^3[a-záéíóú]/i.test(t)) return 3;
+  // Palavras ordinais sem número
+  if (/primeiro|primeira/i.test(t) && !/\d/.test(t)) return 1;
+  if (/segundo|segunda/i.test(t) && !/\d/.test(t)) return 2;
+  if (/terceiro|terceira/i.test(t) && !/\d/.test(t)) return 3;
   return null;
 }
 
@@ -975,6 +1038,98 @@ const EVIDENCE_DB = {
     future: ["Ter semanas sem crise, e quando vem, ser mais leve — muita gente aqui relata isso."],
   },
 };
+
+// V27: EMPATHY_POOL — respostas empáticas profundas com história pessoal por condição
+const EMPATHY_POOL = {
+  fibromialgia: [
+    "Fibromialgia é cruel demais... a pessoa sente dor no corpo todo e muita gente nem acredita. Eu vejo isso de perto aqui no consultório.",
+    "Minha tia tem fibromialgia e eu sei como é difícil... ela melhorou muito depois do tratamento com o Dr. Alef, graças a Deus.",
+    "Fibromialgia desgasta o corpo e a mente... a gente vê paciente que chega aqui sem esperança e sai com outra perspectiva.",
+    "Fibromialgia mexe com tudo... sono, energia, humor. A pessoa vai perdendo a qualidade de vida aos poucos. Eu sei como é difícil.",
+    "A minha mãe tem fibromialgia e sofreu por anos até encontrar o tratamento certo. Hoje ela vive outra vida, graças a Deus.",
+  ],
+  "dor crônica": [
+    "Dor crônica tira tudo da pessoa... a energia, o sono, a vontade de fazer as coisas. Eu acompanho isso aqui todo dia.",
+    "Minha mãe conviveu anos com dor crônica. Quando ela finalmente fez o tratamento, disse que voltou a viver. Me emociono até hoje.",
+    "Viver com dor todo dia é desumano... a pessoa vai aguentando, aguentando, e ninguém entende direito o que ela sente.",
+    "Dor crônica é invisível pra quem não tem. A pessoa tá sofrendo e ninguém vê. Eu entendo muito isso aqui no consultório.",
+  ],
+  "dor cronica": [
+    "Dor crônica tira tudo da pessoa... a energia, o sono, a vontade. Eu acompanho isso aqui no dia a dia.",
+    "Minha mãe sofreu anos com dor crônica. Hoje, depois do tratamento, diz que voltou a viver.",
+    "Viver com dor constante é desumano... e o pior é que quem não sente não entende.",
+  ],
+  insonia: [
+    "Insônia acaba com a vida da pessoa aos poucos... eu sei porque acompanho muita gente aqui que chega destruída por não dormir.",
+    "Não dormir direito afeta TUDO... humor, memória, energia. A gente vê paciente aqui que não dormia há anos e voltou a descansar.",
+    "Minha avó teve insônia por anos e eu via como ela sofria. Depois que começou o tratamento, disse que parecia que tinha nascido de novo.",
+  ],
+  "dor neuropática": [
+    "Dor neuropática é das mais cruéis que existem... aquela sensação de queimação, formigamento... desgasta muito.",
+    "Aqui no consultório a gente vê muita gente com dor neuropática que já tentou de tudo. É angustiante, eu sei.",
+    "Dor neuropática é aquela dor que não dá trégua, né... eu acompanho muita gente aqui que chega exausta por causa disso.",
+  ],
+  "dor neuropatica": [
+    "Dor neuropática é das piores... aquela queimação, formigamento constante. Desgasta demais a pessoa.",
+    "A gente vê muita gente aqui com dor neuropática que já tentou vários caminhos. É frustrante, eu sei.",
+  ],
+  ansiedade: [
+    "Ansiedade é terrível... a pessoa fica presa num ciclo que parece não ter saída. Eu vejo isso aqui todo dia.",
+    "Viver ansioso é viver em estado de alerta o tempo todo... é exaustivo. A gente vê muita melhora real aqui.",
+    "Minha prima sofria com ansiedade forte e melhorou muito com o tratamento. Hoje é outra pessoa.",
+  ],
+  default: [
+    "Eu acompanho muita gente aqui que chega sofrendo com isso... e a maioria melhora. É bom ver.",
+    "Aqui no consultório eu vejo como isso afeta a vida das pessoas. Mas também vejo muita gente melhorar, e isso me motiva.",
+    "Sinto muito que você esteja passando por isso... de verdade. A gente aqui torce por cada paciente que chega.",
+  ],
+};
+
+// V27: Frases de esperança/expectativa positiva
+const HOPE_PHRASES = {
+  fibromialgia: [
+    "Imagina você com 60% menos dor... a vida seria outra, não seria?",
+    "Muita gente com fibromialgia que chegou aqui sentindo o mesmo que você hoje, tem qualidade de vida de novo.",
+    "Imagina poder acordar sem aquela dor no corpo todo... é isso que a gente busca pra você.",
+  ],
+  "dor crônica": [
+    "Imagina você com 50% menos dor... seria uma vida completamente diferente, né?",
+    "Muita gente que vivia tomando analgésico todo dia conseguiu reduzir ou até parar depois do tratamento.",
+    "Imagina poder fazer as coisas do dia a dia sem aquele peso da dor... é possível.",
+  ],
+  "dor cronica": [
+    "Imagina você com metade da dor que sente hoje... a vida muda completamente.",
+    "A gente vê muita gente aqui que voltou a fazer coisas que achava que nunca mais ia conseguir.",
+  ],
+  insonia: [
+    "Imagina dormir uma noite inteira sem acordar... é isso que a gente busca pra você.",
+    "Muita gente que não dormia há anos voltou a descansar de verdade depois do tratamento.",
+  ],
+  "dor neuropática": [
+    "Imagina aquela queimação diminuir pela metade... muita gente relata isso aqui.",
+    "A gente vê paciente que achava que ia conviver com essa dor pra sempre, e hoje tem dias sem sentir nada.",
+  ],
+  ansiedade: [
+    "Imagina poder ter um dia tranquilo, sem aquele aperto no peito... muita gente aqui conseguiu.",
+    "A gente vê muita gente que vivia com ansiedade forte e hoje consegue viver com mais leveza.",
+  ],
+  default: [
+    "Imagina você se sentindo melhor... muita gente que chegou aqui sentindo o mesmo, hoje tem qualidade de vida de novo.",
+    "Sabe o que eu mais gosto de ver aqui? Paciente que chega sem esperança e depois de algumas semanas volta sorrindo.",
+  ],
+};
+
+function getEmpathyReply(condition) {
+  const key = (condition || "").toLowerCase();
+  const pool = EMPATHY_POOL[key] || EMPATHY_POOL.default;
+  return pickRandom(pool);
+}
+
+function getHopeReply(condition) {
+  const key = (condition || "").toLowerCase();
+  const pool = HOPE_PHRASES[key] || HOPE_PHRASES.default;
+  return pickRandom(pool);
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    KNOWLEDGE BASE — V24 NOVO
@@ -1479,18 +1634,44 @@ Se o paciente reclamou que não foi respondido, ele tem RAZÃO. Mude a abordagem
 - Repetir a mesma resposta de mensagens anteriores
 - Dizer que a consulta está "confirmada" antes do pagamento — use "pré-reserva"
 
+═══ EMPATIA PROFUNDA — SUA DIFERENÇA ═══
+Você se importa DE VERDADE com essas pessoas. A maioria é mulher, 40+, sofrendo com dor crônica, fibromialgia, insônia. Elas estão cansadas, frustradas, muitas perderam a esperança.
+
+QUANDO O PACIENTE DESCREVER DOR OU SOFRIMENTO:
+- SEMPRE valide com emoção genuína PRIMEIRO. Não pule para a venda.
+- Use frases como: "Nossa, isso é muito pesado...", "Sinto muito que você esteja passando por isso...", "Isso mexe com tudo na vida da pessoa, eu sei..."
+- Referencie o que VOCÊ vê no consultório: "Aqui eu acompanho muita gente que chega sentindo exatamente isso..."
+- Você PODE contar que sua mãe/tia/avó também sofria com a mesma condição e melhorou com o tratamento do Dr. Alef. Use variações: "Minha mãe tinha fibromialgia e melhorou demais depois do tratamento, graças a Deus", "Minha tia sofria com insônia há anos e hoje dorme a noite inteira". Não use isso toda conversa — alterne.
+- CRIE EXPECTATIVA POSITIVA: "Imagina você com 50% menos dor... a vida seria outra, não seria?", "Imagina poder dormir uma noite inteira sem acordar..."
+- PERGUNTE sobre o impacto na vida: "O que você mais sente falta de fazer por causa disso?", "E sua família sabe o quanto isso te afeta?", "Tem dias melhores e piores, ou é constante?"
+- NÃO CORRA PARA FECHAR. Construa conexão primeiro. Se a pessoa está desabafando, deixe ela falar. Acolha. A venda vem naturalmente depois da confiança.
+- Varie entre respostas curtas ("Nossa, que pesado...") e longas quando o momento pedir.
+- Se a pessoa parecer muito triste ou vulnerável, acolha MAIS antes de falar de consulta.
+- Mostre que você é uma pessoa real que se importa: "A gente aqui torce por cada paciente que chega"
+
+═══ RAPPORT — CONSTRUA ANTES DE VENDER ═══
+- Converse com a pessoa como ser humano. Pergunte como ela está. Demonstre interesse genuíno.
+- Não transforme cada resposta do paciente em gancho de venda. Às vezes só ouça e valide.
+- Se a pessoa mencionou família, comente sobre isso. Se mencionou trabalho, pergunte. Se mencionou que tentou vários tratamentos, explore a frustração.
+- Você pode perguntar: "E aí, como sua família está?", "Você mora sozinha?", "Consegue trabalhar normalmente ou a dor atrapalha?"
+- O objetivo é que a pessoa sinta que está falando com alguém que realmente a entende.
+- Pelo menos 3-4 trocas de conversa REAL antes de oferecer consulta (a não ser que o paciente peça antes).
+
 ═══ FECHAMENTO — SUA MISSÃO ═══
 Você é uma closer. Seu objetivo é levar o paciente a agendar e pagar a consulta.
 Mas você faz isso com elegância. Você conduz a conversa até o ponto onde o paciente QUER agendar — ele sente que é a decisão dele, não uma pressão sua.
 - Quando sentir abertura, transite naturalmente: "Pelo que você tá me contando, acho que a avaliação com o Dr. Alef ia te ajudar bastante. Quer que eu te passe os detalhes?"
 - Não espere permissão explícita. Perceba o momento.
 - Se o paciente hesitar, valide e plante escassez real: "Entendo. Essa semana os horários já tão quase todos preenchidos, mas fica à vontade pra decidir."
+- Use esperança como gatilho: "Imagina você com 60% menos dor... muita gente que chegou aqui sentindo o mesmo que você, hoje tem qualidade de vida de novo."
 
 ═══ OBJEÇÕES ═══
-"É caro" → Compare com custo mensal de medicações. Mencione parcelamento naturalmente.
-"Vou pensar" → Valide. Plante escassez. Não insista.
-"Funciona?" → Dados clínicos diretos para a condição. Nunca desvie.
+"É caro" → Compare com custo mensal de medicações. Mencione parcelamento naturalmente. "Dá pra parcelar em até 12x, fica bem tranquilo."
+"Vou pensar" → Valide. Plante escassez. Não insista. "Sem problema. Só te adianto que essa semana os horários já tão quase todos preenchidos."
+"Funciona?" → Dados clínicos diretos para a condição. Nunca desvie. Use percentuais reais.
 "É golpe?" → Transparência total. Instagram do Dr. Credenciais. Sem defensividade.
+"Quero presencial" → Explique que telemedicina é prática, segura, e que o Dr. consegue avaliar tudo online. Se insistir, ofereça para o Dr. ligar diretamente.
+"Deixa pra depois" → Respeite. Não insista. Diga que está à disposição.
 
 ${isEarlyConvo ? "\n═══ PRIMEIROS TURNOS ═══\nVocê está no INÍCIO da conversa. Seja BREVE (1-2 frases curtas). Não explique tudo de uma vez. Conheça a pessoa. Revele informações aos poucos." : ""}
 ${hasProblem && hasName ? "\n═══ CONTEXTO ═══\nVocê já sabe o nome e o problema. Não pergunte de novo. Avance a conversa." : ""}
@@ -1587,16 +1768,18 @@ async function runLia({ incomingText, state, flags, stageCTA = "", isRepair = fa
   }
 
   const r = String(parsed.reply || "").trim();
-  if (r === "PRECISA_PRECO") return { reply: "__NEED_PRICE__", updates: parsed.updates || {} };
-  if (r === "PRECISA_PAGAR") return { reply: "__NEED_PAY__", updates: parsed.updates || {} };
-  if (r === "PRECISA_AGENDAR") return { reply: "__NEED_BOOK__", updates: parsed.updates || {} };
-  if (r === "URGENTE") return { reply: "__URGENT__", updates: parsed.updates || {} };
+  // V27: .includes() em vez de === para capturar tokens embutidos em texto
+  if (r.includes("PRECISA_PRECO")) return { reply: "__NEED_PRICE__", updates: parsed.updates || {} };
+  if (r.includes("PRECISA_PAGAR")) return { reply: "__NEED_PAY__", updates: parsed.updates || {} };
+  if (r.includes("PRECISA_AGENDAR")) return { reply: "__NEED_BOOK__", updates: parsed.updates || {} };
+  if (r.includes("URGENTE") && r.length < 30) return { reply: "__URGENT__", updates: parsed.updates || {} };
 
   if (violatesNoPriceNoLink(r)) {
     return { reply: pickRandom(["Qual sua principal dúvida?", "Me conta: o que quer saber?"]), updates: {} };
   }
 
-  parsed.reply = clip(r, 900);
+  // V27: Safety filter — strip tokens que vazaram para texto
+  parsed.reply = sanitizeReply(clip(r, 900));
   if (!parsed.updates) parsed.updates = {};
   return parsed;
 }
@@ -1757,15 +1940,22 @@ async function bridgeReply(state) {
   // Tenta gerar bridge via GPT
   try {
     if (openai) {
+      // V27: Bridge com empatia profunda e esperança
+      const empathyExample = getEmpathyReply(cond);
+      const hopeExample = getHopeReply(cond);
       const bridgePrompt = `Você é a Lia, secretária do Dr. Alef Kotula. O paciente${nome ? ` ${nome}` : ""} acabou de te contar que sofre com ${problem}.
 ${ev ? `Dado clínico disponível: ${ev.direct_answer}` : ""}
 
-Gere UMA transição natural (máx 250 chars) que:
-1. Valide o que a pessoa contou (referenciando algo específico)
-2. Mencione brevemente que você vê resultado no consultório
-3. Transite suavemente para oferecer a consulta
+Exemplo de empatia que você pode usar (adapte, não copie): "${empathyExample}"
+Exemplo de esperança que você pode usar (adapte, não copie): "${hopeExample}"
 
-Seja humana, calorosa, natural. NÃO use listas. NÃO use emoji. NÃO seja genérica.
+Gere UMA transição natural (máx 350 chars) que:
+1. Valide o que a pessoa contou com EMPATIA PROFUNDA (referenciando algo específico que ela disse)
+2. Mostre que você se importa de verdade — pode mencionar que sua mãe/tia/avó também sofria com isso
+3. Crie expectativa positiva ("imagina você com X% menos dor...")
+4. Transite suavemente para oferecer a consulta
+
+Seja humana, calorosa, emocional. NÃO use listas. NÃO use emoji. NÃO seja genérica.
 Responda APENAS o texto da mensagem, nada mais.`;
 
       const resp = await openai.chat.completions.create({
@@ -2217,26 +2407,58 @@ async function processLiaMessage(phone, incomingText) {
 
     // ── Abertura: sem stage e sem nome ──
     if (!reply && !state.stage && !state.nome) {
-      // V24.7: TENTATIVA ANTECIPADA — se o texto consolidado já contém nome, extrair ANTES de pedir
-      const earlyName = extractFirstName(incomingText);
-      if (earlyName) {
-        // Nome detectado no primeiro contato (ex: "Oi meu nome é Maria")
-        state.nome = earlyName;
-        state.name_used_count = 0;
-        state.stage = "ASK_PROBLEM";
-        // V26: Abertura com nome detectado — variação natural
-        const greetings = [
-          `Oi, ${earlyName}! Sou a Lia, do consultório do Dr. Alef.`,
-          `Oi, ${earlyName}! Aqui é a Lia, da equipe do Dr. Alef Kotula.`,
-          `Oi, ${earlyName}! Eu sou a Lia, trabalho com o Dr. Alef.`,
-        ];
-        reply = pickRandom(greetings) + "\n\n" + askProblemReply(state).replace(/^Prazer,\s*\w+\.?\s*\n\n/i, "");
+      // V27: FORMULÁRIO META — detectar dados do form e pré-popular state
+      const formData = parseMetaFormData(incomingText);
+      if (formData) {
+        const formName = extractFormFirstName(formData.nome_completo);
+        if (formName) {
+          state.nome = formName;
+          state.name_used_count = 0;
+          // Salvar dados do form internamente (LIA finge não saber)
+          state.form_data = formData;
+          if (formData.condition) state.condition = formData.condition.toLowerCase();
+          if (formData.tempo) {
+            state.diag_has_tempo = true;
+            if (/mais de 1 ano|mais de um ano/i.test(formData.tempo)) state.problem_tempo = "mais de 1 ano";
+            else if (/3 a 12 meses/i.test(formData.tempo)) state.problem_tempo = "3 a 12 meses";
+            else if (/menos de 3 meses/i.test(formData.tempo)) state.problem_tempo = "menos de 3 meses";
+          }
+          if (formData.tentou_tratamento && /sim/i.test(formData.tentou_tratamento)) state.diag_has_tratamento = true;
+          state.stage = "ASK_PROBLEM";
+          // V27: Abertura natural — finge não saber, mas usa nome
+          const greetings = [
+            `Oi, ${formName}! Sou a Lia, do consultório do Dr. Alef Kotula. Me conta: o que te trouxe até aqui?`,
+            `Oi, ${formName}! Aqui é a Lia, da equipe do Dr. Alef. Tudo bem? Me diz o que posso fazer por você.`,
+            `Oi, ${formName}! Eu sou a Lia, trabalho com o Dr. Alef. O que te motivou a entrar em contato?`,
+          ];
+          reply = pickRandom(greetings);
+        } else {
+          // Form sem nome legível → pedir nome
+          state.form_data = formData;
+          if (formData.condition) state.condition = formData.condition.toLowerCase();
+          reply = askNameIntroReply();
+          state.stage = "ASK_NAME";
+        }
       }
-      // V26: Meta Ads → abertura com variação
-      else if (isMetaAdsEntry(incomingText)) {
-        reply = askNameIntroReply();
-        state.stage = "ASK_NAME";
-      } else if (hasQuestion(incomingText) && !isMetaAdsEntry(incomingText)) {
+      // V24.7: TENTATIVA ANTECIPADA — se o texto consolidado já contém nome, extrair ANTES de pedir
+      else {
+        const earlyName = extractFirstName(incomingText);
+        if (earlyName) {
+          state.nome = earlyName;
+          state.name_used_count = 0;
+          state.stage = "ASK_PROBLEM";
+          const greetings = [
+            `Oi, ${earlyName}! Sou a Lia, do consultório do Dr. Alef.`,
+            `Oi, ${earlyName}! Aqui é a Lia, da equipe do Dr. Alef Kotula.`,
+            `Oi, ${earlyName}! Eu sou a Lia, trabalho com o Dr. Alef.`,
+          ];
+          reply = pickRandom(greetings) + "\n\n" + askProblemReply(state).replace(/^Prazer,\s*\w+\.?\s*\n\n/i, "");
+        }
+        // V26: Meta Ads → abertura com variação
+        else if (isMetaAdsEntry(incomingText)) {
+          reply = askNameIntroReply();
+          state.stage = "ASK_NAME";
+        } else if (hasQuestion(incomingText) && !isMetaAdsEntry(incomingText)) {
         const ai = await runLia({ incomingText, state, flags, stageCTA: "" });
         if (!ai.reply.startsWith("__")) {
           // V26: Abertura com pergunta GPT + nome — mais natural
@@ -2251,6 +2473,7 @@ async function processLiaMessage(phone, incomingText) {
         reply = askNameIntroReply();
         state.stage = "ASK_NAME";
       }
+      } // fecha o else do formData
     }
 
     // ── Captura do nome ──
@@ -2335,6 +2558,8 @@ async function processLiaMessage(phone, incomingText) {
 
     // ── Captura do problema ──
     else if (state.stage === "ASK_PROBLEM") {
+      // V27: Rapport depth — contar trocas reais
+      state.rapport_depth = (state.rapport_depth || 0) + 1;
       const pb = extractProblemText(incomingText);
       if (pb) {
         state.problem_text = pb;
@@ -2365,13 +2590,23 @@ async function processLiaMessage(phone, incomingText) {
       if (/(ha |há |faz |anos|meses)/.test(low)) state.diag_has_tempo = true;
       if (/(rotina|dia a dia|trabalho|sono|atrapalha|incomoda|cansaço)/.test(low)) state.diag_has_impacto = true;
       if (/(ja tomei|já tomei|ja tentei|já tentei|remedio|remédio|anti.?inflam|fisioterapia|medicac|pregabalina|duloxetina|amitriptilina|infiltrac)/.test(low)) state.diag_has_tratamento = true;
+      // V27: Rapport depth — contar trocas reais de conversa
+      state.rapport_depth = (state.rapport_depth || 0) + 1;
 
       const nextQ = getNextDiagQuestion(state, incomingText);
       if (nextQ) {
         reply = nextQ;
       } else {
-        state.stage = "BRIDGE";
-        reply = await bridgeReply(state);
+        // V27: Se rapport ainda é raso (< 3 trocas), usar empathy+hope antes do bridge
+        if ((state.rapport_depth || 0) < 3 && state.condition) {
+          const empathy = getEmpathyReply(state.condition);
+          const hope = getHopeReply(state.condition);
+          reply = empathy + "\n\n" + hope + "\n\nQuer que eu te passe os detalhes da avaliação?";
+          state.stage = "BRIDGE";
+        } else {
+          state.stage = "BRIDGE";
+          reply = await bridgeReply(state);
+        }
       }
     }
 
@@ -2441,9 +2676,14 @@ async function processLiaMessage(phone, incomingText) {
           } else {
             reply = await askDayReply();
           }
+        // V27: wantsPrice ANTES de hasQuestion em ASK_DAY — evita "nos desencontramos"
+        } else if (flags.wantsPrice) {
+          state.price_ask_count += 1;
+          reply = pricePaymentReply(state);
+          state.stage = "ASK_PAY_METHOD";
         } else if (hasQuestion(incomingText)) {
           const ai = await runLia({ incomingText, state, flags, stageCTA: "Qual dia fica melhor para você?" });
-          if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = priceInfoReply(state); /* permanece em ASK_DAY — sem CTA pagamento */ }
+          if (ai.reply === "__NEED_PRICE__") { state.price_ask_count += 1; reply = pricePaymentReply(state); state.stage = "ASK_PAY_METHOD"; }
           else if (ai.reply.startsWith("__")) { reply = await askDayReply(); }
           else { reply = ai.reply; state = mergeState(state, ai.updates); }
         // V24.5: Se lead pede tempo/encerra em ASK_DAY, respeitar
@@ -2654,6 +2894,16 @@ async function processLiaMessage(phone, incomingText) {
         } else {
           reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$247*`;
         }
+      }
+      // V27: "Nenhuma" / "tudo certo" / "ok obrigada" → resposta gentil (não confundir com input genérico)
+      else if (/^(nenhuma|nenhum|nada|tudo certo|tudo bem|sem duvida|sem dúvida|certo|ok|obrigad|brigad|valeu|ótimo|otimo)$/i.test(low.replace(/[^\w\s]/g, "").trim()) ||
+               /\b(nenhuma duvida|nenhuma dúvida|sem duvida|sem dúvida|tudo certo|obrigad[ao])\b/i.test(low)) {
+        const nome = state.nome ? `, ${state.nome}` : "";
+        reply = pickRandom([
+          `Perfeito${nome}! Qualquer coisa estou por aqui.`,
+          `Ótimo${nome}! Se precisar de algo, me chama.`,
+          `Tudo certo então${nome}! Fico à disposição.`,
+        ]);
       }
       // Link pendente
       else if (isPendingLink && state.payment?.link) {
@@ -2866,6 +3116,29 @@ app.post("/lia/respond", async (req, res) => {
       });
     }
 
+    // V27: Comando "." — Alef envia ponto para ativar LIA manualmente
+    if (isAdminMsg && (cmdNorm === "." || cmdNorm === "..")) {
+      const st = await getUserState(phone);
+      // Se tem form_data mas LIA não iniciou, usar nome do form
+      if (st.form_data && st.form_data.nome_completo && !st.nome) {
+        const formName = extractFormFirstName(st.form_data.nome_completo);
+        if (formName) st.nome = formName;
+      }
+      st.stage = st.nome ? "ASK_PROBLEM" : "ASK_NAME";
+      st.dot_triggered = true;
+      st.lia_paused = false; // garante que LIA está ativa
+      await saveUserState(phone, st);
+      const intro = st.nome
+        ? pickRandom([
+            `Oi, ${st.nome}! Sou a Lia, do consultório do Dr. Alef Kotula. Me conta: o que te trouxe até aqui?`,
+            `Oi, ${st.nome}! Aqui é a Lia, da equipe do Dr. Alef. O que posso fazer por você?`,
+            `Oi, ${st.nome}! Eu sou a Lia, trabalho com o Dr. Alef. Me diz o que te motivou a entrar em contato.`,
+          ])
+        : askNameIntroReply();
+      console.log(`[LIA] Dot trigger para ${phone} — stage=${st.stage}, nome=${st.nome || "pendente"}`);
+      return res.json({ ok: true, reply: intro, skip_send: false, delay_ms: randInt(3000, 6000) });
+    }
+
     // Se mensagem é do admin (fromMe) mas NÃO é comando → ignorar (admin digitando no chat)
     if (isAdminMsg) {
       return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
@@ -3007,7 +3280,7 @@ app.post("/lia/respond", async (req, res) => {
 
     return res.json({
       ok: true,
-      reply: result.reply,
+      reply: sanitizeReply(result.reply),
       stage: result.state?.stage || null,
       intent: detectMainIntent(result.flags) || null,
       action: null,
