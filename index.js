@@ -3117,7 +3117,8 @@ app.post("/lia/respond", async (req, res) => {
     }
 
     // V27: Comando "." — Alef envia ponto para ativar LIA manualmente
-    if (isAdminMsg && (cmdNorm === "." || cmdNorm === "..")) {
+    // NÃO depende de fromMe — "." solitário é sempre comando admin (nenhum paciente envia só ".")
+    if (cmdNorm === "." || cmdNorm === "..") {
       const st = await getUserState(phone);
       // Se tem form_data mas LIA não iniciou, usar nome do form
       if (st.form_data && st.form_data.nome_completo && !st.nome) {
@@ -3127,6 +3128,8 @@ app.post("/lia/respond", async (req, res) => {
       st.stage = st.nome ? "ASK_PROBLEM" : "ASK_NAME";
       st.dot_triggered = true;
       st.lia_paused = false; // garante que LIA está ativa
+      // Cooldown: ignorar próxima msg dentro de 45s (provavelmente Alef digitando manualmente)
+      st.dot_cooldown_until = Date.now() + 45000;
       await saveUserState(phone, st);
       const intro = st.nome
         ? pickRandom([
@@ -3153,6 +3156,21 @@ app.post("/lia/respond", async (req, res) => {
       logMessage(phone, "lia", incomingText, "inbound");
       console.log(`⏸️ Lead ${phone} está pausado. Msg logada, sem resposta: "${incomingText.slice(0, 60)}"`);
       return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0, paused: true });
+    }
+
+    // V27: Cooldown pós-dot — ignora msg do Alef digitando manualmente após "."
+    // Só ignora UMA mensagem dentro da janela de 45s após o dot trigger
+    if (quickState.dot_cooldown_until && Date.now() < quickState.dot_cooldown_until) {
+      quickState.dot_cooldown_until = null; // consome o cooldown — só pula 1 msg
+      await saveUserState(phone, quickState);
+      logMessage(phone, "lia", incomingText, "inbound");
+      console.log(`[LIA] Cooldown pós-dot: ignorando msg de admin para ${phone}: "${incomingText.slice(0, 60)}"`);
+      return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0, dot_cooldown: true });
+    }
+    // Se o cooldown expirou, limpar o campo
+    if (quickState.dot_cooldown_until && Date.now() >= quickState.dot_cooldown_until) {
+      quickState.dot_cooldown_until = null;
+      await saveUserState(phone, quickState);
     }
 
     // ── Filtro de mensagem de sistema → skip_send ──
