@@ -1930,8 +1930,8 @@ async function mpCreatePreference({ phone, planKey }) {
     notification_url: `${BASE_URL}/mp/webhook`,
     back_urls: {
       success: `${SITE_URL}/obrigado-consulta/`,
-      failure: `${BASE_URL}/mp/thanks?status=failure`,
-      pending: `${BASE_URL}/mp/thanks?status=pending`,
+      failure: `${SITE_URL}/obrigado-consulta/?status=failure`,
+      pending: `${SITE_URL}/obrigado-consulta/?status=pending`,
     },
     auto_return: "approved",
     statement_descriptor: "CONSULTA ONLINE",
@@ -3301,20 +3301,31 @@ app.get("/checkout/:ref", async (req, res) => {
   }
 });
 
-// V28: Checkout data API — landing page busca dados do ref
+// V28: CORS + Checkout data API — landing page busca dados do ref
+const CORS_ORIGIN = SITE_URL || "https://www.dralefkotula.com";
+
+app.options("/checkout-data/:ref", (req, res) => {
+  res.set("Access-Control-Allow-Origin", CORS_ORIGIN);
+  res.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.set("Access-Control-Allow-Headers", "Content-Type");
+  res.set("Access-Control-Max-Age", "86400");
+  return res.sendStatus(204);
+});
+
 app.get("/checkout-data/:ref", async (req, res) => {
+  res.set("Access-Control-Allow-Origin", CORS_ORIGIN);
   try {
     const { ref } = req.params;
     const data = await getCheckoutRef(ref);
     if (!data) {
-      return res.status(404).json({ error: "ref não encontrado" });
+      return res.status(404).json({ ok: false, error: "checkout_not_found" });
     }
     // Retorna dados sem expor phone
     const { phone, ...safeData } = data;
-    return res.json(safeData);
+    return res.json({ ok: true, ref, ...safeData });
   } catch (err) {
     console.error(`[CHECKOUT-DATA] erro:`, err);
-    return res.status(500).json({ error: "erro interno" });
+    return res.status(500).json({ ok: false, error: "erro interno" });
   }
 });
 
