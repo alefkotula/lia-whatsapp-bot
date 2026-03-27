@@ -25,6 +25,7 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const { Pool } = require("pg");
 const OpenAI = require("openai");
+const crypto = require("crypto");
 
 // Twilio é OPCIONAL — só carrega se as credenciais existirem
 let twilio, twilioClient;
@@ -336,6 +337,13 @@ async function initDB() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS checkout_refs (
+      ref TEXT PRIMARY KEY,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
   console.log("✅ Tabelas prontas.");
 }
 initDB().catch((e) => console.error("❌ initDB erro:", e));
@@ -357,6 +365,25 @@ async function saveUserState(phone, newState) {
      ON CONFLICT (phone) DO UPDATE SET state=$2::jsonb, updated_at=NOW()`,
     [phone, JSON.stringify(newState)]
   );
+}
+
+// V28: Checkout ref — token curto para link de pagamento
+function generateCheckoutRef() {
+  return crypto.randomBytes(5).toString("hex"); // 10 chars hex
+}
+
+async function saveCheckoutRef(ref, data) {
+  await pool.query(
+    `INSERT INTO checkout_refs (ref, data, created_at)
+     VALUES ($1, $2::jsonb, NOW())
+     ON CONFLICT (ref) DO UPDATE SET data=$2::jsonb`,
+    [ref, JSON.stringify(data)]
+  );
+}
+
+async function getCheckoutRef(ref) {
+  const { rows } = await pool.query("SELECT data FROM checkout_refs WHERE ref=$1", [ref]);
+  return rows.length ? rows[0].data : null;
 }
 
 async function logMessage(from, to, body, direction) {
@@ -1923,24 +1950,26 @@ async function mpCreatePreference({ phone, planKey }) {
   return { preference_id: data.id, link: data.init_point || data.sandbox_init_point, plan, external_reference };
 }
 
-// V28: Monta link do checkout via domínio (LP) em vez de link direto do MP
-function buildSiteCheckoutLink({ paymentLink, phone, planKey, externalReference, state }) {
+// V28: Monta link curto do checkout via ref token
+// Salva dados no banco, retorna URL curta: BASE_URL/checkout/<ref>
+async function buildSiteCheckoutLink({ paymentLink, phone, planKey, externalReference, state }) {
   const plan = PLANS[planKey];
-  const url = new URL(`${SITE_URL}/checkout-consulta/`);
-  url.searchParams.set("valor", String(plan.price));
-  url.searchParams.set("origem", externalReference || "");
-  url.searchParams.set("event_id", externalReference || "");
-  url.searchParams.set("mp", paymentLink || "");
-  if (state?.nome_completo) url.searchParams.set("nome", state.nome_completo);
-  if (state?.slot_time && state?.date_key) {
-    url.searchParams.set("horario", `${state.date_key} ${state.slot_time}`);
-  }
-  if (state?.chief_complaint) {
-    url.searchParams.set("queixa", state.chief_complaint);
-  } else if (state?.condition) {
-    url.searchParams.set("queixa", state.condition);
-  }
-  return url.toString();
+  const ref = generateCheckoutRef();
+  const checkoutData = {
+    valor: plan.price,
+    origem: externalReference || "",
+    event_id: externalReference || "",
+    mp_link: paymentLink || "",
+    nome: state?.nome_completo || state?.nome || "",
+    horario: (state?.slot_time && state?.date_key) ? `${state.date_key} ${state.slot_time}` : "",
+    queixa: state?.chief_complaint || state?.condition || "",
+    phone: phone || "",
+    plan_key: planKey,
+    created_at: Date.now(),
+  };
+  await saveCheckoutRef(ref, checkoutData);
+  // Link curto que o backend resolve via redirect
+  return { ref, url: `${BASE_URL}/checkout/${ref}` };
 }
 
 async function mpGetPayment(paymentId) {
@@ -3029,14 +3058,15 @@ async function processLiaMessage(phone, incomingText) {
           console.log(`[LIA_PAY] ASK_PAY_METHOD: Link escolhido — gerando preference MP`);
           state.selected_plan_key = "avaliacao";
           const pref = await mpCreatePreference({ phone, planKey: "avaliacao" });
-          const siteCheckoutLink = buildSiteCheckoutLink({ paymentLink: pref.link, phone, planKey: "avaliacao", externalReference: pref.external_reference, state });
+          const checkout = await buildSiteCheckoutLink({ paymentLink: pref.link, phone, planKey: "avaliacao", externalReference: pref.external_reference, state });
           state.payment = {
             status: "pending", plan_key: "avaliacao",
-            preference_id: pref.preference_id, link: siteCheckoutLink, mp_link: pref.link,
+            preference_id: pref.preference_id, link: checkout.url, mp_link: pref.link,
+            checkout_ref: checkout.ref,
             external_reference: pref.external_reference, created_at: Date.now(),
             method: "link",
           };
-          reply = paymentSentReply(PLANS.avaliacao, siteCheckoutLink, state);
+          reply = paymentSentReply(PLANS.avaliacao, checkout.url, state);
           state.stage = "WAIT_PAYMENT";
         } else if (wantsPix) {
           console.log(`[LIA_PAY] ASK_PAY_METHOD: Pix escolhido — exibindo CNPJ`);
@@ -3097,9 +3127,9 @@ async function processLiaMessage(phone, incomingText) {
       else if (isPendingPix && wantsLink && !wantsPix) {
         console.log(`[LIA_PAY] TROCA pix→link — gerando preference MP`);
         const pref = await mpCreatePreference({ phone, planKey: "avaliacao" });
-        const siteCheckoutLink = buildSiteCheckoutLink({ paymentLink: pref.link, phone, planKey: "avaliacao", externalReference: pref.external_reference, state });
-        state.payment = { ...state.payment, status: "pending", method: "link", preference_id: pref.preference_id, link: siteCheckoutLink, mp_link: pref.link, external_reference: pref.external_reference, switched_at: Date.now() };
-        reply = paymentSentReply(PLANS.avaliacao, siteCheckoutLink, state);
+        const checkout = await buildSiteCheckoutLink({ paymentLink: pref.link, phone, planKey: "avaliacao", externalReference: pref.external_reference, state });
+        state.payment = { ...state.payment, status: "pending", method: "link", preference_id: pref.preference_id, link: checkout.url, mp_link: pref.link, checkout_ref: checkout.ref, external_reference: pref.external_reference, switched_at: Date.now() };
+        reply = paymentSentReply(PLANS.avaliacao, checkout.url, state);
       }
       // Pix pendente — comprovante
       else if (isPendingPix) {
@@ -3254,6 +3284,40 @@ async function processLiaMessage(phone, incomingText) {
 app.get("/", (req, res) => res.send("OK"));
 app.get("/mp/thanks", (req, res) => res.send("OK"));
 
+// V28: Checkout curto — redirect para landing page com ?ref=
+app.get("/checkout/:ref", async (req, res) => {
+  try {
+    const { ref } = req.params;
+    const data = await getCheckoutRef(ref);
+    if (!data) {
+      console.warn(`[CHECKOUT] ref não encontrado: ${ref}`);
+      return res.redirect(`${SITE_URL}/checkout-consulta/`);
+    }
+    console.log(`[CHECKOUT] redirect ref=${ref}`);
+    return res.redirect(302, `${SITE_URL}/checkout-consulta/?ref=${ref}`);
+  } catch (err) {
+    console.error(`[CHECKOUT] erro:`, err);
+    return res.redirect(`${SITE_URL}/checkout-consulta/`);
+  }
+});
+
+// V28: Checkout data API — landing page busca dados do ref
+app.get("/checkout-data/:ref", async (req, res) => {
+  try {
+    const { ref } = req.params;
+    const data = await getCheckoutRef(ref);
+    if (!data) {
+      return res.status(404).json({ error: "ref não encontrado" });
+    }
+    // Retorna dados sem expor phone
+    const { phone, ...safeData } = data;
+    return res.json(safeData);
+  } catch (err) {
+    console.error(`[CHECKOUT-DATA] erro:`, err);
+    return res.status(500).json({ error: "erro interno" });
+  }
+});
+
 /* ═══════════════════════════════════════════════════════════════════
    ENDPOINT PRINCIPAL PARA N8N — POST /lia/respond
    ═══════════════════════════════════════════════════════════════════ */
@@ -3338,16 +3402,17 @@ app.post("/lia/respond", async (req, res) => {
       try {
         const st = await getUserState(phone);
         const pref = await mpCreatePreference({ phone, planKey: "avaliacao" });
-        const siteCheckoutLink = buildSiteCheckoutLink({ paymentLink: pref.link, phone, planKey: "avaliacao", externalReference: pref.external_reference, state: st });
+        const checkout = await buildSiteCheckoutLink({ paymentLink: pref.link, phone, planKey: "avaliacao", externalReference: pref.external_reference, state: st });
         st.payment = {
           status: "pending", plan_key: "avaliacao",
-          preference_id: pref.preference_id, link: siteCheckoutLink, mp_link: pref.link,
+          preference_id: pref.preference_id, link: checkout.url, mp_link: pref.link,
+          checkout_ref: checkout.ref,
           external_reference: pref.external_reference, created_at: Date.now(),
           method: "link",
         };
         st.stage = "WAIT_PAYMENT";
         await saveUserState(phone, st);
-        const testReply = `🔗 Link de pagamento (teste):\n\n${siteCheckoutLink}\n\nMP direto: ${pref.link}`;
+        const testReply = `🔗 Link de pagamento (teste):\n\n${checkout.url}\n\nMP direto: ${pref.link}`;
         console.log(`[LIA] linklinklink test command for ${phone}`);
         return res.json({ ok: true, reply: testReply, skip_send: false, delay_ms: 1000 });
       } catch (err) {
