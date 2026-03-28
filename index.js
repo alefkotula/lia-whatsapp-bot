@@ -58,12 +58,73 @@ const {
   TWILIO_WHATSAPP_NUMBER,
   MANUAL_SEND_SECRET,
   ADMIN_READ_SECRET,
+  META_PIXEL_ID,
+  META_ACCESS_TOKEN,
+  META_TEST_EVENT_CODE,
 } = process.env;
 
 if (!OPENAI_API_KEY) console.error("❌ Falta OPENAI_API_KEY");
 if (!DATABASE_URL) console.error("❌ Falta DATABASE_URL");
 if (!MP_ACCESS_TOKEN) console.error("❌ Falta MP_ACCESS_TOKEN");
 if (!PUBLIC_BASE_URL) console.warn("⚠️ PUBLIC_BASE_URL não definido.");
+
+// --- Meta Conversions API helpers ---
+function sha256Hash(value) {
+  if (!value) return null;
+  return crypto.createHash("sha256").update(String(value).trim().toLowerCase()).digest("hex");
+}
+
+async function sendMetaPurchaseServerSide({ paymentId, phone, email, value, planKey }) {
+  if (!META_PIXEL_ID || !META_ACCESS_TOKEN) {
+    console.warn("⚠️ Meta CAPI: META_PIXEL_ID ou META_ACCESS_TOKEN não configurado — skip");
+    return false;
+  }
+  const plan = PLANS[planKey] || PLANS.avaliacao || {};
+  const eventData = {
+    event_name: "Purchase",
+    event_time: Math.floor(Date.now() / 1000),
+    event_id: String(paymentId),
+    event_source_url: SITE_URL + "/obrigado-consulta/",
+    action_source: "website",
+    user_data: {},
+    custom_data: {
+      currency: "BRL",
+      value: Number(value) || plan.price || 0,
+      content_name: plan.label || "Consulta médica online individual",
+      content_ids: [planKey || "avaliacao"],
+      content_type: "product",
+    },
+  };
+  if (phone) {
+    const hPhone = sha256Hash(phone.replace(/\D/g, ""));
+    eventData.user_data.ph = [hPhone];
+    eventData.user_data.external_id = [hPhone];
+  }
+  if (email) eventData.user_data.em = [sha256Hash(email)];
+
+  const payload = { data: [eventData] };
+  if (META_TEST_EVENT_CODE) payload.test_event_code = META_TEST_EVENT_CODE;
+
+  try {
+    const url = `https://graph.facebook.com/v23.0/${META_PIXEL_ID}/events?access_token=${META_ACCESS_TOKEN}`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const result = await resp.json();
+    if (resp.ok) {
+      console.log(`✅ Meta CAPI Purchase — event_id=${paymentId}, received=${result.events_received || 0}`);
+      return true;
+    } else {
+      console.error(`❌ Meta CAPI erro ${resp.status}:`, JSON.stringify(result));
+      return false;
+    }
+  } catch (err) {
+    console.error("❌ Meta CAPI fetch erro:", err.message || err);
+    return false;
+  }
+}
 
 // Twilio: só inicializa se tiver credenciais
 if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && twilio) {
@@ -3705,6 +3766,31 @@ app.post("/mp/webhook", async (req, res) => {
       await saveUserState(phone, state);
 
       if (status === "approved") {
+        console.log(`[MP_WEBHOOK] approved payment_id=${paymentId} phone=${phone}`);
+
+        // Meta CAPI: Purchase server-side (dedup + fire-and-forget)
+        if (state.payment?.meta_purchase_sent_for === String(paymentId)) {
+          console.log(`[META_CAPI] Purchase skipped duplicate event_id=${paymentId}`);
+        } else {
+          sendMetaPurchaseServerSide({
+            paymentId: String(paymentId),
+            phone,
+            email: state.email || null,
+            value: payment.transaction_amount || null,
+            planKey: state.payment?.plan_key || "avaliacao",
+          }).then(async (ok) => {
+            if (ok) {
+              try {
+                const freshState = await getUserState(phone);
+                freshState.payment = freshState.payment || {};
+                freshState.payment.meta_purchase_sent_for = String(paymentId);
+                freshState.payment.meta_purchase_sent_at = Date.now();
+                await saveUserState(phone, freshState);
+              } catch (e) { console.error("❌ Meta CAPI save state erro:", e.message); }
+            }
+          }).catch(() => {});
+        }
+
         // Tentar enviar via Twilio se disponível
         if (twilioClient) {
           const botFrom = state?.last_bot_from || null;
