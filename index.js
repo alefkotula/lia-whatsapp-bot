@@ -509,7 +509,7 @@ function extractFirstName(text) {
 
   const patterns = [
     /(?:pode\s+(?:me\s+)?chamar?\s+(?:de\s+)?)\s*(.+)/i,
-    /(?:me\s+cham(?:a|o|e)\s+(?:de\s+)?)\s*(.+)/i,
+    /(?:me\s+cham(?:a|o|e|ou|am)\s+(?:de\s+)?)\s*(.+)/i,
     /(?:(?:eu\s+)?sou\s+(?:o|a)\s+)\s*(.+)/i,
     /(?:(?:meu\s+)?nome\s+(?:e|é)\s+)\s*(.+)/i,
     /^(.+?)(?:\s+aqui)$/i,
@@ -541,7 +541,7 @@ function extractFirstName(text) {
   if (condWords.test(parts[0]) && parts.length <= 2) return null;
 
   // V28: Blocklist expandida — inclui "todos", "dias", "sinto", "cada", temporais, verbos comuns, "conversamos", "sobre"
-  const notNames = /^(oi|ola|olá|bom|boa|dia|dias|tarde|noite|noites|tudo|bem|obrigad|brigad|quero|preciso|gostaria|tenho|sim|nao|não|legal|caro|certo|entendi|entendo|sera|será|claro|ok|verdade|seria|acho|pode|pois|tipo|vou|vai|meu|minha|mas|antes|deixa|outra|outro|esse|essa|como|qual|quando|quanto|onde|porque|por|sofro|sofrer|dificuldade|desespero|socorro|ajuda|tratamento|medicamento|remedio|remédio|prefiro|nenhum|nenhuma|sobre|amanha|amanhã|agora|depois|durante|aqui|la|lá|ali|talvez|assim|entao|então|ainda|sempre|nunca|algo|alguem|alguém|ate|até|ontem|hoje|logo|ja|já|ai|aí|volta|volto|conversa|converso|falo|falar|penso|pensar|dormir|dormo|durmo|vamos|fico|demais|muito|pouco|todos|todo|toda|todas|cada|sinto|faz|faço|horas|vezes|anos|meses|semanas|tempo|gente|pessoa|pessoas|vida|coisa|forma|desde|quase|bastante|realmente|apenas|mesmo|olha|olho|estou|estava|tenha|seria|seria|tambem|também|pra|pois|nem|sei|sabia|morrer|viver|consegue|consigo|posso|desculpa|conversamos|conversarmos|conversar|ir|indo|mando|bora|comecar|começar)$/i;
+  const notNames = /^(oi|ola|olá|bom|boa|dia|dias|tarde|noite|noites|tudo|bem|obrigad|brigad|quero|preciso|gostaria|tenho|sim|nao|não|legal|caro|certo|entendi|entendo|sera|será|claro|ok|verdade|seria|acho|pode|pois|tipo|vou|vai|me|meu|minha|mas|antes|deixa|outra|outro|esse|essa|como|qual|quando|quanto|onde|porque|por|sofro|sofrer|dificuldade|desespero|socorro|ajuda|tratamento|medicamento|remedio|remédio|prefiro|nenhum|nenhuma|sobre|amanha|amanhã|agora|depois|durante|aqui|la|lá|ali|talvez|assim|entao|então|ainda|sempre|nunca|algo|alguem|alguém|ate|até|ontem|hoje|logo|ja|já|ai|aí|volta|volto|conversa|converso|falo|falar|penso|pensar|dormir|dormo|durmo|vamos|fico|demais|muito|pouco|todos|todo|toda|todas|cada|sinto|faz|faço|horas|vezes|anos|meses|semanas|tempo|gente|pessoa|pessoas|vida|coisa|forma|desde|quase|bastante|realmente|apenas|mesmo|olha|olho|estou|estava|tenha|seria|seria|tambem|também|pra|pois|nem|sei|sabia|morrer|viver|consegue|consigo|posso|desculpa|conversamos|conversarmos|conversar|ir|indo|mando|bora|comecar|começar|eu)$/i;
   if (notNames.test(parts[0])) return null;
   // V25: Rejeitar candidatos de 1 caractere (provavelmente não é nome)
   if (parts[0].length < 2) return null;
@@ -1951,7 +1951,7 @@ async function mpCreatePreference({ phone, planKey }) {
 }
 
 // V28: Monta link curto do checkout via ref token
-// Salva dados no banco, retorna URL curta: BASE_URL/checkout/<ref>
+// Salva dados no banco, retorna URL curta: SITE_URL/checkout/<ref>
 async function buildSiteCheckoutLink({ paymentLink, phone, planKey, externalReference, state }) {
   const plan = PLANS[planKey];
   const ref = generateCheckoutRef();
@@ -1968,8 +1968,8 @@ async function buildSiteCheckoutLink({ paymentLink, phone, planKey, externalRefe
     created_at: Date.now(),
   };
   await saveCheckoutRef(ref, checkoutData);
-  // Link curto que o backend resolve via redirect
-  return { ref, url: `${BASE_URL}/checkout/${ref}` };
+  // Link curto no domínio do site — HostGator faz proxy/redirect para o backend
+  return { ref, url: `${SITE_URL}/checkout/${ref}` };
 }
 
 async function mpGetPayment(paymentId) {
@@ -2462,15 +2462,18 @@ async function processLiaMessage(phone, incomingText) {
       reply = medCostReply(state);
       state.questions_answered_since_last_cta = (state.questions_answered_since_last_cta || 0) + 1;
     }
-    // V28: wantsPrice check ANTES do GPT — nunca evade preço
+    // V28.1: Lead decidido (quer pagar/marcar) → NÃO bloquear, deixar Camada 3 resolver
+    else if (flags.intentPay || flags.wantsBook) {
+      // Não intercepta aqui — cai na Camada 3 (stage handler) que atende lead quente na hora
+    }
+    // V28: wantsPrice check — se rapport raso, desvia; senão entrega
     else if (flags.wantsPrice) {
-      // V28: Se rapport ainda é raso (< 5 trocas no RAPPORT), desvia gentilmente
       if (state.stage === "RAPPORT" && (state.rapport_messages || 0) < 5) {
         const nome = state.nome ? `, ${state.nome}` : "";
         reply = pickRandom([
-          `Claro${nome}, já já te passo tudo! Mas antes quero entender melhor o seu caso pra poder te ajudar da melhor forma. Me conta mais: como isso tem afetado seu dia a dia?`,
-          `Te passo sim${nome}! Só quero entender um pouquinho mais sobre o que você tá sentindo antes, pra eu passar pro doutor com mais contexto. Como tá sendo a rotina com essa dor?`,
-          `Com certeza${nome}! Antes de te passar os detalhes, me deixa entender melhor o seu quadro — assim consigo te orientar melhor. O que mais te incomoda no dia a dia?`,
+          `Claro${nome}, já já te passo! Antes quero entender um pouquinho mais sobre o seu caso. Como isso tem afetado seu dia a dia?`,
+          `Te passo sim${nome}! Só quero entender melhor o que você tá sentindo antes, pra eu passar pro doutor com mais contexto. Como tá sua rotina?`,
+          `Com certeza${nome}! Me deixa entender melhor o seu quadro primeiro — o que mais te incomoda no dia a dia?`,
         ]);
       } else {
         state.price_ask_count = (state.price_ask_count || 0) + 1;
@@ -2787,30 +2790,36 @@ async function processLiaMessage(phone, incomingText) {
       state.rapport_messages = (state.rapport_messages || 0) + 1;
       const minRapport = 5; // mínimo de trocas antes de liberar preço/horário
 
-      // ANTES de 5 trocas: paciente pede preço/horário → NÃO ENTREGA, desvia gentilmente
-      if ((flags.wantsPrice || flags.wantsBook || flags.asksHours || flags.intentPay) && state.rapport_messages < minRapport) {
+      // V28.1: Lead decidido — pede para marcar/pagar/link → atende NA HORA (não bloqueia lead quente)
+      if (flags.intentPay || flags.wantsBook) {
+        // Lead quente: quer pagar ou marcar → manda direto para agendamento/preço
+        if (flags.wantsBook || flags.asksHours || flags.mentionsDayAvail) {
+          state.stage = "ASK_DAY";
+          reply = await askDayReply();
+        } else {
+          const pr = priceAndRoute(state);
+          reply = pr.reply;
+          state.stage = pr.stage;
+        }
+      }
+      // Preço ou horários: antes de 5 trocas desvia, depois entrega
+      else if (flags.wantsPrice && state.rapport_messages < minRapport) {
         const nome = state.nome ? `, ${state.nome}` : "";
         reply = pickRandom([
-          `Claro${nome}, já já te passo tudo! Mas antes quero entender melhor o seu caso pra poder te ajudar da melhor forma. Me conta mais: como isso tem afetado seu dia a dia?`,
-          `Te passo sim${nome}! Só quero entender um pouquinho mais sobre o que você tá sentindo antes, pra eu passar pro doutor com mais contexto. Como tá sendo a rotina com essa dor?`,
-          `Com certeza${nome}! Antes de te passar os detalhes, me deixa entender melhor o seu quadro — assim consigo te orientar melhor. O que mais te incomoda no dia a dia?`,
+          `Claro${nome}, já já te passo! Antes quero entender um pouquinho mais sobre o seu caso. Como isso tem afetado seu dia a dia?`,
+          `Te passo sim${nome}! Só quero entender melhor o que você tá sentindo antes, pra eu passar pro doutor com mais contexto. Como tá sendo sua rotina?`,
+          `Com certeza${nome}! Me deixa entender melhor o seu quadro primeiro — o que mais te incomoda no dia a dia?`,
         ]);
       }
-      // DEPOIS de 5 trocas: paciente pede preço → AGORA SIM entrega
       else if (flags.wantsPrice && state.rapport_messages >= minRapport) {
         state.price_ask_count = (state.price_ask_count || 0) + 1;
         const pr = priceAndRoute(state);
         reply = pr.reply;
         state.stage = pr.stage;
       }
-      else if ((flags.wantsBook || flags.asksHours || flags.mentionsDayAvail) && state.rapport_messages >= minRapport) {
+      else if ((flags.asksHours || flags.mentionsDayAvail) && state.rapport_messages >= minRapport) {
         state.stage = "ASK_DAY";
         reply = await askDayReply();
-      }
-      else if (flags.intentPay && state.rapport_messages >= minRapport) {
-        const pr = priceAndRoute(state);
-        reply = pr.reply;
-        state.stage = pr.stage;
       }
       // Continuar conversando — NUNCA oferece proativamente
       else {
@@ -3423,7 +3432,7 @@ app.post("/lia/respond", async (req, res) => {
         };
         st.stage = "WAIT_PAYMENT";
         await saveUserState(phone, st);
-        const testReply = `🔗 Link de pagamento (teste):\n\n${checkout.url}\n\nMP direto: ${pref.link}`;
+        const testReply = `Para confirmar sua consulta, toque no link abaixo:\n\n${checkout.url}\n\nAssim que o pagamento for confirmado, eu aviso por aqui.`;
         console.log(`[LIA] linklinklink test command for ${phone}`);
         return res.json({ ok: true, reply: testReply, skip_send: false, delay_ms: 1000 });
       } catch (err) {
