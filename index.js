@@ -336,9 +336,7 @@ function authorityInstagramReply(context = "trust") {
 }
 
 const FIXED_SCHEDULE = {
-  // MARÇO 2026 (25-03 e 26-03 removidos — já passaram)
-  "27-03": { dayName: "sexta-feira",  slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h","22h"] },
-  "28-03": { dayName: "sábado",       slots: ["9h","10h","11h","12h"] },
+  // MARÇO 2026
   "31-03": { dayName: "terça-feira",  slots: ["16h","17h","18h","19h","20h","21h","22h"] },
   // ABRIL 2026
   "01-04": { dayName: "quarta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
@@ -346,6 +344,23 @@ const FIXED_SCHEDULE = {
   "03-04": { dayName: "sexta-feira",  slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
   "04-04": { dayName: "sábado",       slots: ["9h","10h","11h","12h"] },
   "07-04": { dayName: "terça-feira",  slots: ["16h","17h","18h","19h","20h","21h","22h"] },
+  "08-04": { dayName: "quarta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
+  "09-04": { dayName: "quinta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
+  "10-04": { dayName: "sexta-feira",  slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
+  "11-04": { dayName: "sábado",       slots: ["9h","10h","11h","12h"] },
+  "14-04": { dayName: "terça-feira",  slots: ["16h","17h","18h","19h","20h","21h","22h"] },
+  "15-04": { dayName: "quarta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
+  "16-04": { dayName: "quinta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
+  "17-04": { dayName: "sexta-feira",  slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
+  "18-04": { dayName: "sábado",       slots: ["9h","10h","11h","12h"] },
+  "21-04": { dayName: "terça-feira",  slots: ["16h","17h","18h","19h","20h","21h","22h"] },
+  "22-04": { dayName: "quarta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
+  "23-04": { dayName: "quinta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
+  "24-04": { dayName: "sexta-feira",  slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
+  "25-04": { dayName: "sábado",       slots: ["9h","10h","11h","12h"] },
+  "28-04": { dayName: "terça-feira",  slots: ["16h","17h","18h","19h","20h","21h","22h"] },
+  "29-04": { dayName: "quarta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
+  "30-04": { dayName: "quinta-feira", slots: ["9h","10h","11h","12h","13h","14h","15h","16h","17h","18h","19h","20h","21h"] },
 };
 
 const PREMIUM_SLOT_PRIORITY = ["20h","21h","22h","19h","18h","17h","16h","15h","14h","13h","12h","11h","10h","9h"];
@@ -1030,7 +1045,7 @@ async function getSuggestedDayKeys() {
     const slots = await getAvailableSlotsForDate(d);
     if (slots.length) out.push(d);
   }
-  return out.slice(0, 3);
+  return out.slice(0, 5);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
