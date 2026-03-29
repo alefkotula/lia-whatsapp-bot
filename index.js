@@ -272,25 +272,74 @@ function isMetaAdsEntry(text) {
   // V27: Entradas via formulário Meta (ads com lead form)
   if (/preenchi\s+(seu|o)\s+formul[aá]rio/i.test(t)) return true;
   if (/gostaria de saber mais sobre sua empresa/i.test(t)) return true;
-  if (/nome_completo:|telefone:.*\+55|h[aá]_quanto_tempo/i.test(t)) return true;
+  if (/nome[_\s-]*completo\s*:|telefone\s*:.*\+?55|h[aá][_\s-]*quanto[_\s-]*tempo/i.test(t)) return true;
   return false;
+}
+
+function stripDiacritics(text) {
+  return String(text || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizeLeadFieldKey(text) {
+  return stripDiacritics(text)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function extractMetaField(text, labelPattern) {
+  if (!text) return null;
+  const nextLabel = String.raw`(?=\n|(?:\s+(?:nome[_\s-]*completo|telefone|h[aá][_\s-]*quanto[_\s-]*tempo|o[_\s-]*que[_\s-]*voc[eê][_\s-]*quer[_\s-]*resolver|voc[eê][_\s-]*(?:j[aá][_\s-]*)?tentou|voc[eê][_\s-]*(?:tem|t[eê]m)[_\s-]*interesse)\s*:)|$)`;
+  const re = new RegExp(`${labelPattern}\\s*:\\s*([\\s\\S]*?)${nextLabel}`, "i");
+  const match = String(text).match(re);
+  return match?.[1]?.trim() || null;
 }
 
 // V27: Extrai dados estruturados do formulário Meta
 function parseMetaFormData(text) {
   if (!text) return null;
   const fields = {};
-  const nameMatch = text.match(/nome_completo:\s*(.+)/i);
-  if (nameMatch) fields.nome_completo = nameMatch[1].trim();
-  const condMatch = text.match(/o_que_voc[eê]_quer_resolver[^:]*:\s*(.+)/i);
-  if (condMatch) fields.condition = condMatch[1].trim();
-  const tempoMatch = text.match(/h[aá]_quanto_tempo[^:]*:\s*(.+)/i);
-  if (tempoMatch) fields.tempo = tempoMatch[1].trim();
-  const interesseMatch = text.match(/voc[eê]_tem_interesse[^:]*:\s*(.+)/i);
-  if (interesseMatch) fields.interesse = interesseMatch[1].trim();
-  const tentouMatch = text.match(/voc[eê]_j[aá]_tentou[^:]*:\s*(.+)/i);
-  if (tentouMatch) fields.tentou_tratamento = tentouMatch[1].trim();
-  if (Object.keys(fields).length >= 2) return fields;
+  const raw = String(text).replace(/\r/g, "");
+
+  for (const line of raw.split("\n")) {
+    const idx = line.indexOf(":");
+    if (idx < 0) continue;
+    const label = normalizeLeadFieldKey(line.slice(0, idx));
+    const value = line.slice(idx + 1).trim();
+    if (!value) continue;
+
+    if (!fields.nome_completo && label.includes("nome_completo")) fields.nome_completo = value;
+    else if (!fields.condition && label.includes("o_que_voce_quer_resolver")) fields.condition = value;
+    else if (!fields.tempo && label.includes("ha_quanto_tempo")) fields.tempo = value;
+    else if (!fields.interesse && label.includes("voce_tem_interesse")) fields.interesse = value;
+    else if (!fields.tentou_tratamento && label.includes("voce_ja_tentou")) fields.tentou_tratamento = value;
+    else if (!fields.telefone && (label === "telefone" || label.endsWith("_telefone") || label.includes("telefone"))) fields.telefone = value;
+  }
+
+  if (!fields.nome_completo) {
+    fields.nome_completo = extractMetaField(raw, String.raw`nome[_\s-]*completo`) || null;
+  }
+  if (!fields.condition) {
+    fields.condition = extractMetaField(raw, String.raw`o[_\s-]*que[_\s-]*voc[eê][_\s-]*quer[_\s-]*resolver[^:]*`) || null;
+  }
+  if (!fields.tempo) {
+    fields.tempo = extractMetaField(raw, String.raw`h[aá][_\s-]*quanto[_\s-]*tempo[^:]*`) || null;
+  }
+  if (!fields.interesse) {
+    fields.interesse = extractMetaField(raw, String.raw`voc[eê][_\s-]*(?:tem|t[eê]m)[_\s-]*interesse[^:]*`) || null;
+  }
+  if (!fields.tentou_tratamento) {
+    fields.tentou_tratamento = extractMetaField(raw, String.raw`voc[eê][_\s-]*j[aá][_\s-]*tentou[^:]*`) || null;
+  }
+  if (!fields.telefone) {
+    fields.telefone = extractMetaField(raw, String.raw`telefone`) || null;
+  }
+
+  Object.keys(fields).forEach((key) => {
+    if (!fields[key]) delete fields[key];
+  });
+
+  if (Object.keys(fields).length) return fields;
   return null;
 }
 
@@ -303,6 +352,150 @@ function extractFormFirstName(nomeCompleto) {
   let first = parts[0].replace(/[^a-záéíóúâêîôûãõçñ]/gi, "");
   if (first.length < 2) return null;
   return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+}
+
+function getNested(obj, path) {
+  return String(path || "")
+    .split(".")
+    .filter(Boolean)
+    .reduce((acc, key) => (acc && acc[key] !== undefined ? acc[key] : undefined), obj);
+}
+
+function firstNonEmpty(values = []) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string" && !value.trim()) continue;
+    return value;
+  }
+  return null;
+}
+
+function coerceInboundBoolean(value) {
+  if (value === true || value === 1) return true;
+  if (typeof value === "string") {
+    const low = value.trim().toLowerCase();
+    if (["true", "1", "yes", "sim"].includes(low)) return true;
+  }
+  return false;
+}
+
+function cleanInboundText(value, { preserveNewlines = false } = {}) {
+  if (value === undefined || value === null) return null;
+  let text = String(value)
+    .replace(/\u0000/g, "")
+    .replace(/\\r/g, "")
+    .replace(/\r/g, "");
+
+  if (preserveNewlines) {
+    text = text
+      .replace(/\\n/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    return text || null;
+  }
+
+  text = text
+    .replace(/\\n/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return text || null;
+}
+
+function cleanInboundPhone(value) {
+  const raw = cleanInboundText(value);
+  if (!raw) return null;
+  return raw
+    .replace(/@s\.whatsapp\.net/gi, "")
+    .replace(/@g\.us/gi, "")
+    .replace(/\D/g, "");
+}
+
+function extractInboundEnvelope(body = {}) {
+  const phoneValue = firstNonEmpty([
+    body.telefone,
+    body.phone,
+    body.from,
+    body.sender,
+    body.number,
+    body.remoteJid,
+    body.jid,
+    getNested(body, "data.phone"),
+    getNested(body, "data.from"),
+    getNested(body, "data.sender"),
+    getNested(body, "data.key.remoteJid"),
+    getNested(body, "key.remoteJid"),
+    getNested(body, "event.data.phone"),
+    getNested(body, "event.data.from"),
+    getNested(body, "event.data.sender"),
+    getNested(body, "event.data.key.remoteJid"),
+  ]);
+
+  const messageValue = firstNonEmpty([
+    body.mensagem,
+    body.message,
+    body.text,
+    body.body,
+    body.caption,
+    getNested(body, "data.body"),
+    getNested(body, "data.text"),
+    getNested(body, "data.message.conversation"),
+    getNested(body, "data.message.extendedTextMessage.text"),
+    getNested(body, "data.message.imageMessage.caption"),
+    getNested(body, "data.message.videoMessage.caption"),
+    getNested(body, "event.data.body"),
+    getNested(body, "event.data.text"),
+    getNested(body, "event.data.message.conversation"),
+    getNested(body, "event.data.message.extendedTextMessage.text"),
+    getNested(body, "event.data.message.imageMessage.caption"),
+    getNested(body, "event.data.message.videoMessage.caption"),
+  ]);
+
+  const fromMeRaw = firstNonEmpty([
+    body.fromMe,
+    body.from_me,
+    getNested(body, "data.fromMe"),
+    getNested(body, "data.key.fromMe"),
+    getNested(body, "key.fromMe"),
+    getNested(body, "event.data.fromMe"),
+    getNested(body, "event.data.key.fromMe"),
+  ]);
+
+  const messageTypeValue = firstNonEmpty([
+    body.messageType,
+    body.mediaType,
+    body.type,
+    body.mimetype,
+    getNested(body, "data.messageType"),
+    getNested(body, "data.mediaType"),
+    getNested(body, "data.type"),
+    getNested(body, "data.mimetype"),
+    getNested(body, "event.data.messageType"),
+    getNested(body, "event.data.mediaType"),
+    getNested(body, "event.data.type"),
+    getNested(body, "event.data.mimetype"),
+  ]);
+
+  const contactNameValue = firstNonEmpty([
+    body.nome,
+    body.name,
+    body.pushName,
+    getNested(body, "data.nome"),
+    getNested(body, "data.name"),
+    getNested(body, "data.pushName"),
+    getNested(body, "event.data.nome"),
+    getNested(body, "event.data.name"),
+    getNested(body, "event.data.pushName"),
+  ]);
+
+  return {
+    phoneRaw: cleanInboundPhone(phoneValue),
+    messageRaw: cleanInboundText(messageValue, { preserveNewlines: true }),
+    fromMe: coerceInboundBoolean(fromMeRaw),
+    incomingMsgType: String(cleanInboundText(messageTypeValue) || "").toLowerCase().trim(),
+    contactName: extractFormFirstName(cleanInboundText(contactNameValue) || ""),
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1311,6 +1504,12 @@ FATOS SOBRE PAGAMENTO:
 
 SIGILO: Total sigilo médico. Consulta individual por telemedicina.
 
+LINK DA LANDING PAGE: https://www.dralefkotula.com
+- Mande este link UMA VEZ durante a conversa, quando fizer sentido, como material de apoio.
+- Exemplo: "Se quiser conhecer melhor o Dr. Alef e ver os estudos, dá uma olhada aqui: https://www.dralefkotula.com"
+- Bom momento: após responder dúvida sobre o médico, ou quando a pessoa está indecisa.
+- NÃO mande na primeira mensagem. NÃO mande mais de 1 vez.
+
 FATOS SOBRE CUSTO DO MEDICAMENTO:
 - O frasco de óleo medicinal custa em média entre R$150 e R$250 e dura de 2 a 3 meses (alguns pacientes usam por até 6 meses)
 - A duração depende da dose prescrita (quantas gotas por dia) — isso é definido na consulta
@@ -1380,10 +1579,7 @@ function isMedCostQuestion(flags, text) {
 
 // V24.10: Helper — rapport mínimo atingido?
 function hasMinRapport(state) {
-  return !!(
-    state.problem_text &&
-    (state.diag_has_tempo || state.diag_has_impacto || state.diag_has_tratamento)
-  );
+  return !!(state.problem_text);
 }
 
 // V25: Helper — preço + rota. Sempre oferece pagamento (pagar primeiro, agendar depois)
@@ -1674,8 +1870,6 @@ function extractMainQuestion(text) {
 function shouldShowCTA(state, flags, text) {
   // V28: NUNCA empurrar CTA quando lead pede tempo, encerra, quer dormir, ou tem risco emocional
   if (flags.saysWillSee || flags.endsConversation || flags.saysCheckSpouse || flags.emotionalRisk || flags.emotionalDistress || flags.isSleepy || flags.wantsLater) return false;
-  // V28: NUNCA empurrar CTA no estágio RAPPORT
-  if (state.stage === "RAPPORT") return false;
   if (flags.wantsBook || flags.asksHours || flags.confirms || flags.intentPay) return true;
   if (hasQuestion(text)) return false;
   if (isSubstantiveQuestion(text)) return false;
@@ -1697,9 +1891,12 @@ function getStageCTA(state) {
   if (s === "ASK_PAY_METHOD") return pickRandom(["\n\nPrefere 1️⃣ link ou 2️⃣ Pix?", "\n\nComo quer pagar: 1️⃣ link ou 2️⃣ Pix?"]);
   if (s === "ASK_PLAN") return "\n\nPrefere 1️⃣ link ou 2️⃣ Pix?";
   if (s === "WAIT_PAYMENT" && state.payment?.link) return `\n\nO link segue ativo:\n${state.payment.link}`;
-  if (["ASK_NAME", "ASK_PROBLEM", "DIAGNOSTIC", "RAPPORT"].includes(s) || !s) return "";
-  // V28: Só mostrar CTA de horários se estiver em estágio pós-RAPPORT (BRIDGE+)
-  if (s === "BRIDGE" && (state.rapport_messages || 0) < 5) return "";
+  if (["ASK_NAME", "ASK_PROBLEM", "DIAGNOSTIC"].includes(s) || !s) return "";
+  // V28.2: RAPPORT e BRIDGE agora podem mostrar CTA de horários
+  if (s === "RAPPORT" || s === "BRIDGE") {
+    if (hasMinRapport(state)) return pickRandom(["\n\nQuer que eu te mostre os horários?", "\n\nPosso te mostrar os horários disponíveis?"]);
+    return "";
+  }
   return pickRandom(["\n\nQuer que eu te mostre os horários?", "\n\nPosso te mostrar os horários disponíveis?"]);
 }
 
@@ -1809,32 +2006,29 @@ QUANDO O PACIENTE DESCREVER DOR OU SOFRIMENTO:
 - Se a pessoa parecer muito triste ou vulnerável, acolha MAIS antes de falar de consulta.
 - Mostre que você é uma pessoa real que se importa: "A gente aqui torce por cada paciente que chega"
 
-═══ RAPPORT — CONSTRUA ANTES DE VENDER ═══
-- Converse com a pessoa como ser humano. Pergunte como ela está. Demonstre interesse genuíno.
-- Não transforme cada resposta do paciente em gancho de venda. Às vezes só ouça e valide.
-- Se a pessoa mencionou família, comente sobre isso. Se mencionou trabalho, pergunte. Se mencionou que tentou vários tratamentos, explore a frustração.
-- Você pode perguntar: "E aí, como sua família está?", "Você mora sozinha?", "Consegue trabalhar normalmente ou a dor atrapalha?"
-- O objetivo é que a pessoa sinta que está falando com alguém que realmente a entende.
-- NUNCA ofereça consulta proativamente. Construa rapport primeiro. Só fale de consulta quando o PACIENTE perguntar.
+═══ CONDUÇÃO PARA CONSULTA ═══
+Você é empática e acolhedora, MAS também é eficiente. Seu objetivo é ajudar a pessoa a agendar a consulta que pode mudar a vida dela. Isso não é "vender" — é facilitar o acesso ao tratamento.
+
+REGRA 1: Após a pessoa contar sua queixa E você validar com empatia (2-3 trocas de mensagem), APRESENTE o preço proativamente. Não espere ela perguntar. Use uma transição natural como: "A consulta com o Dr. Alef é R$297, dá pra parcelar no cartão. Menos do que a maioria gasta por mês em remédio que não resolve."
+
+REGRA 2: Após apresentar o preço, ofereça os horários: "Temos horários disponíveis essa semana. Quer que eu te mostre?"
+
+REGRA 3: Se a pessoa veio pelo formulário e já tem dados de queixa, você pode ir direto ao preço na 2ª mensagem, após uma validação empática.
+
+REGRA 4: "Vou pensar" não é "não". Respeite, mas envie o link mesmo assim: "Sem pressa! Vou te deixar o link aqui pra quando decidir."
+
+REGRA 5: Nunca seja agressiva. Mas NUNCA deixe a pessoa sair da conversa sem ter recebido o preço e o link de pagamento. Isso é responsabilidade sua.
 
 ═══ SEU PROPÓSITO ═══
-Você quer ajudar essa pessoa de verdade. Seu papel é acolher, escutar, e quando ELA estiver pronta, facilitar o caminho para a consulta.
-
-REGRA ABSOLUTA #1: NUNCA ofereça preço, horários, avaliação ou consulta proativamente. Não importa quantas mensagens já trocou. NUNCA sugira. NUNCA pergunte "quer que eu te passe os detalhes?" ou "posso te mostrar os horários?" ou "quer saber mais sobre a avaliação?". Converse. Pergunte. Se importe.
-
-REGRA ABSOLUTA #2: Se o paciente perguntar sobre preço ou horários CEDO na conversa (antes de vocês terem conversado bastante), NÃO entregue. Diga que quer entender melhor o caso dele primeiro. Ex: "Claro, já já te passo! Mas antes quero entender melhor o seu caso pra te ajudar da melhor forma..."
-
-REGRA ABSOLUTA #3: Só entregue preço/horários quando o PACIENTE perguntar E vocês já tiverem tido uma conversa real sobre a condição dele.
-
-Você NÃO é vendedora. Você é uma pessoa que se importa de verdade. A venda acontece naturalmente quando a pessoa confia em você.
+Você quer ajudar essa pessoa de verdade. Seu papel é acolher, escutar, e conduzir para a consulta com naturalidade. Empatia primeiro, depois preço e horários — mas SEMPRE chegue lá.
 
 COMO CONVERSAR:
-- Paciente conta que sofre → Valide, pergunte mais ("E o sono, como tá?", "Isso te atrapalha pra trabalhar?")
-- Paciente diz que já tentou tudo → Explore a frustração ("Imagino como deve ser frustrante tentar tanta coisa e não resolver...")
-- Paciente pergunta se funciona → Responda com dados clínicos reais, sem empurrar consulta
-- Paciente desabafa → Acolha. NÃO ofereça nada. Só escute e valide.
-- Paciente pergunta preço → Se já conversaram bastante: "PRECISA_PRECO". Se ainda não: desvie com carinho e pergunte mais sobre o caso.
-- NUNCA termine mensagem com sugestão de consulta ou agendamento. Termine com uma pergunta sobre a condição da pessoa, ou com uma validação emocional.
+- Paciente conta que sofre → Valide, pergunte mais ("E o sono, como tá?", "Isso te atrapalha pra trabalhar?") — e após 2-3 trocas, apresente o preço.
+- Paciente diz que já tentou tudo → Explore a frustração, depois apresente a consulta como próximo passo.
+- Paciente pergunta se funciona → Responda com dados clínicos reais, depois mencione a consulta.
+- Paciente desabafa → Acolha primeiro. Depois conduza com delicadeza para a consulta.
+- Paciente pergunta preço → Responda SEMPRE: "PRECISA_PRECO". Nunca desvie.
+- Após validar a pessoa, naturalmente conduza para: "A consulta com o Dr. Alef é R$297, dá pra parcelar no cartão. Quer ver os horários?"
 
 ═══ OBJEÇÕES ═══
 "É caro" → Valide o sentimento. Mostre empatia. Depois mencione parcelamento naturalmente. Nunca minimize a preocupação.
@@ -1847,6 +2041,7 @@ COMO CONVERSAR:
 
 ${isEarlyConvo ? "\n═══ PRIMEIROS TURNOS ═══\nVocê está no INÍCIO da conversa. Seja BREVE (1-2 frases curtas). Não explique tudo de uma vez. Conheça a pessoa. Revele informações aos poucos." : ""}
 ${hasProblem && hasName ? "\n═══ CONTEXTO ═══\nVocê já sabe o nome e o problema. Não pergunte de novo. Avance a conversa." : ""}
+${!state.lp_sent ? "\n═══ LANDING PAGE ═══\nVocê pode mandar o link https://www.dralefkotula.com UMA VEZ para reforçar confiança, quando o momento for oportuno (ex: pessoa indecisa, perguntou sobre o médico). NÃO mande na primeira mensagem." : "\nVocê já mandou o link da landing page. NÃO mande novamente."}
 
 ${KNOWLEDGE_BASE}
 ${conditionContext}
@@ -2113,17 +2308,17 @@ function getNextDiagQuestion(state, text) {
   state.diag_has_emocional = has.emocional;
 
   const asked = Number(state.diagnostic_step || 0);
-  // V28: Máximo 4 perguntas diagnósticas (era 2) — mais rapport antes de fechar
-  if (asked >= 4) return null;
-  if (state.lead_profile === "emocional" && asked >= 2) return null;
+  // V28.2: Máximo 2 perguntas diagnósticas — lead não pode esfriar
+  if (asked >= 2) return null;
+  if (state.lead_profile === "emocional" && asked >= 1) return null;
   // Se lead já deu condição + tempo + impacto + tratamento, pode encerrar
   if (has.tempo && has.impacto && has.tratamento) return null;
 
-  if (!has.tempo && asked < 4) { state.diagnostic_step = asked + 1; return diagQ_tempo(state); }
-  if (!has.impacto && asked < 4) { state.diagnostic_step = asked + 1; return diagQ_impacto(state); }
-  if (!has.sono && asked < 4) { state.diagnostic_step = asked + 1; return diagQ_sono(state); }
-  if (!has.tratamento && asked < 4) { state.diagnostic_step = asked + 1; return diagQ_tratamento(); }
-  if (!has.emocional && asked < 4) { state.diagnostic_step = asked + 1; return diagQ_emocional(state); }
+  if (!has.tempo && asked < 2) { state.diagnostic_step = asked + 1; return diagQ_tempo(state); }
+  if (!has.impacto && asked < 2) { state.diagnostic_step = asked + 1; return diagQ_impacto(state); }
+  if (!has.tratamento && asked < 2) { state.diagnostic_step = asked + 1; return diagQ_tratamento(); }
+  if (!has.sono && asked < 2) { state.diagnostic_step = asked + 1; return diagQ_sono(state); }
+  if (!has.emocional && asked < 2) { state.diagnostic_step = asked + 1; return diagQ_emocional(state); }
 
   return null;
 }
@@ -2152,11 +2347,12 @@ ${ev ? `Dado clínico disponível: ${ev.direct_answer}` : ""}
 Exemplo de empatia que você pode usar (adapte, não copie): "${empathyExample}"
 Exemplo de esperança que você pode usar (adapte, não copie): "${hopeExample}"
 
-Gere UMA resposta natural (máx 350 chars) que:
+Gere UMA resposta natural (máx 450 chars) que:
 1. Valide o que a pessoa contou com EMPATIA PROFUNDA (referenciando algo específico que ela disse)
 2. Mostre que você se importa de verdade — pode mencionar que sua mãe/tia/avó também sofria com isso
-3. Continue a conversa naturalmente — faça uma pergunta sobre a vida da pessoa ou o impacto da condição
-4. NÃO ofereça consulta, avaliação, agendamento ou preço. NÃO pergunte "quer que eu te passe os detalhes". Apenas converse.
+3. Apresente o dado clínico de forma natural (o que você vê no consultório)
+4. Após a validação emocional e o dado clínico, apresente o preço naturalmente: "A consulta com o Dr. Alef é R$297, dá pra parcelar no cartão."
+5. Termine perguntando se a pessoa quer ver os horários disponíveis.
 
 Seja humana, calorosa, emocional. NÃO use listas. NÃO use emoji. NÃO seja genérica.
 Responda APENAS o texto da mensagem, nada mais.`;
@@ -2168,7 +2364,8 @@ Responda APENAS o texto da mensagem, nada mais.`;
         messages: [{ role: "user", content: bridgePrompt }],
       });
       const bridgeText = (resp.choices?.[0]?.message?.content || "").trim();
-      if (bridgeText && bridgeText.length > 30 && bridgeText.length < 450 && !violatesNoPriceNoLink(bridgeText)) {
+      // V28.2: Bridge agora PODE incluir preço — removido violatesNoPriceNoLink
+      if (bridgeText && bridgeText.length > 30 && bridgeText.length < 600) {
         state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
         return bridgeText;
       }
@@ -2184,8 +2381,8 @@ Responda APENAS o texto da mensagem, nada mais.`;
     evidence = ev.direct_answer || pickRandom(ev.testimony);
     state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
   }
-  // V28: SEM CTA — bridge fallback é só empatia + evidência
-  return `Faz todo sentido${nomeStr}.\n\n${evidence}`;
+  // V28.2: Bridge fallback inclui preço + oferta de horários
+  return `Faz todo sentido${nomeStr}.\n\n${evidence}\n\nA consulta com o Dr. Alef é R$297 — dá pra parcelar no cartão. Quer que eu te mostre os horários disponíveis?`;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2222,6 +2419,7 @@ function initializeState(state, bot) {
   state.nome_completo = state.nome_completo || null;
   state.birthdate = state.birthdate || null;
   state.email = state.email || null;
+  state.lp_sent = state.lp_sent || false;
   state.price_ask_count = Number(state.price_ask_count || 0);
   state.diagnostic_step = Number(state.diagnostic_step || 0);
   state.diag_has_tempo = !!state.diag_has_tempo;
@@ -2260,7 +2458,7 @@ function updateConversationHistory(state, patientMsg, liaReply) {
 
    ═══════════════════════════════════════════════════════════════════ */
 
-async function processLiaMessage(phone, incomingText) {
+async function processLiaMessage(phone, incomingText, meta = {}) {
   const phoneDigits = String(phone).replace(/\D/g, "");
 
   // ── V24.6: Filtro de mensagens de sistema (Meta/WhatsApp/operacionais) ──
@@ -2313,6 +2511,10 @@ async function processLiaMessage(phone, incomingText) {
 
   // ── Load state ──
   let state = initializeState(await getUserState(phone), `api:${phone}`);
+  const inboundName = extractFormFirstName(meta.contactName || meta.nome || "");
+  if (inboundName && !state.nome && !state.form_data?.nome_completo && !state.name_skipped) {
+    state.nome = inboundName;
+  }
 
   // Salvar mensagem inbound
   logMessage(phone, "lia", incomingText, "inbound");
@@ -2542,21 +2744,12 @@ async function processLiaMessage(phone, incomingText) {
     else if (flags.intentPay || flags.wantsBook) {
       // Não intercepta aqui — cai na Camada 3 (stage handler) que atende lead quente na hora
     }
-    // V28: wantsPrice check — se rapport raso, desvia; senão entrega
+    // V28.2: wantsPrice check — responde SEMPRE (sem bloqueio de rapport)
     else if (flags.wantsPrice) {
-      if (state.stage === "RAPPORT" && (state.rapport_messages || 0) < 5) {
-        const nome = state.nome ? `, ${state.nome}` : "";
-        reply = pickRandom([
-          `Claro${nome}, já já te passo! Antes quero entender um pouquinho mais sobre o seu caso. Como isso tem afetado seu dia a dia?`,
-          `Te passo sim${nome}! Só quero entender melhor o que você tá sentindo antes, pra eu passar pro doutor com mais contexto. Como tá sua rotina?`,
-          `Com certeza${nome}! Me deixa entender melhor o seu quadro primeiro — o que mais te incomoda no dia a dia?`,
-        ]);
-      } else {
-        state.price_ask_count = (state.price_ask_count || 0) + 1;
-        const pr = priceAndRoute(state);
-        reply = pr.reply;
-        state.stage = pr.stage;
-      }
+      state.price_ask_count = (state.price_ask_count || 0) + 1;
+      const pr = priceAndRoute(state);
+      reply = pr.reply;
+      state.stage = pr.stage;
     } else {
     const ctaHint = shouldShowCTA(state, flags, incomingText) ? getStageCTA(state).trim() : "";
     const ai = await runLia({
@@ -2586,17 +2779,12 @@ async function processLiaMessage(phone, incomingText) {
       }
       state = mergeState(state, ai.updates);
     }
-    // V28: __NEED_PRICE__ → respeitar mínimo de rapport antes de entregar preço
+    // V28.2: __NEED_PRICE__ → responde SEMPRE (sem bloqueio)
     else if (ai.reply === "__NEED_PRICE__") {
-      if (state.stage === "RAPPORT" && (state.rapport_messages || 0) < 5) {
-        const nome = state.nome ? `, ${state.nome}` : "";
-        reply = `Claro${nome}, já já te passo! Antes quero entender um pouquinho mais sobre o seu caso. Como isso tem impactado sua rotina?`;
-      } else {
-        state.price_ask_count = (state.price_ask_count || 0) + 1;
-        const pr = priceAndRoute(state);
-        reply = pr.reply;
-        state.stage = pr.stage;
-      }
+      state.price_ask_count = (state.price_ask_count || 0) + 1;
+      const pr = priceAndRoute(state);
+      reply = pr.reply;
+      state.stage = pr.stage;
     } else if (ai.reply === "__NEED_BOOK__") {
       state.stage = "ASK_DAY";
       reply = await askDayReply();
@@ -2670,14 +2858,24 @@ async function processLiaMessage(phone, incomingText) {
             else if (/menos de 3 meses/i.test(formData.tempo)) state.problem_tempo = "menos de 3 meses";
           }
           if (formData.tentou_tratamento && /sim/i.test(formData.tentou_tratamento)) state.diag_has_tratamento = true;
-          state.stage = "ASK_PROBLEM";
-          // V27: Abertura natural — finge não saber, mas usa nome
-          const greetings = [
-            `Oi, ${formName}! Sou a Lia, do consultório do Dr. Alef Kotula. Me conta: o que te trouxe até aqui?`,
-            `Oi, ${formName}! Aqui é a Lia, da equipe do Dr. Alef. Tudo bem? Me diz o que posso fazer por você.`,
-            `Oi, ${formName}! Eu sou a Lia, trabalho com o Dr. Alef. O que te motivou a entrar em contato?`,
-          ];
-          reply = pickRandom(greetings);
+          // V28.2: Formulário com queixa → pular direto para preço + oferta de horários
+          if (formData.condition) {
+            state.problem_text = formData.condition;
+            state.stage = "ASK_DAY";
+            const condLabel = formData.condition.length > 50 ? "seu caso" : formData.condition;
+            const empathyLine = formData.tempo
+              ? `Sofrer com isso${formData.tempo.includes("ano") ? " há tanto tempo" : ""} não é fácil, eu sei.`
+              : "Sei que não é fácil lidar com isso no dia a dia.";
+            reply = `Oi, ${formName}! Aqui é a Lia, da equipe do Dr. Alef 😊\nVi que você tem interesse em consulta sobre ${condLabel}.\n${empathyLine}\nA consulta com o Dr. Alef é online, dura ~45min, e custa R$297 (dá pra parcelar no cartão).\nQuer que eu te mostre os horários disponíveis?`;
+          } else {
+            state.stage = "ASK_PROBLEM";
+            const greetings = [
+              `Oi, ${formName}! Sou a Lia, do consultório do Dr. Alef Kotula. Me conta: o que te trouxe até aqui?`,
+              `Oi, ${formName}! Aqui é a Lia, da equipe do Dr. Alef. Tudo bem? Me diz o que posso fazer por você.`,
+              `Oi, ${formName}! Eu sou a Lia, trabalho com o Dr. Alef. O que te motivou a entrar em contato?`,
+            ];
+            reply = pickRandom(greetings);
+          }
         } else {
           // Form sem nome legível → pedir nome
           state.form_data = formData;
@@ -2851,24 +3049,20 @@ async function processLiaMessage(phone, incomingText) {
       if (nextQ) {
         reply = nextQ;
       } else {
-        // V28: Transição para RAPPORT (NÃO direto para BRIDGE)
-        // Empatia pura, SEM CTA, SEM "quer que eu te passe os detalhes"
-        state.stage = "RAPPORT";
-        state.rapport_messages = 0;
-        const cond = state.condition || detectCondition(state.problem_text || "") || "dor_cronica";
-        const empathy = getEmpathyReply(cond);
-        reply = empathy;
+        // V28.2: Transição direto para BRIDGE (inclui preço + oferta de horários)
+        state.stage = "ASK_DAY";
+        state.rapport_messages = (state.rapport_messages || 0) + 1;
+        const bridgeText = await bridgeReply(state);
+        reply = bridgeText;
       }
     }
 
-    // ── V28: RAPPORT — conversa natural, SEM oferta proativa ──
+    // ── V28.2: RAPPORT — conversa empática mas CONDUZ para preço/consulta ──
     else if (state.stage === "RAPPORT") {
       state.rapport_messages = (state.rapport_messages || 0) + 1;
-      const minRapport = 5; // mínimo de trocas antes de liberar preço/horário
 
-      // V28.1: Lead decidido — pede para marcar/pagar/link → atende NA HORA (não bloqueia lead quente)
-      if (flags.intentPay || flags.wantsBook) {
-        // Lead quente: quer pagar ou marcar → manda direto para agendamento/preço
+      // Lead decidido — pede para marcar/pagar/link → atende NA HORA
+      if (flags.intentPay || flags.wantsBook || flags.asksHours || flags.mentionsDayAvail) {
         if (flags.wantsBook || flags.asksHours || flags.mentionsDayAvail) {
           state.stage = "ASK_DAY";
           reply = await askDayReply();
@@ -2878,48 +3072,31 @@ async function processLiaMessage(phone, incomingText) {
           state.stage = pr.stage;
         }
       }
-      // Preço ou horários: antes de 5 trocas desvia, depois entrega
-      else if (flags.wantsPrice && state.rapport_messages < minRapport) {
-        const nome = state.nome ? `, ${state.nome}` : "";
-        reply = pickRandom([
-          `Claro${nome}, já já te passo! Antes quero entender um pouquinho mais sobre o seu caso. Como isso tem afetado seu dia a dia?`,
-          `Te passo sim${nome}! Só quero entender melhor o que você tá sentindo antes, pra eu passar pro doutor com mais contexto. Como tá sendo sua rotina?`,
-          `Com certeza${nome}! Me deixa entender melhor o seu quadro primeiro — o que mais te incomoda no dia a dia?`,
-        ]);
-      }
-      else if (flags.wantsPrice && state.rapport_messages >= minRapport) {
+      // Paciente pergunta preço → responde SEMPRE (sem bloqueio)
+      else if (flags.wantsPrice) {
         state.price_ask_count = (state.price_ask_count || 0) + 1;
         const pr = priceAndRoute(state);
         reply = pr.reply;
         state.stage = pr.stage;
       }
-      else if ((flags.asksHours || flags.mentionsDayAvail) && state.rapport_messages >= minRapport) {
+      // Após 2+ trocas com queixa conhecida → proativamente apresentar preço e avançar
+      else if (hasMinRapport(state) && state.rapport_messages >= 2) {
         state.stage = "ASK_DAY";
-        reply = await askDayReply();
+        const bridgeText = await bridgeReply(state);
+        reply = bridgeText;
       }
-      // Continuar conversando — NUNCA oferece proativamente
+      // Continuar conversando — mas com objetivo de conduzir
       else {
-        const rapportCTA = "Continue conversando com empatia genuína. Pergunte mais sobre a condição, o dia a dia, o sono, a família. Demonstre que você se importa. NÃO ofereça consulta, preço, horários ou avaliação. NÃO pergunte 'quer que eu te passe os detalhes?' ou 'posso te mostrar os horários?'. APENAS converse naturalmente como uma amiga que se preocupa.";
+        const rapportCTA = "Converse com empatia genuína. Pergunte sobre a condição, o dia a dia, o impacto. Após validar, apresente o preço naturalmente: 'A consulta com o Dr. Alef é R$297, dá pra parcelar no cartão. Quer que eu te mostre os horários?'";
         const ai = await runLia({ incomingText, state, flags, stageCTA: rapportCTA });
-        if (ai.reply.startsWith("__NEED_PRICE__")) {
-          // GPT detectou pedido de preço — aplicar regra de mínimo de trocas
-          if (state.rapport_messages >= minRapport) {
-            state.price_ask_count = (state.price_ask_count || 0) + 1;
-            const pr = priceAndRoute(state);
-            reply = pr.reply;
-            state.stage = pr.stage;
-          } else {
-            const nome = state.nome ? `, ${state.nome}` : "";
-            reply = `Claro${nome}, já já te passo! Antes quero entender um pouquinho mais sobre o seu caso. Como isso tem impactado sua rotina?`;
-          }
-        } else if (ai.reply.startsWith("__NEED_BOOK__")) {
-          if (state.rapport_messages >= minRapport) {
-            state.stage = "ASK_DAY";
-            reply = await askDayReply();
-          } else {
-            const nome = state.nome ? `, ${state.nome}` : "";
-            reply = `Te mostro sim${nome}! Só quero entender melhor o seu quadro antes. O que mais te atrapalha por causa disso?`;
-          }
+        if (ai.reply.startsWith("__NEED_PRICE__") || ai.reply === "PRECISA_PRECO") {
+          state.price_ask_count = (state.price_ask_count || 0) + 1;
+          const pr = priceAndRoute(state);
+          reply = pr.reply;
+          state.stage = pr.stage;
+        } else if (ai.reply.startsWith("__NEED_BOOK__") || ai.reply === "PRECISA_AGENDAR") {
+          state.stage = "ASK_DAY";
+          reply = await askDayReply();
         } else {
           reply = ai.reply;
           state = mergeState(state, ai.updates);
@@ -2927,24 +3104,22 @@ async function processLiaMessage(phone, incomingText) {
       }
     }
 
-    // ── Bridge (paciente já teve rapport suficiente) ──
+    // ── V28.2: Bridge — paciente recebeu bridge com preço, conduzir para horários ──
     else if (state.stage === "BRIDGE") {
       if (flags.wantsBook || flags.asksHours || flags.confirms || flags.mentionsDayAvail) {
         state.stage = "ASK_DAY";
         reply = await askDayReply();
-      } else if (flags.wantsPrice) {
+      } else if (flags.wantsPrice || flags.intentPay) {
         state.price_ask_count = (state.price_ask_count || 0) + 1;
         const pr = priceAndRoute(state);
         reply = pr.reply;
         state.stage = pr.stage;
       } else {
-        // V28: BRIDGE agora continua conversando sem empurrar horários
-        const bridgeCTA = (state.rapport_messages || 0) >= 5
-          ? "Continue conversando com empatia. Se o paciente mostrar interesse, pode mencionar que tem horários disponíveis esta semana."
-          : "Continue conversando com empatia. NÃO ofereça consulta/preço/horários.";
+        // V28.2: Bridge conduz proativamente — oferecer horários se já apresentou preço
+        const bridgeCTA = "Continue conversando com empatia. Você já apresentou o preço. Agora conduza para os horários: 'Quer que eu te mostre os horários disponíveis essa semana?' Se o paciente tiver dúvidas, responda e depois volte para os horários.";
         const ai = await runLia({ incomingText, state, flags, stageCTA: bridgeCTA });
-        if (ai.reply === "__NEED_BOOK__") { state.stage = "ASK_DAY"; reply = await askDayReply(); }
-        else if (ai.reply === "__NEED_PRICE__") { state.price_ask_count = (state.price_ask_count || 0) + 1; const pr = priceAndRoute(state); reply = pr.reply; state.stage = pr.stage; }
+        if (ai.reply === "__NEED_BOOK__" || ai.reply === "PRECISA_AGENDAR") { state.stage = "ASK_DAY"; reply = await askDayReply(); }
+        else if (ai.reply === "__NEED_PRICE__" || ai.reply === "PRECISA_PRECO") { state.price_ask_count = (state.price_ask_count || 0) + 1; const pr = priceAndRoute(state); reply = pr.reply; state.stage = pr.stage; }
         else { reply = ai.reply; state = mergeState(state, ai.updates); }
       }
     }
@@ -3355,6 +3530,10 @@ async function processLiaMessage(phone, incomingText) {
   state.last_bot_reply = reply;
   state.last_user_message = incomingText;
   state.last_sent_at = Date.now();
+  // V28.2: Detectar se LP foi enviada na resposta
+  if (!state.lp_sent && reply && /dralefkotula\.com/i.test(reply)) {
+    state.lp_sent = true;
+  }
 
   await saveUserState(phone, state);
   logMessage("lia", phone, reply, "outbound");
@@ -3420,10 +3599,10 @@ app.get("/checkout-data/:ref", async (req, res) => {
 
 app.post("/lia/respond", async (req, res) => {
   try {
-    const { telefone, mensagem, fromMe, messageType, mediaType, type, mimetype } = req.body || {};
-    const incomingMsgType = String(messageType || mediaType || type || mimetype || "").toLowerCase().trim();
+    const { phoneRaw, messageRaw, fromMe: isAdminMsg, incomingMsgType, contactName } = extractInboundEnvelope(req.body || {});
 
-    if (!telefone || !mensagem) {
+    if (!phoneRaw || !messageRaw) {
+      console.warn(`[LIA][/lia/respond] Payload incompleto. keys=${Object.keys(req.body || {}).join(",")}`);
       return res.status(400).json({
         ok: false,
         error: "campos 'telefone' e 'mensagem' são obrigatórios",
@@ -3431,19 +3610,18 @@ app.post("/lia/respond", async (req, res) => {
       });
     }
 
-    const phone = String(telefone).replace(/\D/g, "");
+    const phone = String(phoneRaw).replace(/\D/g, "");
     if (!phone || phone.length < 10) {
       return res.status(400).json({ ok: false, error: "telefone inválido", skip_send: true });
     }
 
-    const incomingText = String(mensagem).trim();
+    const incomingText = String(messageRaw).trim();
 
     // ══════════════════════════════════════════════════════════════
     // V24.9: PAUSA MANUAL POR LEAD — Comandos admin (ANTES do debounce)
     // Comandos: Deixa.eu.pensar | Eu.voltei | status.lia
     // Funciona com fromMe OU por texto exato (comandos únicos com pontos)
     // ══════════════════════════════════════════════════════════════
-    const isAdminMsg = fromMe === true || fromMe === "true";
     const cmdNorm = incomingText.toLowerCase().trim();
 
     if (cmdNorm === "deixa.eu.pensar") {
@@ -3545,6 +3723,7 @@ app.post("/lia/respond", async (req, res) => {
 
     // Se mensagem é do admin (fromMe) mas NÃO é comando → ignorar (admin digitando no chat)
     if (isAdminMsg) {
+      console.log(`[LIA][/lia/respond] Ignorando mensagem fromMe para ${phone}: "${incomingText.slice(0, 60)}"`);
       return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
     }
 
@@ -3658,7 +3837,7 @@ app.post("/lia/respond", async (req, res) => {
     // Processar a mensagem (consolidada ou única)
     // ══════════════════════════════════════════════════════════════
 
-    const result = await processLiaMessage(phone, consolidatedText);
+    const result = await processLiaMessage(phone, consolidatedText, { contactName });
 
     // Se foi filtrado (sistema) → skip_send
     if (result.filtered) {
@@ -4002,8 +4181,91 @@ app.get("/admin/messages/:phone", async (req, res) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════════
+   V28.2: FOLLOW-UP AUTOMÁTICO — /cron/followups
+   ═══════════════════════════════════════════════════════════════════ */
+
+async function sendFollowupMessage(phone, message, state) {
+  // Tenta enviar via Twilio (direto) ou salva para n8n buscar
+  if (twilioClient) {
+    const botFrom = state?.last_bot_from || TWILIO_WHATSAPP_NUMBER || "";
+    if (botFrom && !botFrom.startsWith("api:")) {
+      try {
+        const from = botFrom.startsWith("whatsapp:") ? botFrom : `whatsapp:${botFrom}`;
+        const to = phone.startsWith("whatsapp:") ? phone : `whatsapp:+${phone}`;
+        await twilioClient.messages.create({ to, from, body: message });
+        console.log(`📤 Follow-up enviado para ${phone}: "${message.slice(0, 60)}..."`);
+        await logMessage(from, to, message, "outbound_followup");
+        return true;
+      } catch (err) {
+        console.error(`❌ Follow-up Twilio erro (${phone}):`, err.message);
+      }
+    }
+  }
+  // Fallback: salvar como pendente para n8n buscar
+  console.warn(`⚠️ Follow-up não enviado (sem Twilio) para ${phone} — salvo no state`);
+  return false;
+}
+
+app.get("/cron/followups", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT phone, state FROM wa_users WHERE state->>'stage' IN ('WAIT_PAYMENT') AND state->'payment'->>'status' IN ('pending', 'pending_pix')`
+    );
+
+    let sent = 0;
+    const now = Date.now();
+    const TWO_HOURS = 2 * 60 * 60 * 1000;
+    const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+    const SEVENTY_TWO_HOURS = 72 * 60 * 60 * 1000;
+
+    for (const row of rows) {
+      const state = row.state || {};
+      const phone = row.phone;
+      const paymentCreatedAt = state.payment?.created_at || 0;
+      if (!paymentCreatedAt) continue;
+
+      const elapsed = now - paymentCreatedAt;
+      const nome = state.nome || "";
+      const link = state.payment?.link || "";
+
+      // Já completou follow-ups
+      if (state.followup_complete) continue;
+
+      let message = null;
+      let flagKey = null;
+
+      if (elapsed >= SEVENTY_TWO_HOURS && !state.followup_3_sent) {
+        message = `Oi${nome ? `, ${nome}` : ""}. Essa é minha última mensagem sobre isso. Se em algum momento sentir que quer dar esse passo, o link continua disponível: ${link}\n\nDesejo melhoras! 🙏`;
+        flagKey = "followup_3_sent";
+        state.followup_complete = true;
+      } else if (elapsed >= TWENTY_FOUR_HOURS && !state.followup_2_sent) {
+        message = `${nome || "Oi"}, sei que às vezes a rotina aperta. Os horários dessa semana estão quase fechando. Se quiser garantir o seu: ${link}`;
+        flagKey = "followup_2_sent";
+      } else if (elapsed >= TWO_HOURS && !state.followup_1_sent) {
+        message = `Oi${nome ? `, ${nome}` : ""}! Vi que você ainda não conseguiu confirmar. Tá tudo bem? Se tiver qualquer dúvida, pode me perguntar 😊`;
+        flagKey = "followup_1_sent";
+      }
+
+      if (message && flagKey) {
+        const ok = await sendFollowupMessage(phone, message, state);
+        state[flagKey] = true;
+        state[flagKey.replace("_sent", "_at")] = now;
+        await saveUserState(phone, state);
+        if (ok) sent++;
+      }
+    }
+
+    console.log(`[CRON] Follow-ups processados: ${rows.length} leads, ${sent} enviados`);
+    return res.json({ ok: true, processed: rows.length, sent });
+  } catch (err) {
+    console.error("❌ /cron/followups erro:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════
    SERVER
    ═══════════════════════════════════════════════════════════════════ */
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 LIA V26 (humanizada) rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 LIA V28.2 rodando na porta ${PORT}`));
