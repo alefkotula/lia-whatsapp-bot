@@ -2240,7 +2240,7 @@ async function buildSiteCheckoutLink({ paymentLink, phone, planKey, externalRefe
     created_at: Date.now(),
   };
   await saveCheckoutRef(ref, checkoutData);
-  return { ref, url: `${BASE_URL}/checkout/${ref}` };
+  return { ref, url: `${SITE_URL}/checkout/${ref}` };
 }
 
 async function mpGetPayment(paymentId) {
