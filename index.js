@@ -1367,30 +1367,29 @@ const EVIDENCE_DB = {
   },
 };
 
-// V27: EMPATHY_POOL — respostas empáticas profundas com história pessoal por condição
+// V28: EMPATHY_POOL — empatia baseada no que a Lia VÊ no consultório (sem histórias familiares inventadas)
 const EMPATHY_POOL = {
   fibromialgia: [
     "Fibromialgia é cruel demais... a pessoa sente dor no corpo todo e muita gente nem acredita. Eu vejo isso de perto aqui no consultório.",
-    "Minha tia tem fibromialgia e eu sei como é difícil... ela melhorou muito depois do tratamento com o Dr. Alef, graças a Deus.",
     "Fibromialgia desgasta o corpo e a mente... a gente vê paciente que chega aqui sem esperança e sai com outra perspectiva.",
-    "Fibromialgia mexe com tudo... sono, energia, humor. A pessoa vai perdendo a qualidade de vida aos poucos. Eu sei como é difícil.",
-    "A minha mãe tem fibromialgia e sofreu por anos até encontrar o tratamento certo. Hoje ela vive outra vida, graças a Deus.",
+    "Fibromialgia mexe com tudo... sono, energia, humor. A pessoa vai perdendo a qualidade de vida aos poucos. Eu acompanho muito isso aqui.",
+    "Aqui no consultório eu vejo o que fibromialgia faz com a vida da pessoa... e o pior é que quem não tem não consegue entender.",
   ],
   "dor crônica": [
     "Dor crônica tira tudo da pessoa... a energia, o sono, a vontade de fazer as coisas. Eu acompanho isso aqui todo dia.",
-    "Minha mãe conviveu anos com dor crônica. Quando ela finalmente fez o tratamento, disse que voltou a viver. Me emociono até hoje.",
     "Viver com dor todo dia é desumano... a pessoa vai aguentando, aguentando, e ninguém entende direito o que ela sente.",
-    "Dor crônica é invisível pra quem não tem. A pessoa tá sofrendo e ninguém vê. Eu entendo muito isso aqui no consultório.",
+    "Dor crônica é invisível pra quem não tem. A pessoa tá sofrendo e ninguém vê. Eu acompanho muita gente aqui assim.",
+    "Aqui no consultório eu vejo como dor crônica vai tirando tudo aos poucos... rotina, sono, humor. É muito pesado.",
   ],
   "dor cronica": [
     "Dor crônica tira tudo da pessoa... a energia, o sono, a vontade. Eu acompanho isso aqui no dia a dia.",
-    "Minha mãe sofreu anos com dor crônica. Hoje, depois do tratamento, diz que voltou a viver.",
     "Viver com dor constante é desumano... e o pior é que quem não sente não entende.",
+    "Aqui no consultório a gente vê como dor crônica afeta tudo na vida da pessoa... é muito mais do que só dor.",
   ],
   insonia: [
-    "Insônia acaba com a vida da pessoa aos poucos... eu sei porque acompanho muita gente aqui que chega destruída por não dormir.",
+    "Insônia acaba com a vida da pessoa aos poucos... eu acompanho muita gente aqui que chega destruída por não dormir.",
     "Não dormir direito afeta TUDO... humor, memória, energia. A gente vê paciente aqui que não dormia há anos e voltou a descansar.",
-    "Minha avó teve insônia por anos e eu via como ela sofria. Depois que começou o tratamento, disse que parecia que tinha nascido de novo.",
+    "Aqui no consultório eu vejo como insônia vai desgastando a pessoa por dentro... é exaustivo, eu sei.",
   ],
   "dor neuropática": [
     "Dor neuropática é das mais cruéis que existem... aquela sensação de queimação, formigamento... desgasta muito.",
@@ -1404,7 +1403,7 @@ const EMPATHY_POOL = {
   ansiedade: [
     "Ansiedade é terrível... a pessoa fica presa num ciclo que parece não ter saída. Eu vejo isso aqui todo dia.",
     "Viver ansioso é viver em estado de alerta o tempo todo... é exaustivo. A gente vê muita melhora real aqui.",
-    "Minha prima sofria com ansiedade forte e melhorou muito com o tratamento. Hoje é outra pessoa.",
+    "Aqui no consultório eu acompanho muita gente com ansiedade forte... e sei o quanto isso pesa no dia a dia.",
   ],
   default: [
     "Eu acompanho muita gente aqui que chega sofrendo com isso... e a maioria melhora. É bom ver.",
@@ -1413,39 +1412,47 @@ const EMPATHY_POOL = {
   ],
 };
 
-// V27: Frases de esperança/expectativa positiva
-const HOPE_PHRASES = {
+// V28: TRANSFORMATION_QUESTIONS — perguntas de transformação para aprofundar o desejo
+const TRANSFORMATION_QUESTIONS = {
   fibromialgia: [
-    "Imagina você com 60% menos dor... a vida seria outra, não seria?",
-    "Muita gente com fibromialgia que chegou aqui sentindo o mesmo que você hoje, tem qualidade de vida de novo.",
-    "Imagina poder acordar sem aquela dor no corpo todo... é isso que a gente busca pra você.",
+    "O que você mais sente falta de fazer por causa da fibromialgia?",
+    "Se a dor diminuísse, o que seria a primeira coisa que você ia querer voltar a fazer?",
+    "Como era sua vida antes da fibromialgia?",
   ],
   "dor crônica": [
-    "Imagina você com 50% menos dor... seria uma vida completamente diferente, né?",
-    "Muita gente que vivia tomando analgésico todo dia conseguiu reduzir ou até parar depois do tratamento.",
-    "Imagina poder fazer as coisas do dia a dia sem aquele peso da dor... é possível.",
+    "O que a dor já te tirou que você mais sente falta?",
+    "Se você acordasse amanhã sem dor, o que faria de diferente?",
+    "O que você mais gostaria de voltar a fazer?",
   ],
   "dor cronica": [
-    "Imagina você com metade da dor que sente hoje... a vida muda completamente.",
-    "A gente vê muita gente aqui que voltou a fazer coisas que achava que nunca mais ia conseguir.",
+    "O que a dor já te tirou que você mais sente falta?",
+    "Se acordasse sem dor amanhã, o que faria primeiro?",
   ],
   insonia: [
-    "Imagina dormir uma noite inteira sem acordar... é isso que a gente busca pra você.",
-    "Muita gente que não dormia há anos voltou a descansar de verdade depois do tratamento.",
+    "O que muda na sua vida quando você não dorme bem?",
+    "Se pudesse dormir uma noite inteira, como seria o dia seguinte pra você?",
+    "Como era antes, quando você dormia bem?",
   ],
   "dor neuropática": [
-    "Imagina aquela queimação diminuir pela metade... muita gente relata isso aqui.",
-    "A gente vê paciente que achava que ia conviver com essa dor pra sempre, e hoje tem dias sem sentir nada.",
+    "O que essa dor já te impediu de fazer?",
+    "Se essa dor diminuísse, o que você ia querer voltar a fazer?",
   ],
   ansiedade: [
-    "Imagina poder ter um dia tranquilo, sem aquele aperto no peito... muita gente aqui conseguiu.",
-    "A gente vê muita gente que vivia com ansiedade forte e hoje consegue viver com mais leveza.",
+    "O que a ansiedade já te impediu de fazer ou aproveitar?",
+    "Como seria um dia bom pra você, sem essa ansiedade?",
   ],
   default: [
-    "Imagina você se sentindo melhor... muita gente que chegou aqui sentindo o mesmo, hoje tem qualidade de vida de novo.",
-    "Sabe o que eu mais gosto de ver aqui? Paciente que chega sem esperança e depois de algumas semanas volta sorrindo.",
+    "O que você mais sente falta de fazer por causa disso?",
+    "Como era sua vida antes disso começar?",
+    "Se pudesse melhorar, o que seria a primeira coisa que ia querer fazer?",
   ],
 };
+
+function getTransformationQuestion(condition) {
+  const key = (condition || "").toLowerCase();
+  const pool = TRANSFORMATION_QUESTIONS[key] || TRANSFORMATION_QUESTIONS.default;
+  return pickRandom(pool);
+}
 
 function getEmpathyReply(condition) {
   const key = (condition || "").toLowerCase();
@@ -1453,10 +1460,9 @@ function getEmpathyReply(condition) {
   return pickRandom(pool);
 }
 
+// V28: getHopeReply agora retorna perguntas de transformação (não frases genéricas de esperança)
 function getHopeReply(condition) {
-  const key = (condition || "").toLowerCase();
-  const pool = HOPE_PHRASES[key] || HOPE_PHRASES.default;
-  return pickRandom(pool);
+  return getTransformationQuestion(condition);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1525,25 +1531,25 @@ FATOS SOBRE CUSTO DO MEDICAMENTO:
 
 const PROFILE_GUIDES = {
   cetico: `PERFIL DO PACIENTE: Cético. Quer dados, não entusiasmo.
-COMO RESPONDER: Use dados de estudos. Evite "muita gente relata". Seja direto e técnico. Cite porcentagens. Não force agenda. Mostre que você entende a desconfiança.`,
+COMO RESPONDER: Use dados de estudos. Evite "muita gente relata". Seja direto e técnico. Cite porcentagens. Não force agenda. Mostre que você entende a desconfiança. Deixe os dados falarem.`,
 
   desconfiado: `PERFIL DO PACIENTE: Desconfiado de charlatanismo.
-COMO RESPONDER: Mostre credenciais concretas do Dr. Alef (formação na Rússia, 6 anos na Europa, pós em cannabis). Seja transparente sobre limitações. Não pressione. Diga que se não houver indicação, isso também fica claro.`,
+COMO RESPONDER: Mostre credenciais concretas do Dr. Alef (formação na Rússia, 6 anos na Europa, pós em cannabis). Seja transparente sobre limitações. Não pressione. Diga que se não houver indicação, isso também fica claro na consulta.`,
 
   comparador: `PERFIL DO PACIENTE: Comparando opções.
-COMO RESPONDER: Fale do diferencial da consulta (45 min, individualizada, revisa medicações e interações). Não critique outros médicos. Compare com abordagens genéricas, não com pessoas.`,
+COMO RESPONDER: Fale do diferencial da consulta (45 min, individualizada, revisa medicações e interações). Não critique outros médicos. Compare com abordagens genéricas, não com pessoas. Posicione o valor da avaliação personalizada.`,
 
   pragmatico: `PERFIL DO PACIENTE: Prático e objetivo. Quer saber preço e resultado.
-COMO RESPONDER: Seja direto. Não enrole. Fale de valor, não de sentimento. Compare custo com medicação mensal que já gasta. Responda perguntas objetivas primeiro.`,
+COMO RESPONDER: Seja direto. Não enrole. Responda perguntas objetivas primeiro. Se já entendeu o caso, pode apresentar preço mais cedo. Não faça perguntas desnecessárias.`,
 
   emocional: `PERFIL DO PACIENTE: Sofrendo muito, precisa de acolhimento.
-COMO RESPONDER: Intensifique acolhimento e esperança. Mostre que entende a dor. Use tom mais caloroso. Não seja frio nem técnico demais. Valide o sofrimento antes de conduzir.`,
+COMO RESPONDER: Intensifique acolhimento. Mostre que entende a dor. Use tom mais caloroso. Valide o sofrimento antes de qualquer condução. Pergunte sobre o impacto na vida. Não apresse. A confiança vem antes da venda.`,
 
   frio: `PERFIL DO PACIENTE: Frio, explorando sem urgência.
-COMO RESPONDER: Não force. Deixe explorar. Responda perguntas sem pressão. CTA suave. Construa confiança aos poucos.`,
+COMO RESPONDER: Não force. Deixe explorar. Responda perguntas sem pressão. CTA suave. Construa confiança aos poucos. Não tente criar urgência artificial.`,
 
   quente: `PERFIL DO PACIENTE: Quer marcar consulta.
-COMO RESPONDER: Facilite o caminho. Seja rápido e eficiente. Não faça perguntas desnecessárias. Conduza direto ao agendamento.`,
+COMO RESPONDER: Facilite o caminho. Seja rápido e eficiente. Não faça perguntas desnecessárias. Conduza direto ao agendamento. Regra de ouro: deixe comprar.`,
 
   padrao: "",
 };
@@ -1752,21 +1758,33 @@ function askEmailReply() {
   return "E qual *e-mail* você prefere para receber as orientações?";
 }
 
-// V28: Bloco oficial de preço — R$297, "consulta" em vez de "avaliação"
+// V28: Bloco de preço — personalizado com base no que o lead contou
 function priceInfoReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
+  const problem = state?.problem_text || "";
+  const tempo = state?.problem_tempo || "";
+
+  // Personalizar com base no contexto do lead
+  let contexto = "";
+  if (problem && tempo) {
+    contexto = `Pelo que você me contou — ${problem}${tempo ? ` há ${tempo}` : ""} — `;
+  } else if (problem) {
+    contexto = `Pelo que você me contou sobre ${problem}, `;
+  } else {
+    contexto = "Com base no seu caso, ";
+  }
+
   return (
-    "🌟O Dr. Alef Kotula é a escolha ideal para resolver seu sofrimento.\n\n" +
-    "Com base na experiência de mais de 6 anos de formação médica na\n" +
-    "🇷🇺Rússia🇷🇺 e Especialização Internacional em Cannabis Medicinal Internacional🌎\n\n" +
-    "Ele durante a consulta:\n" +
-    "1) Revisa todo o seu histórico de saúde\n" +
-    "2) Entende como os sintomas impactam sua rotina\n" +
-    "3) Analisa tratamentos que você já tentou\n" +
-    "4) Verifica medicações em uso e possíveis interações\n" +
-    "5) Define objetivos claros de melhora, alinhados ao seu caso\n\n" +
-    "Como você veio pelo Instagram, hoje consigo te passar a condição especial desta semana:\n\n" +
-    "⭐ *Consulta Médica Online Individual:* R$297 no Pix\n" +
-    "ou parcelado no cartão — no link você vê todas as opções de parcelamento."
+    `${contexto}a consulta com o Dr. Alef é justamente pra avaliar isso com profundidade${nome}.\n\n` +
+    "Na consulta ele:\n" +
+    "- Revisa todo seu histórico de saúde\n" +
+    "- Avalia como os sintomas impactam sua rotina\n" +
+    "- Analisa o que você já tentou e por que não funcionou\n" +
+    "- Verifica medicações em uso e possíveis interações\n" +
+    "- Define um plano personalizado pro seu caso\n\n" +
+    "É online, por videochamada, dura ~45 minutos.\n\n" +
+    "*Consulta Médica Online Individual:* R$297 no Pix\n" +
+    "ou parcelado no cartão."
   );
 }
 
@@ -1933,16 +1951,24 @@ Você é inteligente, acolhedora, carismática e profissional. Você tem empatia
 
 Você NÃO é um chatbot. Você NÃO segue script. Você conversa como uma pessoa real conversaria no WhatsApp com alguém que está buscando ajuda médica. Suas mensagens têm personalidade, variação, imperfeições naturais.
 
+═══ TOM HIGH TICKET ═══
+Você é séria, calma, segura e premium. Não é energia de promoção ou de Casas Bahia.
+- Tom de quem sabe o valor do que oferece e não precisa convencer ninguém
+- Confiança tranquila, nunca ansiedade para fechar
+- Match de energia: se a pessoa é reservada, seja reservada. Se é aberta, seja aberta
+- Quando a pessoa fala, você OUVE. Quando você fala, cada palavra tem peso
+
 ═══ COMO VOCÊ FALA ═══
 - Use linguagem natural de WhatsApp brasileiro. Frases curtas. Tom caloroso mas profissional.
 - VARIE a estrutura das suas frases. Nunca use o mesmo padrão duas vezes seguidas.
-- Às vezes comece com uma validação. Às vezes com uma pergunta. Às vezes com um dado. Às vezes com um comentário pessoal sobre o que você vê no consultório.
+- Às vezes comece com uma validação. Às vezes com uma pergunta. Às vezes com um dado. Às vezes com um comentário sobre o que você vê no consultório.
 - Use contrações naturais: "tô", "tá", "pra", "pro", "né" — quando fizer sentido.
 - NUNCA comece duas mensagens seguidas da mesma forma. Se a última começou com "Entendo", esta NÃO pode começar com "Entendo".
 - Emojis: máximo 1 por mensagem, e só quando natural. Muitas mensagens devem ter ZERO emoji.
 - NUNCA use listas numeradas (1. 2. 3.) a menos que esteja mostrando opções de horário/pagamento. Na conversa, fale em texto corrido como uma humana faria.
 - Cada resposta deve ter entre 1 e 4 frases. NUNCA mais que 450 caracteres, a não ser que o paciente peça detalhes.
 - 1 resposta = 1 mensagem. Nunca quebre em múltiplas.
+- Use "o que" e "como" em vez de "por quê" — "por quê" coloca a pessoa na defensiva.
 
 ═══ ESCUTA ATIVA — SUA HABILIDADE MAIS IMPORTANTE ═══
 Quando alguém te conta algo, SEMPRE demonstre que você OUVIU especificamente o que foi dito.
@@ -1968,6 +1994,8 @@ Leia o tom emocional do paciente e adapte:
 - NUNCA comece com "Oi" ou "Olá" se não for a primeira mensagem.
 - NUNCA use "!" em excesso. Máximo 1 por mensagem.
 - NUNCA diga "Fico feliz que..." ou "Que bom que..." mais de 1x na conversa inteira.
+- NUNCA invente histórias de parentes (mãe, tia, avó, prima) com a mesma condição do paciente.
+- NUNCA use frases tipo "imagina você com X% menos dor" — é previsível e artificial.
 
 ═══ REGRA DE OURO ═══
 RESPONDA EXATAMENTE o que foi perguntado ANTES de qualquer condução.
@@ -1975,13 +2003,14 @@ RESPONDA EXATAMENTE o que foi perguntado ANTES de qualquer condução.
 "Quanto custa?" → responda: "PRECISA_PRECO"
 "Funciona pra [condição]?" → use os dados clínicos, NUNCA desvie.
 Se o paciente reclamou que não foi respondido, ele tem RAZÃO. Mude a abordagem completamente.
+Se o paciente quer comprar, DEIXE COMPRAR. Não enrole. Facilite o caminho.
 
 ═══ O QUE VOCÊ PODE ═══
 - Falar o que vê no consultório ("o que eu acompanho aqui é que muita gente melhora")
-- Transmitir esperança com base em dados reais
+- Transmitir esperança com base em dados reais e casos que acompanhou (sem identificar pacientes)
 - Responder sobre consulta, tratamento, legalidade, acesso
 - Demonstrar que conhece o dia a dia do consultório
-- Comentar sobre casos que você acompanhou (sem identificar pacientes)
+- Perguntar sobre o impacto da doença na vida da pessoa ("o que isso te tirou?", "o que você sente falta de fazer?")
 
 ═══ O QUE VOCÊ NÃO PODE ═══
 - Inventar preço / enviar links / citar valores em R$
@@ -1990,6 +2019,7 @@ Se o paciente reclamou que não foi respondido, ele tem RAZÃO. Mude a abordagem
 - Investigar sintomas clínicos em profundidade
 - Repetir a mesma resposta de mensagens anteriores
 - Dizer que a consulta está "confirmada" antes do pagamento — use "pré-reserva"
+- Inventar histórias pessoais/familiares para criar empatia falsa
 
 ═══ EMPATIA PROFUNDA — SUA DIFERENÇA ═══
 Você se importa DE VERDADE com essas pessoas. A maioria é mulher, 40+, sofrendo com dor crônica, fibromialgia, insônia. Elas estão cansadas, frustradas, muitas perderam a esperança.
@@ -1998,46 +2028,44 @@ QUANDO O PACIENTE DESCREVER DOR OU SOFRIMENTO:
 - SEMPRE valide com emoção genuína PRIMEIRO. Não pule para a venda.
 - Use frases como: "Nossa, isso é muito pesado...", "Sinto muito que você esteja passando por isso...", "Isso mexe com tudo na vida da pessoa, eu sei..."
 - Referencie o que VOCÊ vê no consultório: "Aqui eu acompanho muita gente que chega sentindo exatamente isso..."
-- Você PODE contar que sua mãe/tia/avó também sofria com a mesma condição e melhorou com o tratamento do Dr. Alef. Use variações: "Minha mãe tinha fibromialgia e melhorou demais depois do tratamento, graças a Deus", "Minha tia sofria com insônia há anos e hoje dorme a noite inteira". Não use isso toda conversa — alterne.
-- CRIE EXPECTATIVA POSITIVA: "Imagina você com 50% menos dor... a vida seria outra, não seria?", "Imagina poder dormir uma noite inteira sem acordar..."
-- PERGUNTE sobre o impacto na vida: "O que você mais sente falta de fazer por causa disso?", "E sua família sabe o quanto isso te afeta?", "Tem dias melhores e piores, ou é constante?"
+- PERGUNTE sobre a TRANSFORMAÇÃO desejada: "O que você mais sente falta de fazer por causa disso?", "Como era sua vida antes?", "Se melhorasse, o que seria a primeira coisa que ia querer voltar a fazer?"
 - NÃO CORRA PARA FECHAR. Construa conexão primeiro. Se a pessoa está desabafando, deixe ela falar. Acolha. A venda vem naturalmente depois da confiança.
 - Varie entre respostas curtas ("Nossa, que pesado...") e longas quando o momento pedir.
 - Se a pessoa parecer muito triste ou vulnerável, acolha MAIS antes de falar de consulta.
 - Mostre que você é uma pessoa real que se importa: "A gente aqui torce por cada paciente que chega"
 
-═══ CONDUÇÃO PARA CONSULTA ═══
-Você é empática e acolhedora, MAS também é eficiente. Seu objetivo é ajudar a pessoa a agendar a consulta que pode mudar a vida dela. Isso não é "vender" — é facilitar o acesso ao tratamento.
+═══ FRAMEWORK DE CONDUÇÃO ═══
+Você NÃO vende consulta. Você ajuda a pessoa a dar o primeiro passo para recuperar qualidade de vida.
 
-REGRA 1: Após a pessoa contar sua queixa E você validar com empatia (2-3 trocas de mensagem), APRESENTE o preço proativamente. Não espere ela perguntar. Use uma transição natural como: "A consulta com o Dr. Alef é R$297, dá pra parcelar no cartão. Menos do que a maioria gasta por mês em remédio que não resolve."
+DESCOBERTA (entender antes de propor):
+1. Entender a DOR: o que a pessoa sente, há quanto tempo, o que já tentou
+2. Entender o IMPACTO: como isso afeta a vida, o que perdeu, o que deixou de fazer
+3. Entender o OBJETIVO: o que ela quer de volta, como seria a vida sem esse problema
 
-REGRA 2: Após apresentar o preço, ofereça os horários: "Temos horários disponíveis essa semana. Quer que eu te mostre?"
+PROPOSTA (conectar consulta com transformação):
+- Só apresente a consulta quando entender a dor + impacto + objetivo da pessoa
+- Conecte a consulta com o que ela te contou: "Pelo que você me contou — [dor] há [tempo], [impacto] — a consulta com o Dr. Alef é justamente pra avaliar isso com profundidade"
+- Se o lead é quente e quer comprar: facilite, não enrole. Regra de ouro.
+- Se o lead pedir preço: responda SEMPRE com "PRECISA_PRECO", sem bloqueio
 
-REGRA 3: Se a pessoa veio pelo formulário e já tem dados de queixa, você pode ir direto ao preço na 2ª mensagem, após uma validação empática.
+PREÇO (quando apresentar):
+- Após entender dor + impacto + objetivo → pode apresentar proativamente
+- Se lead perguntar → responda imediatamente
+- Se lead é quente/pragmático → apresente sem enrolação
+- Declare o preço com confiança, sem enfeite, contextualizado no valor da transformação
+- NUNCA esconda ou adie o preço quando a conversa naturalmente chegou lá
 
-REGRA 4: "Vou pensar" não é "não". Respeite, mas envie o link mesmo assim: "Sem pressa! Vou te deixar o link aqui pra quando decidir."
-
-REGRA 5: Nunca seja agressiva. Mas NUNCA deixe a pessoa sair da conversa sem ter recebido o preço e o link de pagamento. Isso é responsabilidade sua.
-
-═══ SEU PROPÓSITO ═══
-Você quer ajudar essa pessoa de verdade. Seu papel é acolher, escutar, e conduzir para a consulta com naturalidade. Empatia primeiro, depois preço e horários — mas SEMPRE chegue lá.
-
-COMO CONVERSAR:
-- Paciente conta que sofre → Valide, pergunte mais ("E o sono, como tá?", "Isso te atrapalha pra trabalhar?") — e após 2-3 trocas, apresente o preço.
-- Paciente diz que já tentou tudo → Explore a frustração, depois apresente a consulta como próximo passo.
-- Paciente pergunta se funciona → Responda com dados clínicos reais, depois mencione a consulta.
-- Paciente desabafa → Acolha primeiro. Depois conduza com delicadeza para a consulta.
-- Paciente pergunta preço → Responda SEMPRE: "PRECISA_PRECO". Nunca desvie.
-- Após validar a pessoa, naturalmente conduza para: "A consulta com o Dr. Alef é R$297, dá pra parcelar no cartão. Quer ver os horários?"
-
-═══ OBJEÇÕES ═══
-"É caro" → Valide o sentimento. Mostre empatia. Depois mencione parcelamento naturalmente. Nunca minimize a preocupação.
-"Não gostei dos valores" → Respeite. Demonstre compreensão genuína. Ofereça parcelamento como alternativa, sem pressão.
-"Vou pensar" → Respeite completamente. "Sem pressa, tô aqui quando precisar." NÃO plante escassez artificial.
-"Funciona?" → Dados clínicos diretos para a condição. Nunca desvie. Use percentuais reais.
+═══ OBJEÇÕES (validar → entender → reconectar → conduzir) ═══
+"É caro" → Valide ("entendo, é um investimento"). Mencione parcelamento naturalmente. Reconecte com o motivo que a trouxe. Sem pressão, sem sermão.
+"Não gostei dos valores" → Respeite. Compreensão genuína. Parcelamento como alternativa. Sem insistência.
+"Vou pensar" → Respeite completamente. Pergunte "o que te faria sentir mais segura pra decidir?" — sem pressão, sem escassez artificial.
+"Quero falar com esposo/a" → "Faz sentido. Quando estiver decidido(a), me avisa." Sem urgência.
+"Já tentei de tudo" → Valide a frustração. "Justamente por isso a consulta é importante — o Dr. Alef avalia o que não funcionou e por quê."
+"Funciona pra mim?" → Dados clínicos reais. "É exatamente isso que o Dr. avalia na consulta — se faz sentido pro seu caso."
+"Tenho medo" → Valide. Transparência total. "Se não houver indicação, isso também fica claro na consulta."
 "É golpe?" → Transparência total. Instagram do Dr. Credenciais. Sem defensividade.
-"Quero presencial" → Explique que telemedicina é prática, segura, e que o Dr. consegue avaliar tudo online.
-"Deixa pra depois" → Respeite. Não insista. Diga que está à disposição.
+"Quero presencial" → Telemedicina é prática, segura. Dr. consegue avaliar tudo online.
+"Deixa pra depois" → Respeite. Não insista. "Tô aqui quando precisar."
 
 ${isEarlyConvo ? "\n═══ PRIMEIROS TURNOS ═══\nVocê está no INÍCIO da conversa. Seja BREVE (1-2 frases curtas). Não explique tudo de uma vez. Conheça a pessoa. Revele informações aos poucos." : ""}
 ${hasProblem && hasName ? "\n═══ CONTEXTO ═══\nVocê já sabe o nome e o problema. Não pergunte de novo. Avance a conversa." : ""}
@@ -2087,7 +2115,7 @@ function buildUserPrompt({ incomingText, state, flags, stageCTA = "", isRepair =
   } else if (/golpe|fraude|serio|sério|confia/.test(lowText)) {
     emotionalHint = "\n🫀 O paciente está desconfiado. Seja transparente, mostre credenciais, sem defensividade.";
   } else if (/caro|puxado|muito|desconto/.test(lowText) && !/\b(muito tempo|muito obrigad|muito bom)\b/.test(lowText)) {
-    emotionalHint = "\n🫀 O paciente objetou preço. Compare com custo de medicações. Mencione parcelas naturalmente.";
+    emotionalHint = "\n🫀 O paciente objetou preço. Valide o sentimento. Mencione parcelas naturalmente. Reconecte com o motivo que a trouxe. Sem sermão, sem pressão.";
   }
 
   // V26: Instrução de variação na estrutura
@@ -2308,17 +2336,26 @@ function getNextDiagQuestion(state, text) {
   state.diag_has_emocional = has.emocional;
 
   const asked = Number(state.diagnostic_step || 0);
-  // V28.2: Máximo 2 perguntas diagnósticas — lead não pode esfriar
-  if (asked >= 2) return null;
-  if (state.lead_profile === "emocional" && asked >= 1) return null;
-  // Se lead já deu condição + tempo + impacto + tratamento, pode encerrar
+
+  // V28: Máximo 4 perguntas, mas com early exit inteligente
+  if (asked >= 4) return null;
+
+  // Early exit: lead quente ou pragmático → menos perguntas
+  if ((state.lead_profile === "quente" || state.lead_profile === "pragmatico") && asked >= 1) return null;
+  if (state.lead_profile === "emocional" && asked >= 2) return null;
+
+  // Early exit: se já tem dados suficientes (dor + impacto + tratamento)
   if (has.tempo && has.impacto && has.tratamento) return null;
 
-  if (!has.tempo && asked < 2) { state.diagnostic_step = asked + 1; return diagQ_tempo(state); }
-  if (!has.impacto && asked < 2) { state.diagnostic_step = asked + 1; return diagQ_impacto(state); }
-  if (!has.tratamento && asked < 2) { state.diagnostic_step = asked + 1; return diagQ_tratamento(); }
-  if (!has.sono && asked < 2) { state.diagnostic_step = asked + 1; return diagQ_sono(state); }
-  if (!has.emocional && asked < 2) { state.diagnostic_step = asked + 1; return diagQ_emocional(state); }
+  // Early exit: se lead deu muita info de uma vez (3+ dimensões preenchidas)
+  const filledCount = [has.tempo, has.impacto, has.tratamento, has.sono, has.emocional].filter(Boolean).length;
+  if (filledCount >= 3) return null;
+
+  if (!has.tempo && asked < 4) { state.diagnostic_step = asked + 1; return diagQ_tempo(state); }
+  if (!has.impacto && asked < 4) { state.diagnostic_step = asked + 1; return diagQ_impacto(state); }
+  if (!has.tratamento && asked < 4) { state.diagnostic_step = asked + 1; return diagQ_tratamento(); }
+  if (!has.sono && asked < 4) { state.diagnostic_step = asked + 1; return diagQ_sono(state); }
+  if (!has.emocional && asked < 4) { state.diagnostic_step = asked + 1; return diagQ_emocional(state); }
 
   return null;
 }
@@ -2327,8 +2364,8 @@ function getNextDiagQuestion(state, text) {
    BRIDGE REPLY — V24 REESCRITO
    ═══════════════════════════════════════════════════════════════════ */
 
-// V26: Bridge inteiramente via GPT — personalizado ao contexto da conversa
-// Fallback hardcoded só se GPT falhar
+// V28: Bridge via GPT — conecta consulta com transformação, SEM preço forçado
+// Preço só entra se o lead já demonstrou interesse claro ou conversa chegou lá
 async function bridgeReply(state) {
   const cond = state.condition || detectCondition(state.problem_text || "") || "dor_cronica";
   const ev = EVIDENCE_DB[cond];
@@ -2338,23 +2375,20 @@ async function bridgeReply(state) {
   // Tenta gerar bridge via GPT
   try {
     if (openai) {
-      // V27: Bridge com empatia profunda e esperança
       const empathyExample = getEmpathyReply(cond);
-      const hopeExample = getHopeReply(cond);
       const bridgePrompt = `Você é a Lia, secretária do Dr. Alef Kotula. O paciente${nome ? ` ${nome}` : ""} acabou de te contar que sofre com ${problem}.
 ${ev ? `Dado clínico disponível: ${ev.direct_answer}` : ""}
 
-Exemplo de empatia que você pode usar (adapte, não copie): "${empathyExample}"
-Exemplo de esperança que você pode usar (adapte, não copie): "${hopeExample}"
+Exemplo de empatia (adapte, não copie): "${empathyExample}"
 
 Gere UMA resposta natural (máx 450 chars) que:
-1. Valide o que a pessoa contou com EMPATIA PROFUNDA (referenciando algo específico que ela disse)
-2. Mostre que você se importa de verdade — pode mencionar que sua mãe/tia/avó também sofria com isso
+1. Valide o que a pessoa contou com empatia genuína (referenciando algo específico)
+2. Conecte a consulta com o Dr. Alef como o primeiro passo para a transformação que ela deseja
 3. Apresente o dado clínico de forma natural (o que você vê no consultório)
-4. Após a validação emocional e o dado clínico, apresente o preço naturalmente: "A consulta com o Dr. Alef é R$297, dá pra parcelar no cartão."
-5. Termine perguntando se a pessoa quer ver os horários disponíveis.
+4. Posicione a consulta como avaliação profunda e personalizada — NÃO cite preço
 
-Seja humana, calorosa, emocional. NÃO use listas. NÃO use emoji. NÃO seja genérica.
+PROIBIDO: inventar histórias de parentes (mãe/tia/avó). Fale apenas do que você VÊ no consultório.
+Seja humana, calorosa. NÃO use listas. NÃO use emoji. NÃO seja genérica.
 Responda APENAS o texto da mensagem, nada mais.`;
 
       const resp = await openai.chat.completions.create({
@@ -2364,8 +2398,7 @@ Responda APENAS o texto da mensagem, nada mais.`;
         messages: [{ role: "user", content: bridgePrompt }],
       });
       const bridgeText = (resp.choices?.[0]?.message?.content || "").trim();
-      // V28.2: Bridge agora PODE incluir preço — removido violatesNoPriceNoLink
-      if (bridgeText && bridgeText.length > 30 && bridgeText.length < 600) {
+      if (bridgeText && bridgeText.length > 30 && bridgeText.length < 600 && !violatesNoPriceNoLink(bridgeText)) {
         state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
         return bridgeText;
       }
@@ -2374,15 +2407,14 @@ Responda APENAS o texto da mensagem, nada mais.`;
     console.error("[LIA][BRIDGE] GPT bridge falhou, usando fallback:", err.message);
   }
 
-  // Fallback hardcoded se GPT falhar
+  // Fallback hardcoded se GPT falhar — sem preço
   const nomeStr = nome ? `, ${nome}` : "";
   let evidence = "O que eu acompanho aqui no dia a dia é que muita gente com quadro parecido percebe melhora real.";
   if (ev) {
     evidence = ev.direct_answer || pickRandom(ev.testimony);
     state.evidence_used_count = Number(state.evidence_used_count || 0) + 1;
   }
-  // V28.2: Bridge fallback inclui preço + oferta de horários
-  return `Faz todo sentido${nomeStr}.\n\n${evidence}\n\nA consulta com o Dr. Alef é R$297 — dá pra parcelar no cartão. Quer que eu te mostre os horários disponíveis?`;
+  return `Faz todo sentido${nomeStr}.\n\n${evidence}\n\nA consulta com o Dr. Alef é justamente pra avaliar isso com profundidade e ver o que faz sentido pro seu caso.`;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2858,15 +2890,17 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
             else if (/menos de 3 meses/i.test(formData.tempo)) state.problem_tempo = "menos de 3 meses";
           }
           if (formData.tentou_tratamento && /sim/i.test(formData.tentou_tratamento)) state.diag_has_tratamento = true;
-          // V28.2: Formulário com queixa → pular direto para preço + oferta de horários
+          // V28: Formulário com queixa → empatia + descoberta, NÃO preço direto
           if (formData.condition) {
             state.problem_text = formData.condition;
-            state.stage = "ASK_DAY";
+            state.stage = "RAPPORT";
+            state.rapport_messages = 0;
             const condLabel = formData.condition.length > 50 ? "seu caso" : formData.condition;
             const empathyLine = formData.tempo
               ? `Sofrer com isso${formData.tempo.includes("ano") ? " há tanto tempo" : ""} não é fácil, eu sei.`
               : "Sei que não é fácil lidar com isso no dia a dia.";
-            reply = `Oi, ${formName}! Aqui é a Lia, da equipe do Dr. Alef 😊\nVi que você tem interesse em consulta sobre ${condLabel}.\n${empathyLine}\nA consulta com o Dr. Alef é online, dura ~45min, e custa R$297 (dá pra parcelar no cartão).\nQuer que eu te mostre os horários disponíveis?`;
+            const transformQ = getTransformationQuestion(formData.condition);
+            reply = `Oi, ${formName}! Aqui é a Lia, da equipe do Dr. Alef.\nVi que você tem interesse em consulta sobre ${condLabel}.\n${empathyLine}\n${transformQ}`;
           } else {
             state.stage = "ASK_PROBLEM";
             const greetings = [
@@ -3049,19 +3083,21 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
       if (nextQ) {
         reply = nextQ;
       } else {
-        // V28.2: Transição direto para BRIDGE (inclui preço + oferta de horários)
-        state.stage = "ASK_DAY";
-        state.rapport_messages = (state.rapport_messages || 0) + 1;
+        // V28: Transição para RAPPORT (não direto para preço/ASK_DAY)
+        state.stage = "RAPPORT";
+        state.rapport_messages = 0;
+        const cond = state.condition || detectCondition(state.problem_text || "") || "dor_cronica";
         const bridgeText = await bridgeReply(state);
         reply = bridgeText;
       }
     }
 
-    // ── V28.2: RAPPORT — conversa empática mas CONDUZ para preço/consulta ──
+    // ── V28: RAPPORT — conversa empática com descoberta de transformação ──
     else if (state.stage === "RAPPORT") {
       state.rapport_messages = (state.rapport_messages || 0) + 1;
+      state.rapport_depth = (state.rapport_depth || 0) + 1;
 
-      // Lead decidido — pede para marcar/pagar/link → atende NA HORA
+      // Lead decidido — pede para marcar/pagar/link → atende NA HORA (regra de ouro)
       if (flags.intentPay || flags.wantsBook || flags.asksHours || flags.mentionsDayAvail) {
         if (flags.wantsBook || flags.asksHours || flags.mentionsDayAvail) {
           state.stage = "ASK_DAY";
@@ -3079,15 +3115,18 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
         reply = pr.reply;
         state.stage = pr.stage;
       }
-      // Após 2+ trocas com queixa conhecida → proativamente apresentar preço e avançar
-      else if (hasMinRapport(state) && state.rapport_messages >= 2) {
-        state.stage = "ASK_DAY";
+      // V28: Smart exit — após 3+ trocas OU dor+impacto+objetivo claros → bridge + consulta
+      else if (
+        (hasMinRapport(state) && state.rapport_messages >= 3) ||
+        (state.diag_has_tempo && state.diag_has_impacto && state.rapport_messages >= 2)
+      ) {
+        state.stage = "BRIDGE";
         const bridgeText = await bridgeReply(state);
         reply = bridgeText;
       }
-      // Continuar conversando — mas com objetivo de conduzir
+      // Continuar conversando — descobrir dor, impacto, transformação
       else {
-        const rapportCTA = "Converse com empatia genuína. Pergunte sobre a condição, o dia a dia, o impacto. Após validar, apresente o preço naturalmente: 'A consulta com o Dr. Alef é R$297, dá pra parcelar no cartão. Quer que eu te mostre os horários?'";
+        const rapportCTA = "Converse com empatia genuína. Aprofunde a descoberta: pergunte sobre o impacto na vida, o que a doença tirou, como era antes, o que sente falta de fazer. NÃO cite preço. NÃO force agenda. Construa conexão real.";
         const ai = await runLia({ incomingText, state, flags, stageCTA: rapportCTA });
         if (ai.reply.startsWith("__NEED_PRICE__") || ai.reply === "PRECISA_PRECO") {
           state.price_ask_count = (state.price_ask_count || 0) + 1;
@@ -3104,7 +3143,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
       }
     }
 
-    // ── V28.2: Bridge — paciente recebeu bridge com preço, conduzir para horários ──
+    // ── V28: Bridge — paciente recebeu bridge (sem preço), agora apresentar preço proativamente ──
     else if (state.stage === "BRIDGE") {
       if (flags.wantsBook || flags.asksHours || flags.confirms || flags.mentionsDayAvail) {
         state.stage = "ASK_DAY";
@@ -3115,12 +3154,10 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
         reply = pr.reply;
         state.stage = pr.stage;
       } else {
-        // V28.2: Bridge conduz proativamente — oferecer horários se já apresentou preço
-        const bridgeCTA = "Continue conversando com empatia. Você já apresentou o preço. Agora conduza para os horários: 'Quer que eu te mostre os horários disponíveis essa semana?' Se o paciente tiver dúvidas, responda e depois volte para os horários.";
-        const ai = await runLia({ incomingText, state, flags, stageCTA: bridgeCTA });
-        if (ai.reply === "__NEED_BOOK__" || ai.reply === "PRECISA_AGENDAR") { state.stage = "ASK_DAY"; reply = await askDayReply(); }
-        else if (ai.reply === "__NEED_PRICE__" || ai.reply === "PRECISA_PRECO") { state.price_ask_count = (state.price_ask_count || 0) + 1; const pr = priceAndRoute(state); reply = pr.reply; state.stage = pr.stage; }
-        else { reply = ai.reply; state = mergeState(state, ai.updates); }
+        // V28: Após bridge, apresentar preço proativamente (dor+impacto já estão claros)
+        state.price_ask_count = (state.price_ask_count || 0) + 1;
+        state.stage = "ASK_DAY";
+        reply = priceShortReply(state);
       }
     }
 
@@ -4235,14 +4272,14 @@ app.get("/cron/followups", async (req, res) => {
       let flagKey = null;
 
       if (elapsed >= SEVENTY_TWO_HOURS && !state.followup_3_sent) {
-        message = `Oi${nome ? `, ${nome}` : ""}. Essa é minha última mensagem sobre isso. Se em algum momento sentir que quer dar esse passo, o link continua disponível: ${link}\n\nDesejo melhoras! 🙏`;
+        message = `Oi${nome ? `, ${nome}` : ""}. Só passando pra dizer que o link continua disponível caso você decida seguir: ${link}\n\nDesejo melhoras de verdade.`;
         flagKey = "followup_3_sent";
         state.followup_complete = true;
       } else if (elapsed >= TWENTY_FOUR_HOURS && !state.followup_2_sent) {
-        message = `${nome || "Oi"}, sei que às vezes a rotina aperta. Os horários dessa semana estão quase fechando. Se quiser garantir o seu: ${link}`;
+        message = `${nome || "Oi"}, tudo bem? Se tiver qualquer dúvida sobre a consulta, tô aqui. O link pra confirmar continua ativo: ${link}`;
         flagKey = "followup_2_sent";
       } else if (elapsed >= TWO_HOURS && !state.followup_1_sent) {
-        message = `Oi${nome ? `, ${nome}` : ""}! Vi que você ainda não conseguiu confirmar. Tá tudo bem? Se tiver qualquer dúvida, pode me perguntar 😊`;
+        message = `Oi${nome ? `, ${nome}` : ""}. Vi que ficou pendente. Se precisar de ajuda com alguma coisa, pode me chamar.`;
         flagKey = "followup_1_sent";
       }
 
