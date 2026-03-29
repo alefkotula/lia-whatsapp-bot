@@ -2222,7 +2222,8 @@ async function mpCreatePreference({ phone, planKey }) {
 }
 
 // V28: Monta link curto do checkout via ref token
-// Salva dados no banco, retorna URL curta: SITE_URL/checkout/<ref>
+// Salva dados no banco e retorna a rota curta no backend público,
+// que então redireciona para a página do checkout no site com ?ref=
 async function buildSiteCheckoutLink({ paymentLink, phone, planKey, externalReference, state }) {
   const plan = PLANS[planKey];
   const ref = generateCheckoutRef();
@@ -2239,8 +2240,7 @@ async function buildSiteCheckoutLink({ paymentLink, phone, planKey, externalRefe
     created_at: Date.now(),
   };
   await saveCheckoutRef(ref, checkoutData);
-  // Link curto no domínio do site — HostGator faz proxy/redirect para o backend
-  return { ref, url: `${SITE_URL}/checkout/${ref}` };
+  return { ref, url: `${BASE_URL}/checkout/${ref}` };
 }
 
 async function mpGetPayment(paymentId) {
