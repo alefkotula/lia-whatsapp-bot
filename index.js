@@ -1593,6 +1593,9 @@ function priceAndRoute(state) {
   return { reply: pricePaymentReply(state), stage: "ASK_PAY_METHOD" };
 }
 
+// V28: Cartão do Dr. Alef — apresentação na 1a mensagem de formulário Meta
+const DR_CARD = `\nConheça o seu mais novo médico:\n*Dr. Alef Kotula*\nInstagram: https://www.instagram.com/dralefkotula/\nSite: https://www.dralefkotula.com`;
+
 // V26: Pool de aberturas humanizadas — variam tom e estrutura
 function askNameIntroReply() {
   const variations = [
@@ -2900,7 +2903,8 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
               ? `Sofrer com isso${formData.tempo.includes("ano") ? " há tanto tempo" : ""} não é fácil, eu sei.`
               : "Sei que não é fácil lidar com isso no dia a dia.";
             const transformQ = getTransformationQuestion(formData.condition);
-            reply = `Oi, ${formName}! Aqui é a Lia, da equipe do Dr. Alef.\nVi que você tem interesse em consulta sobre ${condLabel}.\n${empathyLine}\n${transformQ}`;
+            reply = `Oi, ${formName}! Aqui é a Lia, da equipe do Dr. Alef.\nVi que você tem interesse em consulta sobre ${condLabel}.\n${empathyLine}\n${transformQ}${DR_CARD}`;
+            state.lp_sent = true; // Já mandou site na apresentação
           } else {
             state.stage = "ASK_PROBLEM";
             const greetings = [
@@ -2908,7 +2912,8 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
               `Oi, ${formName}! Aqui é a Lia, da equipe do Dr. Alef. Tudo bem? Me diz o que posso fazer por você.`,
               `Oi, ${formName}! Eu sou a Lia, trabalho com o Dr. Alef. O que te motivou a entrar em contato?`,
             ];
-            reply = pickRandom(greetings);
+            reply = pickRandom(greetings) + DR_CARD;
+            state.lp_sent = true;
           }
         } else {
           // Form sem nome legível → pedir nome
@@ -4305,4 +4310,4 @@ app.get("/cron/followups", async (req, res) => {
    ═══════════════════════════════════════════════════════════════════ */
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 LIA V28.2 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 LIA V28 rodando na porta ${PORT}`));
