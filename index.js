@@ -2893,18 +2893,56 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
             else if (/menos de 3 meses/i.test(formData.tempo)) state.problem_tempo = "menos de 3 meses";
           }
           if (formData.tentou_tratamento && /sim/i.test(formData.tentou_tratamento)) state.diag_has_tratamento = true;
-          // V28: Formulário com queixa → empatia + descoberta, NÃO preço direto
+          // V28: Formulário com queixa → empatia variada + pergunta de transformação + DR_CARD
           if (formData.condition) {
             state.problem_text = formData.condition;
             state.stage = "RAPPORT";
             state.rapport_messages = 0;
             const condLabel = formData.condition.length > 50 ? "seu caso" : formData.condition;
-            const empathyLine = formData.tempo
-              ? `Sofrer com isso${formData.tempo.includes("ano") ? " há tanto tempo" : ""} não é fácil, eu sei.`
-              : "Sei que não é fácil lidar com isso no dia a dia.";
+            const hasTempo = !!formData.tempo;
+            const isLongTime = hasTempo && /ano|mais de 1/i.test(formData.tempo);
+            const triedBefore = !!(formData.tentou_tratamento && /sim/i.test(formData.tentou_tratamento));
+
+            // Pool de empathyLines variadas — nunca soam iguais
+            const empathyPool = [];
+            if (isLongTime && triedBefore) {
+              empathyPool.push(
+                `Conviver com isso há tanto tempo, e já tendo tentado outros caminhos sem resultado... é muito desgastante.`,
+                `Quando a gente sofre com algo por tanto tempo e nada resolve de verdade, a frustração é enorme.`,
+                `Lidar com isso por anos e sentir que nada funciona direito é exaustivo, eu sei.`,
+                `É muito difícil quando já se tentou de tudo e a dor continua ali, todo dia.`,
+              );
+            } else if (isLongTime) {
+              empathyPool.push(
+                `Conviver com isso há tanto tempo pesa muito no dia a dia... eu acompanho muita gente assim aqui.`,
+                `Quando algo te acompanha por tanto tempo, afeta tudo — rotina, sono, humor.`,
+                `Sofrer com isso há tanto tempo é muito pesado. A gente vê isso de perto aqui no consultório.`,
+              );
+            } else if (triedBefore) {
+              empathyPool.push(
+                `Quando a pessoa já tentou outros caminhos e não teve resultado, é natural ficar desanimada.`,
+                `Já ter tentado outras coisas e não ter encontrado alívio é frustrante, eu sei.`,
+                `A gente vê muita gente aqui que já tentou vários caminhos antes de chegar ao Dr. Alef.`,
+              );
+            } else {
+              empathyPool.push(
+                `Sei que lidar com isso no dia a dia não é fácil.`,
+                `Quem convive com isso sabe o quanto pesa na rotina.`,
+                `Isso afeta muito mais do que as pessoas imaginam, eu sei.`,
+              );
+            }
+            const empathyLine = pickRandom(empathyPool);
             const transformQ = getTransformationQuestion(formData.condition);
-            reply = `Oi, ${formName}! Aqui é a Lia, da equipe do Dr. Alef.\nVi que você tem interesse em consulta sobre ${condLabel}.\n${empathyLine}\n${transformQ}${DR_CARD}`;
-            state.lp_sent = true; // Já mandou site na apresentação
+
+            // Pool de templates variados — estruturas diferentes entre si
+            const formTemplates = [
+              `Oi, ${formName}! Aqui é a Lia, da equipe do Dr. Alef.\n\n${empathyLine}\n\n${transformQ}\n${DR_CARD}`,
+              `Oi, ${formName}! Eu sou a Lia, trabalho com o Dr. Alef Kotula.\n\nVi que você busca ajuda com ${condLabel}. ${empathyLine}\n\n${transformQ}\n${DR_CARD}`,
+              `Oi, ${formName}! Sou a Lia, do consultório do Dr. Alef.\n\n${empathyLine}\n\nAqui no consultório a gente acompanha muita gente com ${condLabel}. ${transformQ}\n${DR_CARD}`,
+              `Oi, ${formName}! Aqui é a Lia, secretária do Dr. Alef.\n\n${empathyLine}\n\nMe conta: ${transformQ.charAt(0).toLowerCase() + transformQ.slice(1)}\n${DR_CARD}`,
+            ];
+            reply = pickRandom(formTemplates);
+            state.lp_sent = true;
           } else {
             state.stage = "ASK_PROBLEM";
             const greetings = [
