@@ -163,6 +163,7 @@ const META_QUALIFY_STAGES = [
   "QUALIFY_Q1",
   "QUALIFY_Q2",
   "QUALIFY_Q3",
+  "QUALIFY_Q4",
   "QUALIFIED_AWAITING_HANDOFF",
   "NURTURE_B",
   "DISQUALIFIED_C",
@@ -299,7 +300,7 @@ function normalizeLeadFieldKey(text) {
 
 function extractMetaField(text, labelPattern) {
   if (!text) return null;
-  const nextLabel = String.raw`(?=\n|(?:\s+(?:nome[_\s-]*completo|telefone|h[aá][_\s-]*quanto[_\s-]*tempo|o[_\s-]*que[_\s-]*voc[eê][_\s-]*quer[_\s-]*resolver|qual[_\s-]*problema[_\s-]*voc[eê][_\s-]*esta[_\s-]*tratando[_\s-]*ou[_\s-]*tentou[_\s-]*tratar|voc[eê][_\s-]*(?:j[aá][_\s-]*)?tentou|voc[eê][_\s-]*(?:tem|t[eê]m)[_\s-]*interesse|voc[eê][_\s-]*usa[_\s-]*cannabis|qual[_\s-]*e[_\s-]*a[_\s-]*principal[_\s-]*dificuldade|hoje[_\s-]*voc[eê][_\s-]*pagou[_\s-]*ou[_\s-]*paga|voc[eê][_\s-]*quer[_\s-]*resolver[_\s-]*isso)\s*:)|$)`;
+  const nextLabel = String.raw`(?=\n|(?:\s+(?:nome[_\s-]*completo|telefone|h[aá][_\s-]*quanto[_\s-]*tempo|o[_\s-]*que[_\s-]*voc[eê][_\s-]*quer[_\s-]*resolver|qual[_\s-]*problema[_\s-]*voc[eê][_\s-]*esta[_\s-]*tratando[_\s-]*ou[_\s-]*tentou[_\s-]*tratar|voc[eê][_\s-]*(?:j[aá][_\s-]*)?tentou|voc[eê][_\s-]*(?:tem|t[eê]m)[_\s-]*interesse|voc[eê][_\s-]*usa[_\s-]*cannabis|qual[_\s-]*e[_\s-]*a[_\s-]*principal[_\s-]*dificuldade|hoje[_\s-]*voc[eê][_\s-]*pagou[_\s-]*ou[_\s-]*paga|hoje[_\s-]*quanto[_\s-]*voc[eê][_\s-]*gasta[_\s-]*por[_\s-]*m[eê]s|voc[eê][_\s-]*quer[_\s-]*resolver[_\s-]*isso)\s*:)|$)`;
   const re = new RegExp(`${labelPattern}\\s*:\\s*([\\s\\S]*?)${nextLabel}`, "i");
   const match = String(text).match(re);
   return match?.[1]?.trim() || null;
@@ -327,6 +328,7 @@ function parseMetaFormData(text) {
     else if (!fields.uses_cannabis && (label.includes("usa_cannabis_medicinal_atualmente") || label.includes("usa_cannabis_atualmente"))) fields.uses_cannabis = value;
     else if (!fields.main_difficulty && (label.includes("principal_dificuldade") || label.includes("tratamento_hoje"))) fields.main_difficulty = value;
     else if (!fields.out_of_pocket && (label.includes("proprio_bolso") || label.includes("pagou_ou_paga"))) fields.out_of_pocket = value;
+    else if (!fields.monthly_spend && (label.includes("quanto_voce_gasta_por_mes") || label.includes("gasta_por_mes") || label.includes("tratamento_por_mes"))) fields.monthly_spend = value;
     else if (!fields.resolve_window && (label.includes("proximos_7_dias") || label.includes("proximos_sete_dias") || label.includes("quer_resolver_isso"))) fields.resolve_window = value;
   }
 
@@ -359,6 +361,9 @@ function parseMetaFormData(text) {
   }
   if (!fields.out_of_pocket) {
     fields.out_of_pocket = extractMetaField(raw, String.raw`hoje[_\s-]*voc[eê][_\s-]*pagou[_\s-]*ou[_\s-]*paga[^:]*`) || null;
+  }
+  if (!fields.monthly_spend) {
+    fields.monthly_spend = extractMetaField(raw, String.raw`hoje[_\s-]*quanto[_\s-]*voc[eê][_\s-]*gasta[_\s-]*por[_\s-]*m[eê]s[^:]*`) || null;
   }
   if (!fields.resolve_window) {
     fields.resolve_window = extractMetaField(raw, String.raw`voc[eê][_\s-]*quer[_\s-]*resolver[_\s-]*isso[^:]*`) || null;
@@ -1172,6 +1177,17 @@ function parseOutOfPocketValue(value) {
   return null;
 }
 
+function parseMonthlySpendValue(value) {
+  const t = norm(value || "");
+  if (!t) return null;
+  if (/\b(nao gasto|não gasto|parei|zero)\b/.test(t)) return "none";
+  if (/\b(ate|até)\s*r?\$?\s*250\b/.test(t)) return "up_to_250";
+  if (/\b250\b.*\b500\b/.test(t)) return "from_250_to_500";
+  if (/\b500\b.*\b1000\b/.test(t)) return "from_500_to_1000";
+  if (/\bmais de\b.*\b1000\b/.test(t) || /\bacima de\b.*\b1000\b/.test(t)) return "over_1000";
+  return null;
+}
+
 function parseResolveWindowValue(value) {
   const t = norm(value || "");
   if (!t) return null;
@@ -1190,6 +1206,24 @@ function parseMainPainValue(value) {
   if (/\b(confuso|perdido|dose|horario|horário|produto)\b/.test(t)) return "confusion";
   if (/\b(acompanhamento|abandonado|sozinho|segunda opiniao|segunda opinião)\b/.test(t)) return "followup";
   if (/\b(so queria entender|só queria entender|curios|so pra ver|só pra ver|informacao|informação|preco|preço)\b/.test(t)) return "curious";
+  return null;
+}
+
+function parseProductOriginValue(value) {
+  const t = norm(value || "");
+  if (!t) return null;
+  if (/\b(associacao|associação)\b/.test(t)) return "association";
+  if (/\b(farmacia|farmácia)\b/.test(t)) return "pharmacy";
+  if (/\b(plataforma|clique cannabis|bliss)\b/.test(t)) return "platform";
+  if (/\b(importado|importacao|importação)\b/.test(t)) return "imported";
+  return null;
+}
+
+function parseConsultPriceAlignmentAnswer(text, flags) {
+  const t = norm(text || "");
+  if (flags.confirms || /\b(sim|consigo|ok|pode ser|tudo bem|de acordo|estou de acordo|tenho interesse|topo)\b/.test(t)) return "yes";
+  if (/\b(talvez|depende|preciso pensar|vou ver|vou analisar|quero entender melhor)\b/.test(t)) return "maybe";
+  if (flags.priceRejection || flags.saysExpensive || /\b(nao|não|sem condicao|sem condição|muito caro|fora do meu orçamento|nao consigo|não consigo)\b/.test(t)) return "no";
   return null;
 }
 
@@ -1212,9 +1246,14 @@ function setQualificationReasonCodes(state) {
   else if (state.used_recently === true) reasons.push("used_recently");
   if (state.out_of_pocket_status === "current") reasons.push("out_of_pocket");
   else if (state.out_of_pocket_status === "past") reasons.push("paid_before");
+  if (state.monthly_spend_range) reasons.push(`spend_${state.monthly_spend_range}`);
   if (state.main_pain) reasons.push(`pain_${state.main_pain}`);
+  if (state.product_origin) reasons.push(`origin_${state.product_origin}`);
   if (state.wants_resolution_7d === "yes") reasons.push("wants_resolution_fast");
   else if (state.wants_resolution_7d === "maybe") reasons.push("resolution_maybe");
+  if (state.consultation_price_fit === "yes") reasons.push("price_fit_yes");
+  else if (state.consultation_price_fit === "maybe") reasons.push("price_fit_maybe");
+  else if (state.consultation_price_fit === "no") reasons.push("price_fit_no");
   if (state.review_intent_confirmed) reasons.push("review_intent");
   if (state.doctor_handoff_accepted) reasons.push("accepted_call");
   if (state.curious_only) reasons.push("curious_only");
@@ -1232,11 +1271,19 @@ function recomputeQualification(state) {
 
   if (state.out_of_pocket_status === "current") score += 3;
   else if (state.out_of_pocket_status === "past") score += 1;
+  else if (state.monthly_spend_range === "up_to_250") score += 1;
+  else if (state.monthly_spend_range === "from_250_to_500") score += 2;
+  else if (state.monthly_spend_range === "from_500_to_1000") score += 3;
+  else if (state.monthly_spend_range === "over_1000") score += 4;
 
   if (state.wants_resolution_7d === "yes") score += 2;
   else if (state.wants_resolution_7d === "maybe") score += 1;
 
   if (state.objective_response) score += 1;
+  if (state.product_origin) score += 1;
+  if (state.consultation_price_fit === "yes") score += 2;
+  else if (state.consultation_price_fit === "maybe") score += 0;
+  else if (state.consultation_price_fit === "no") score -= 3;
   if (state.review_intent_confirmed) score += 2;
   if (state.doctor_handoff_accepted) score += 2;
   if (state.curious_only) score -= 2;
@@ -1258,17 +1305,17 @@ function getQualificationRecommendedAction(state) {
 }
 
 function metaPriceDeflectionReply() {
-  return "Consigo te explicar direitinho como funciona. Primeiro eu preciso confirmar se a revisão faz sentido para o seu caso, e se fizer o doutor pode te ligar brevemente para alinhar tudo com você.";
+  return "Já vou te alinhar essa parte direitinho. Antes disso, só preciso confirmar por onde você compra o produto hoje: associação, farmácia, plataforma ou importado?";
 }
 
 function metaHandoffOfferReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
-  return `Pelo que você me contou${nome}, faz sentido o doutor falar com você rapidamente para alinhar o caso e te explicar como funciona a consulta online. Se ele puder te chamar por vídeo ou ligação breve, tudo bem?`;
+  return `Perfeito${nome}. Como essa faixa está dentro do que você considera, faz sentido o doutor falar com você rapidamente para alinhar o caso e te explicar como funciona a consulta online. Se ele puder te chamar por vídeo ou ligação breve, tudo bem?`;
 }
 
 function metaOpeningReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
-  return `Oi${nome}. Vi que você já teve contato com cannabis e quer revisar o tratamento. Vou te fazer 3 perguntas rápidas para entender se faz sentido o doutor falar com você, tudo bem?\n\nHoje você usa ainda ou esse tratamento ficou pelo caminho?`;
+  return `Oi${nome}. Vi que você já teve contato com cannabis e quer revisar o tratamento. Vou te fazer 4 perguntas rápidas para entender se faz sentido o doutor falar com você, tudo bem?\n\nHoje você usa ainda ou esse tratamento ficou pelo caminho?`;
 }
 
 function metaQuestion2Reply() {
@@ -1276,7 +1323,11 @@ function metaQuestion2Reply() {
 }
 
 function metaQuestion3Reply() {
-  return "Se o doutor entender que faz sentido, ele pode te fazer uma ligação breve para alinhar expectativas e te explicar como funciona a consulta online. Pode ser?";
+  return "Entendi. E você compra por onde hoje: associação, farmácia, plataforma ou importado?";
+}
+
+function metaQuestion4Reply() {
+  return "Antes de o doutor falar com você, preciso te alinhar uma coisa: quando ele entende que o caso faz sentido para revisão, a consulta médica online com retorno incluso fica em R$397. Nessa consulta, ele revisa o que você usa hoje, avalia se o tratamento está coerente, se existe margem para organizar melhor a estratégia, buscar opções com melhor custo-benefício e oferecer um acompanhamento mais adequado. Não estou te vendendo a consulta agora; antes disso, o doutor ainda vai te ligar brevemente para ver se faz sentido para o seu caso. Essa pergunta é só para entender se você tem interesse real e disponibilidade nessa faixa caso ele veja indicação. Se sim, eu posso avisar o doutor para falar com você.";
 }
 
 function metaAcceptedCallReply(state) {
@@ -1284,9 +1335,19 @@ function metaAcceptedCallReply(state) {
   return `Perfeito${nome}. Vou avisar o doutor por aqui. Se ele estiver disponível, ele pode te chamar por vídeo ou por ligação breve no próprio WhatsApp.`;
 }
 
+function metaDoctorHandoffLockedReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
+  return `Perfeito${nome}. Seu caso já ficou sinalizado por aqui. Agora o próximo passo é o doutor te chamar brevemente por vídeo ou ligação, se estiver disponível. Por aqui, antes dessa ligação, a gente não segue para agendamento nem pagamento.`;
+}
+
 function metaNurtureReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
   return `Sem problema${nome}. Vou deixar isso registrado por aqui. Se fizer sentido para você depois, a gente pode retomar com calma e ver se vale a ligação breve com o doutor.`;
+}
+
+function metaPriceMisalignedReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
+  return `Sem problema${nome}. Eu quis te alinhar essa faixa antes justamente para não ocupar seu tempo sem necessidade. Vou deixar seu caso registrado por aqui e, se fizer sentido depois, a gente pode retomar com calma.`;
 }
 
 function metaDisqualifyReply(state) {
@@ -1314,6 +1375,11 @@ function seedMetaQualificationState(state, formData) {
 
   const outOfPocket = parseOutOfPocketValue(formData.out_of_pocket);
   if (outOfPocket) state.out_of_pocket_status = outOfPocket;
+  const monthlySpend = parseMonthlySpendValue(formData.monthly_spend);
+  if (monthlySpend) {
+    state.monthly_spend_range = monthlySpend;
+    if (!state.out_of_pocket_status && monthlySpend !== "none") state.out_of_pocket_status = "current";
+  }
 
   const resolveWindow = parseResolveWindowValue(formData.resolve_window || formData.interesse);
   if (resolveWindow) state.wants_resolution_7d = resolveWindow;
@@ -1352,6 +1418,15 @@ function updateQualificationFromPainAnswer(state, incomingText) {
   return true;
 }
 
+function updateQualificationFromOriginAnswer(state, incomingText) {
+  const parsed = parseProductOriginValue(incomingText);
+  if (!parsed) return false;
+  state.objective_response = true;
+  state.product_origin = parsed;
+  recomputeQualification(state);
+  return true;
+}
+
 function initializeMetaQualificationState(state) {
   state.doctor_handoff_offered = !!state.doctor_handoff_offered;
   state.doctor_handoff_accepted = !!state.doctor_handoff_accepted;
@@ -1362,6 +1437,9 @@ function initializeMetaQualificationState(state) {
   state.review_intent_confirmed = !!state.review_intent_confirmed;
   state.curious_only = !!state.curious_only;
   state.never_used_for_testing = !!state.never_used_for_testing;
+  state.monthly_spend_range = state.monthly_spend_range || null;
+  state.product_origin = state.product_origin || null;
+  state.consultation_price_fit = state.consultation_price_fit || null;
   state.reason_codes = Array.isArray(state.reason_codes) ? state.reason_codes : [];
   return recomputeQualification(state);
 }
@@ -1371,7 +1449,18 @@ async function handleMetaQualificationFlow(phone, incomingText, state, flags) {
 
   initializeMetaQualificationState(state);
 
+  if (state.waiting_doctor_call && state.doctor_handoff_accepted && !state.doctor_call_completed) {
+    if (flags.isCasualAck || /^(ok|okk|okey|beleza|certo|perfeito|obrigad|obrigado|obrigada|ta bom|tá bom)$/i.test(norm(incomingText))) {
+      return { reply: "", state, skip_send: true };
+    }
+    return { reply: metaDoctorHandoffLockedReply(state), state };
+  }
+
   if ((flags.wantsPrice || flags.intentPay) && !state.doctor_handoff_accepted) {
+    if (state.stage === "QUALIFY_Q4" || state.product_origin) {
+      state.stage = "QUALIFY_Q4";
+      return { reply: metaQuestion4Reply(), state };
+    }
     return { reply: metaPriceDeflectionReply(), state };
   }
 
@@ -1387,14 +1476,9 @@ async function handleMetaQualificationFlow(phone, incomingText, state, flags) {
       state.followup_due_at = null;
       return { reply: metaDisqualifyReply(state), state };
     }
-    if (state.qualification_band === "A") {
-      state.stage = "QUALIFIED_AWAITING_HANDOFF";
-      state.doctor_handoff_offered = true;
-      state.doctor_handoff_offered_at = state.doctor_handoff_offered_at || Date.now();
-      state.nurture_started_at = null;
-      state.followup_due_at = state.doctor_handoff_offered_at + (2 * 60 * 60 * 1000);
-      state.followup_reason = "doctor_handoff_offer";
-      return { reply: metaHandoffOfferReply(state), state };
+    if ((state.uses_cannabis_now || state.used_recently || state.never_used_for_testing) && state.main_pain) {
+      state.stage = "QUALIFY_Q3";
+      return { reply: metaQuestion3Reply(), state };
     }
     state.stage = "QUALIFY_Q1";
     return { reply: metaOpeningReply(state), state };
@@ -1434,7 +1518,46 @@ async function handleMetaQualificationFlow(phone, incomingText, state, flags) {
     return { reply: metaQuestion3Reply(), state };
   }
 
-  if (state.stage === "QUALIFY_Q3" || state.stage === "QUALIFIED_AWAITING_HANDOFF" || state.stage === "NURTURE_B") {
+  if (state.stage === "QUALIFY_Q3") {
+    if (!updateQualificationFromOriginAnswer(state, incomingText)) {
+      return { reply: "Só para eu registrar corretamente: você compra por onde hoje, associação, farmácia, plataforma ou importado?", state };
+    }
+    state.stage = "QUALIFY_Q4";
+    return { reply: metaQuestion4Reply(), state };
+  }
+
+  if (state.stage === "QUALIFY_Q4") {
+    const priceAlignment = parseConsultPriceAlignmentAnswer(incomingText, flags);
+
+    if (priceAlignment === "yes") {
+      state.consultation_price_fit = "yes";
+      state.stage = "QUALIFIED_AWAITING_HANDOFF";
+      state.doctor_handoff_offered = true;
+      state.doctor_handoff_offered_at = state.doctor_handoff_offered_at || Date.now();
+      state.nurture_started_at = null;
+      state.followup_due_at = state.doctor_handoff_offered_at + (2 * 60 * 60 * 1000);
+      state.followup_reason = "doctor_handoff_offer";
+      recomputeQualification(state);
+      return { reply: metaHandoffOfferReply(state), state };
+    }
+
+    if (priceAlignment === "maybe" || priceAlignment === "no") {
+      state.consultation_price_fit = priceAlignment;
+      state.doctor_handoff_accepted = false;
+      state.waiting_doctor_call = false;
+      state.stage = "NURTURE_B";
+      state.nurture_started_at = Date.now();
+      state.followup_reason = "nurture_b";
+      state.followup_due_at = Date.now() + (24 * 60 * 60 * 1000);
+      state.followup_complete = false;
+      recomputeQualification(state);
+      return { reply: metaPriceMisalignedReply(state), state };
+    }
+
+    return { reply: "Só para eu te alinhar corretamente: quando faz sentido para o caso, a consulta online de revisão com retorno fica em R$397. Se essa faixa estiver dentro do que você considera, eu posso avisar o doutor para falar com você.", state };
+  }
+
+  if (state.stage === "QUALIFIED_AWAITING_HANDOFF" || state.stage === "NURTURE_B") {
     const callAnswer = parseDoctorCallAnswer(incomingText, flags);
 
     if (callAnswer === "accept") {
@@ -2830,7 +2953,9 @@ function initializeState(state, bot) {
   state.uses_cannabis_now = state.uses_cannabis_now === true;
   state.used_recently = state.used_recently === true;
   state.out_of_pocket_status = state.out_of_pocket_status || null;
+  state.monthly_spend_range = state.monthly_spend_range || null;
   state.main_pain = state.main_pain || null;
+  state.product_origin = state.product_origin || null;
   state.wants_resolution_7d = state.wants_resolution_7d || null;
   state.qualification_score = Number(state.qualification_score || 0);
   state.qualification_band = state.qualification_band || null;
@@ -2846,6 +2971,7 @@ function initializeState(state, bot) {
   state.review_intent_confirmed = !!state.review_intent_confirmed;
   state.curious_only = !!state.curious_only;
   state.never_used_for_testing = !!state.never_used_for_testing;
+  state.consultation_price_fit = state.consultation_price_fit || null;
   state.reason_codes = Array.isArray(state.reason_codes) ? state.reason_codes : [];
   // V25: Follow-up tracking
   state.followup_due_at = state.followup_due_at || null;
@@ -2967,7 +3093,40 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
   const metaQualificationResult = await handleMetaQualificationFlow(phone, incomingText, state, flags);
   if (metaQualificationResult) {
     state = metaQualificationResult.state;
-    reply = metaQualificationResult.reply;
+    reply = metaQualificationResult.reply || "";
+
+    if (metaQualificationResult.skip_send) {
+      state.last_user_message = incomingText;
+      state.recommended_action = getQualificationRecommendedAction(state);
+      if (state.lead_source === "meta_form" || isMetaQualificationStage(state.stage)) {
+        recomputeQualification(state);
+        state.recommended_action = getQualificationRecommendedAction(state);
+      }
+      await saveUserState(phone, state);
+      return { reply: "", state, flags, skip_send: true };
+    }
+
+    if (reply) {
+      reply = await ensureNoRepeat(reply, state, incomingText, flags);
+
+      if (state.nome && reply.includes(state.nome)) {
+        state.name_used_count = Number(state.name_used_count || 0) + 1;
+      }
+
+      updateConversationHistory(state, incomingText, reply);
+      state.second_last_bot_reply = state.last_bot_reply;
+      state.last_bot_reply = reply;
+      state.last_user_message = incomingText;
+      state.last_sent_at = Date.now();
+      state.recommended_action = getQualificationRecommendedAction(state);
+      if (state.lead_source === "meta_form" || isMetaQualificationStage(state.stage)) {
+        recomputeQualification(state);
+        state.recommended_action = getQualificationRecommendedAction(state);
+      }
+      await saveUserState(phone, state);
+      logMessage("lia", phone, reply, "outbound");
+      return { reply, state, flags };
+    }
   }
 
   /* ═══════════════════════════════════════════════════════════════
