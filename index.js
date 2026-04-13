@@ -244,10 +244,25 @@ setInterval(() => {
   }
 }, 300000); // a cada 5 min
 
+function enforceReplyQuestionLimit(text, maxQuestions = 2) {
+  if (!text) return text;
+  let questionCount = 0;
+  return String(text).replace(/\?/g, () => {
+    questionCount += 1;
+    return questionCount <= maxQuestions ? "?" : ".";
+  });
+}
+
 // V27: Safety filter — remove tokens internos que vazaram para o texto visível
+// V31.2: Preserva quebras de linha e limita a no máximo 2 perguntas por mensagem
 function sanitizeReply(text) {
   if (!text) return text;
-  return text.replace(/PRECISA_PRECO|PRECISA_PAGAR|PRECISA_AGENDAR|__NEED_PRICE__|__NEED_PAY__|__NEED_BOOK__|__URGENT__/g, "").replace(/\s{2,}/g, " ").trim();
+  const cleaned = String(text)
+    .replace(/PRECISA_PRECO|PRECISA_PAGAR|PRECISA_AGENDAR|__NEED_PRICE__|__NEED_PAY__|__NEED_BOOK__|__URGENT__/g, "")
+    .replace(/[^\S\n]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return enforceReplyQuestionLimit(cleaned, 2);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -558,7 +573,7 @@ const PLANS = {
     key: "avaliacao",
     label: "Consulta online de revisão e orientação médica",
     subtitle: "Consulta online",
-    price: 297,
+    price: 397,
     short: "1",
     description: "consulta online de revisão e orientação médica",
   },
@@ -1254,7 +1269,7 @@ function parseProductOriginValue(value) {
 
 function parseConsultPriceAlignmentAnswer(text, flags) {
   const t = norm(text || "");
-  if (flags.confirms || /\b(sim|consigo|ok|pode ser|tudo bem|de acordo|estou de acordo|tenho interesse|topo|faz sentido|consigo pagar|cabe pra mim|cabe no meu orçamento|297|82[,.]69|parcelado pra mim da)\b/.test(t)) return "yes";
+  if (flags.confirms || /\b(sim|consigo|ok|pode ser|tudo bem|de acordo|estou de acordo|tenho interesse|topo|faz sentido|consigo pagar|cabe pra mim|cabe no meu orçamento|397|99[,.]25|parcelado pra mim da)\b/.test(t)) return "yes";
   if (/\b(talvez|depende|preciso pensar|vou ver|vou analisar|quero entender melhor)\b/.test(t)) return "maybe";
   if (flags.priceRejection || flags.saysExpensive || /\b(nao|não|sem condicao|sem condição|muito caro|fora do meu orçamento|nao consigo|não consigo)\b/.test(t)) return "no";
   return null;
@@ -1421,7 +1436,7 @@ function metaHandoffOfferReply(state) {
 
 function metaQuestion5PriceReply(state) {
   const contexto = buildPainContext(state);
-  return `Antes de eu levar seu caso adiante, preciso te alinhar uma faixa real. Pelo que você me contou ${contexto}, quando o doutor entende que faz sentido seguir com a consulta online de revisão e orientação médica, o valor fica em *R$297* à vista ou em *4x de R$82,69* no cartão por link seguro.\n\nNessa consulta ele pode revisar o que já foi feito, avaliar se existe margem para reorganizar melhor a estratégia, entender se há desperdício, desorganização ou falta de ajuste fino e ver se existe um caminho mais coerente para o seu caso.\n\nIsso ainda não é fechamento. Antes de qualquer coisa, o doutor fala com você para confirmar se a consulta realmente faz sentido para o seu caso. Eu faço essa pergunta agora só para entender se existe interesse real e disponibilidade nessa faixa caso ele veja indicação.\n\nDentro dessa faixa, faz sentido para você?`;
+  return `Antes de eu levar seu caso adiante, preciso te alinhar uma faixa real. Pelo que você me contou ${contexto}, quando o doutor entende que faz sentido seguir com a consulta online de revisão e orientação médica, o valor fica em *R$397* à vista ou em *4x de R$99,25* no cartão por link seguro.\n\nNessa consulta ele pode revisar o que já foi feito, avaliar se existe margem para reorganizar melhor a estratégia, entender se há desperdício, desorganização ou falta de ajuste fino e ver se existe um caminho mais coerente para o seu caso.\n\nIsso ainda não é fechamento. Antes de qualquer coisa, o doutor fala com você para confirmar se a consulta realmente faz sentido para o seu caso. Eu faço essa pergunta agora só para entender se existe interesse real e disponibilidade nessa faixa caso ele veja indicação.\n\nDentro dessa faixa, faz sentido para você?`;
 }
 
 function metaColdStartOpeningReply(state) {
@@ -2248,9 +2263,9 @@ FATOS SOBRE ACESSO:
 - O paciente não precisa descobrir isso sozinho
 
 FATOS SOBRE PAGAMENTO:
-- Consulta online de revisão e orientação médica — R$297
+- Consulta online de revisão e orientação médica — R$397
 - Parcelamento no cartão via Mercado Pago (no link o paciente vê todas as opções de parcelamento)
-- Pix: R$297 — CNPJ 46.603.987/0001-30
+- Pix: R$397 — CNPJ 46.603.987/0001-30
 - Aceita cartão e Pix (não aceita boleto)
 - A consulta é particular (não cobre plano, mas pode ter reembolso dependendo do convênio)
 - Pode remarcar com antecedência
@@ -2533,8 +2548,8 @@ function priceInfoReply(state) {
     "- Verifica medicações em uso e possíveis interações\n" +
     "- Define um plano personalizado pro seu caso\n\n" +
     "É online, por videochamada, dura ~45 minutos.\n\n" +
-    "*Consulta online de revisão e orientação médica:* R$297 no Pix\n" +
-    "ou parcelado no cartão."
+    "*Consulta online de revisão e orientação médica:* R$397 no Pix\n" +
+    "ou em 4x de R$99,25 no cartão."
   );
 }
 
@@ -2542,9 +2557,9 @@ function priceInfoReply(state) {
 function priceShortReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
   const variations = [
-    `A consulta com o Dr. Alef é online, 45 min, individualizada${nome}.\n\nValor: *R$297* no Pix ou parcelado no cartão.\n\nQuer que eu te passe os detalhes?`,
-    `A consulta é online, dura uns 45 min e é totalmente personalizada${nome}.\n\n*R$297* à vista no Pix, ou dá pra parcelar no cartão.\n\nTe mando mais detalhes?`,
-    `É uma consulta online de 45 min${nome}, bem completa.\n\nO valor é *R$297* no Pix, ou parcelado no cartão.\n\nQuer saber mais?`,
+    `A consulta com o Dr. Alef é online, 45 min, individualizada${nome}.\n\nValor: *R$397* no Pix ou em *4x de R$99,25*.\n\nQuer que eu te passe os detalhes?`,
+    `A consulta é online, dura uns 45 min e é totalmente personalizada${nome}.\n\n*R$397* à vista no Pix, ou em *4x de R$99,25*.\n\nTe mando mais detalhes?`,
+    `É uma consulta online de 45 min${nome}, bem completa.\n\nO valor é *R$397* no Pix, ou em *4x de R$99,25*.\n\nQuer saber mais?`,
   ];
   return pickRandom(variations);
 }
@@ -4262,17 +4277,17 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
           };
           // V26: Pix reply com variação
           reply = pickRandom([
-            `Aqui tá o Pix.\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$297*\n\nQuando fizer, me manda o comprovante que eu confirmo na hora.`,
-            `Pix direto:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$297*\n\nÉ só fazer e me mandar o comprovante por aqui.`,
-            `Segue o Pix:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$297*\n\nMe envia o comprovante depois que confirmo rapidinho.`,
+            `Aqui tá o Pix.\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$397*\n\nQuando fizer, me manda o comprovante que eu confirmo na hora.`,
+            `Pix direto:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$397*\n\nÉ só fazer e me mandar o comprovante por aqui.`,
+            `Segue o Pix:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$397*\n\nMe envia o comprovante depois que confirmo rapidinho.`,
           ]);
           state.stage = "WAIT_PAYMENT";
         } else if (saysExpensive) {
           if (!state.sent_instagram_link) {
-            reply = `Entendo. No link você consegue ver todas as opções de parcelamento no cartão.\n\nSe preferir à vista, o Pix é *R$297*.\n\n${authorityInstagramReply("price")}\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
+            reply = `Entendo. No link você consegue ver todas as opções de parcelamento no cartão.\n\nSe preferir à vista, o Pix é *R$397*.\n\n${authorityInstagramReply("price")}\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
             state.sent_instagram_link = true;
           } else {
-            reply = `Entendo. No link você consegue ver todas as opções de parcelamento no cartão.\n\nSe preferir à vista, o Pix é *R$297*.\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
+            reply = `Entendo. No link você consegue ver todas as opções de parcelamento no cartão.\n\nSe preferir à vista, o Pix é *R$397*.\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
           }
         } else if (flags.saysWillSee || flags.endsConversation || flags.saysCheckSpouse) {
           const nome = state.nome ? `, ${state.nome}` : "";
@@ -4306,7 +4321,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
       if (isPendingLink && wantsPix && !wantsLink) {
         console.log(`[LIA_PAY] TROCA link→pix`);
         state.payment = { ...state.payment, status: "pending_pix", method: "pix", switched_at: Date.now() };
-        reply = `Sem problema. Se preferir, podemos fazer no Pix.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$297*\n\nAssim que fizer o pagamento, me envie o comprovante por aqui para eu confirmar sua reserva.`;
+        reply = `Sem problema. Se preferir, podemos fazer no Pix.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$397*\n\nAssim que fizer o pagamento, me envie o comprovante por aqui para eu confirmar sua reserva.`;
       }
       // TROCA: Pix → link
       else if (isPendingPix && wantsLink && !wantsPix) {
@@ -4323,7 +4338,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
           state.needs_human = true;
           reply = "Recebi sua confirmação. Vou verificar o pagamento e te aviso por aqui assim que estiver confirmado.";
         } else {
-          reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$297*`;
+          reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$397*`;
         }
       }
       // V27: "Nenhuma" / "tudo certo" / "ok obrigada" → resposta gentil (não confundir com input genérico)
@@ -4377,7 +4392,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
     // V25: intentPay → pagamento direto (sem exigir slot)
     else if (flags.intentPay) {
       if (state.payment?.status === "pending" && state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
-      else if (state.payment?.status === "pending_pix") { reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$297*`; state.stage = "WAIT_PAYMENT"; }
+      else if (state.payment?.status === "pending_pix") { reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$397*`; state.stage = "WAIT_PAYMENT"; }
       else { const pr = priceAndRoute(state); reply = pr.reply; state.stage = pr.stage; }
     }
 
@@ -4441,6 +4456,10 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
     console.log(`[LIA][ANTI-REPEAT] Skip ensureNoRepeat: intentPay + ${state.stage}`);
   } else {
     reply = await ensureNoRepeat(reply, state, incomingText, flags);
+  }
+
+  if (reply) {
+    reply = sanitizeReply(reply);
   }
 
   // Contar uso do nome
