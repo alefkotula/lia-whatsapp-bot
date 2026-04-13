@@ -158,6 +158,16 @@ const DATA_COLLECTION_STAGES = [
   "ASK_FULLNAME", "ASK_BIRTHDATE", "ASK_EMAIL", "ASK_PLAN", "WAIT_PAYMENT"
 ];
 
+const META_QUALIFY_STAGES = [
+  "FORM_INTAKE",
+  "QUALIFY_Q1",
+  "QUALIFY_Q2",
+  "QUALIFY_Q3",
+  "QUALIFIED_AWAITING_HANDOFF",
+  "NURTURE_B",
+  "DISQUALIFIED_C",
+];
+
 /* ═══════════════════════════════════════════════════════════════════
    V24.6: DEDUPLICAÇÃO — evita processar webhooks duplicados
    ═══════════════════════════════════════════════════════════════════ */
@@ -289,7 +299,7 @@ function normalizeLeadFieldKey(text) {
 
 function extractMetaField(text, labelPattern) {
   if (!text) return null;
-  const nextLabel = String.raw`(?=\n|(?:\s+(?:nome[_\s-]*completo|telefone|h[aá][_\s-]*quanto[_\s-]*tempo|o[_\s-]*que[_\s-]*voc[eê][_\s-]*quer[_\s-]*resolver|voc[eê][_\s-]*(?:j[aá][_\s-]*)?tentou|voc[eê][_\s-]*(?:tem|t[eê]m)[_\s-]*interesse)\s*:)|$)`;
+  const nextLabel = String.raw`(?=\n|(?:\s+(?:nome[_\s-]*completo|telefone|h[aá][_\s-]*quanto[_\s-]*tempo|o[_\s-]*que[_\s-]*voc[eê][_\s-]*quer[_\s-]*resolver|qual[_\s-]*problema[_\s-]*voc[eê][_\s-]*esta[_\s-]*tratando[_\s-]*ou[_\s-]*tentou[_\s-]*tratar|voc[eê][_\s-]*(?:j[aá][_\s-]*)?tentou|voc[eê][_\s-]*(?:tem|t[eê]m)[_\s-]*interesse|voc[eê][_\s-]*usa[_\s-]*cannabis|qual[_\s-]*e[_\s-]*a[_\s-]*principal[_\s-]*dificuldade|hoje[_\s-]*voc[eê][_\s-]*pagou[_\s-]*ou[_\s-]*paga|voc[eê][_\s-]*quer[_\s-]*resolver[_\s-]*isso)\s*:)|$)`;
   const re = new RegExp(`${labelPattern}\\s*:\\s*([\\s\\S]*?)${nextLabel}`, "i");
   const match = String(text).match(re);
   return match?.[1]?.trim() || null;
@@ -309,11 +319,15 @@ function parseMetaFormData(text) {
     if (!value) continue;
 
     if (!fields.nome_completo && label.includes("nome_completo")) fields.nome_completo = value;
-    else if (!fields.condition && label.includes("o_que_voce_quer_resolver")) fields.condition = value;
+    else if (!fields.condition && (label.includes("o_que_voce_quer_resolver") || label.includes("qual_problema_voce_esta_tratando_ou_tentou_tratar"))) fields.condition = value;
     else if (!fields.tempo && label.includes("ha_quanto_tempo")) fields.tempo = value;
     else if (!fields.interesse && label.includes("voce_tem_interesse")) fields.interesse = value;
     else if (!fields.tentou_tratamento && label.includes("voce_ja_tentou")) fields.tentou_tratamento = value;
     else if (!fields.telefone && (label === "telefone" || label.endsWith("_telefone") || label.includes("telefone"))) fields.telefone = value;
+    else if (!fields.uses_cannabis && (label.includes("usa_cannabis_medicinal_atualmente") || label.includes("usa_cannabis_atualmente"))) fields.uses_cannabis = value;
+    else if (!fields.main_difficulty && (label.includes("principal_dificuldade") || label.includes("tratamento_hoje"))) fields.main_difficulty = value;
+    else if (!fields.out_of_pocket && (label.includes("proprio_bolso") || label.includes("pagou_ou_paga"))) fields.out_of_pocket = value;
+    else if (!fields.resolve_window && (label.includes("proximos_7_dias") || label.includes("proximos_sete_dias") || label.includes("quer_resolver_isso"))) fields.resolve_window = value;
   }
 
   if (!fields.nome_completo) {
@@ -321,6 +335,9 @@ function parseMetaFormData(text) {
   }
   if (!fields.condition) {
     fields.condition = extractMetaField(raw, String.raw`o[_\s-]*que[_\s-]*voc[eê][_\s-]*quer[_\s-]*resolver[^:]*`) || null;
+  }
+  if (!fields.condition) {
+    fields.condition = extractMetaField(raw, String.raw`qual[_\s-]*problema[_\s-]*voc[eê][_\s-]*esta[_\s-]*tratando[_\s-]*ou[_\s-]*tentou[_\s-]*tratar[^:]*`) || null;
   }
   if (!fields.tempo) {
     fields.tempo = extractMetaField(raw, String.raw`h[aá][_\s-]*quanto[_\s-]*tempo[^:]*`) || null;
@@ -333,6 +350,18 @@ function parseMetaFormData(text) {
   }
   if (!fields.telefone) {
     fields.telefone = extractMetaField(raw, String.raw`telefone`) || null;
+  }
+  if (!fields.uses_cannabis) {
+    fields.uses_cannabis = extractMetaField(raw, String.raw`voc[eê][_\s-]*usa[_\s-]*cannabis[^:]*`) || null;
+  }
+  if (!fields.main_difficulty) {
+    fields.main_difficulty = extractMetaField(raw, String.raw`qual[_\s-]*e[_\s-]*a[_\s-]*principal[_\s-]*dificuldade[^:]*`) || null;
+  }
+  if (!fields.out_of_pocket) {
+    fields.out_of_pocket = extractMetaField(raw, String.raw`hoje[_\s-]*voc[eê][_\s-]*pagou[_\s-]*ou[_\s-]*paga[^:]*`) || null;
+  }
+  if (!fields.resolve_window) {
+    fields.resolve_window = extractMetaField(raw, String.raw`voc[eê][_\s-]*quer[_\s-]*resolver[_\s-]*isso[^:]*`) || null;
   }
 
   Object.keys(fields).forEach((key) => {
@@ -506,11 +535,11 @@ function extractInboundEnvelope(body = {}) {
 const PLANS = {
   avaliacao: {
     key: "avaliacao",
-    label: "Consulta médica online individual",
+    label: "Consulta online de revisão e orientação médica",
     subtitle: "Consulta online",
-    price: 297,
+    price: 397,
     short: "1",
-    description: "consulta médica online individual",
+    description: "consulta online de revisão e orientação médica",
   },
 };
 const PIX_CNPJ = "46.603.987/0001-30";
@@ -1121,6 +1150,334 @@ function classifyLead(flags, text, state) {
   return state.lead_profile || "padrao";
 }
 
+function isMetaQualificationStage(stage) {
+  return META_QUALIFY_STAGES.includes(stage);
+}
+
+function parseUseStatusValue(value) {
+  const t = norm(value || "");
+  if (!t) return null;
+  if (/\b(sim|uso|usando|atualmente|ainda uso)\b/.test(t)) return "current";
+  if (/\b(ja usei|já usei|recentemente|parei|ficou pelo caminho|usei antes)\b/.test(t)) return "recent";
+  if (/\b(nunca|nao usei|não usei|quero comecar|quero começar|so pra ver|só pra ver)\b/.test(t)) return "never";
+  return null;
+}
+
+function parseOutOfPocketValue(value) {
+  const t = norm(value || "");
+  if (!t) return null;
+  if (/\b(sim|pago|pagando|hoje pago|pago do proprio bolso|pago do próprio bolso)\b/.test(t)) return "current";
+  if (/\b(paguei antes|parei|ja paguei|já paguei)\b/.test(t)) return "past";
+  if (/\b(nao|não)\b/.test(t)) return "none";
+  return null;
+}
+
+function parseResolveWindowValue(value) {
+  const t = norm(value || "");
+  if (!t) return null;
+  if (/\b(sim|quero|essa semana|nos proximos 7 dias|nos próximos 7 dias)\b/.test(t)) return "yes";
+  if (/\b(talvez|depende|vendo)\b/.test(t)) return "maybe";
+  if (/\b(nao|não)\b/.test(t)) return "no";
+  return null;
+}
+
+function parseMainPainValue(value) {
+  const t = norm(value || "");
+  if (!t) return null;
+  if (/\b(caro|gastando|gasto|nao compensou|não compensou)\b/.test(t)) return "cost";
+  if (/\b(melhorou pouco|melhora parcial|aquem|aquém|menos do que podia|menos do que poderia)\b/.test(t)) return "partial";
+  if (/\b(efeito ruim|efeitos ruins|efeito colateral|sonolencia|sonolência|sedacao|sedação)\b/.test(t)) return "side_effect";
+  if (/\b(confuso|perdido|dose|horario|horário|produto)\b/.test(t)) return "confusion";
+  if (/\b(acompanhamento|abandonado|sozinho|segunda opiniao|segunda opinião)\b/.test(t)) return "followup";
+  if (/\b(so queria entender|só queria entender|curios|so pra ver|só pra ver|informacao|informação|preco|preço)\b/.test(t)) return "curious";
+  return null;
+}
+
+function parseDoctorCallAnswer(text, flags) {
+  const t = norm(text || "");
+  if (flags.confirms || /\b(pode sim|pode me ligar|pode chamar|pode ser|por mim tudo bem|tudo bem|claro|sim pode)\b/.test(t)) return "accept";
+  if (flags.saysWillSee || flags.wantsLater || /\b(agora nao|agora não|depois|mais tarde|outro momento)\b/.test(t)) return "later";
+  if (flags.refuses || /\b(prefiro nao|prefiro não|nao precisa|não precisa|nao quero|não quero)\b/.test(t)) return "reject";
+  return null;
+}
+
+function hasReviewIntent(text) {
+  const t = norm(text || "");
+  return /\b(revisar|entender por que|otimizar|organizar|ajustar|melhorar o acompanhamento|segunda opiniao|segunda opinião)\b/.test(t);
+}
+
+function setQualificationReasonCodes(state) {
+  const reasons = [];
+  if (state.uses_cannabis_now === true) reasons.push("uses_now");
+  else if (state.used_recently === true) reasons.push("used_recently");
+  if (state.out_of_pocket_status === "current") reasons.push("out_of_pocket");
+  else if (state.out_of_pocket_status === "past") reasons.push("paid_before");
+  if (state.main_pain) reasons.push(`pain_${state.main_pain}`);
+  if (state.wants_resolution_7d === "yes") reasons.push("wants_resolution_fast");
+  else if (state.wants_resolution_7d === "maybe") reasons.push("resolution_maybe");
+  if (state.review_intent_confirmed) reasons.push("review_intent");
+  if (state.doctor_handoff_accepted) reasons.push("accepted_call");
+  if (state.curious_only) reasons.push("curious_only");
+  if (state.never_used_for_testing) reasons.push("never_used");
+  state.reason_codes = reasons;
+}
+
+function recomputeQualification(state) {
+  let score = 0;
+
+  if (state.uses_cannabis_now === true) score += 3;
+  else if (state.used_recently === true) score += 2;
+
+  if (state.main_pain && state.main_pain !== "curious") score += 2;
+
+  if (state.out_of_pocket_status === "current") score += 3;
+  else if (state.out_of_pocket_status === "past") score += 1;
+
+  if (state.wants_resolution_7d === "yes") score += 2;
+  else if (state.wants_resolution_7d === "maybe") score += 1;
+
+  if (state.objective_response) score += 1;
+  if (state.review_intent_confirmed) score += 2;
+  if (state.doctor_handoff_accepted) score += 2;
+  if (state.curious_only) score -= 2;
+  if (state.never_used_for_testing) score -= 3;
+
+  state.qualification_score = score;
+  if (score >= 9) state.qualification_band = "A";
+  else if (score >= 6) state.qualification_band = "B";
+  else state.qualification_band = "C";
+  setQualificationReasonCodes(state);
+  return state;
+}
+
+function getQualificationRecommendedAction(state) {
+  if (state.waiting_doctor_call && state.doctor_handoff_accepted && state.qualification_band === "A") return "call_now";
+  if (state.stage === "NURTURE_B") return "nurture";
+  if (state.qualification_band === "C" || state.stage === "DISQUALIFIED_C") return "stop";
+  return null;
+}
+
+function metaPriceDeflectionReply() {
+  return "Consigo te explicar direitinho como funciona. Primeiro eu preciso confirmar se a revisão faz sentido para o seu caso, e se fizer o doutor pode te ligar brevemente para alinhar tudo com você.";
+}
+
+function metaHandoffOfferReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
+  return `Pelo que você me contou${nome}, faz sentido o doutor falar com você rapidamente para alinhar o caso e te explicar como funciona a consulta online. Se ele puder te chamar por vídeo ou ligação breve, tudo bem?`;
+}
+
+function metaOpeningReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
+  return `Oi${nome}. Vi que você já teve contato com cannabis e quer revisar o tratamento. Vou te fazer 3 perguntas rápidas para entender se faz sentido o doutor falar com você, tudo bem?\n\nHoje você usa ainda ou esse tratamento ficou pelo caminho?`;
+}
+
+function metaQuestion2Reply() {
+  return "Entendi. E o que mais te incomoda hoje: gastou e não compensou, melhorou pouco, efeito ruim ou falta de acompanhamento?";
+}
+
+function metaQuestion3Reply() {
+  return "Se o doutor entender que faz sentido, ele pode te fazer uma ligação breve para alinhar expectativas e te explicar como funciona a consulta online. Pode ser?";
+}
+
+function metaAcceptedCallReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
+  return `Perfeito${nome}. Vou avisar o doutor por aqui. Se ele estiver disponível, ele pode te chamar por vídeo ou por ligação breve no próprio WhatsApp.`;
+}
+
+function metaNurtureReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
+  return `Sem problema${nome}. Vou deixar isso registrado por aqui. Se fizer sentido para você depois, a gente pode retomar com calma e ver se vale a ligação breve com o doutor.`;
+}
+
+function metaDisqualifyReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
+  return `Entendi${nome}. Pelo que você me contou, essa conversa com o doutor não parece ser a melhor próxima etapa agora. Se depois você quiser revisar um tratamento que já usou ou já está em andamento, pode me chamar por aqui.`;
+}
+
+function seedMetaQualificationState(state, formData) {
+  state.lead_source = "meta_form";
+  state.price_hidden_policy = true;
+  state.form_data = formData;
+  state.meta_flow_started_at = state.meta_flow_started_at || Date.now();
+  state.followup_complete = false;
+
+  const currentUse = parseUseStatusValue(formData.uses_cannabis);
+  state.uses_cannabis_now = currentUse === "current";
+  state.used_recently = currentUse === "recent";
+  state.never_used_for_testing = currentUse === "never";
+
+  const mainPain = parseMainPainValue(formData.main_difficulty);
+  if (mainPain) {
+    state.main_pain = mainPain;
+    state.curious_only = mainPain === "curious";
+  }
+
+  const outOfPocket = parseOutOfPocketValue(formData.out_of_pocket);
+  if (outOfPocket) state.out_of_pocket_status = outOfPocket;
+
+  const resolveWindow = parseResolveWindowValue(formData.resolve_window || formData.interesse);
+  if (resolveWindow) state.wants_resolution_7d = resolveWindow;
+
+  const detectedCondition = detectCondition(formData.condition || "");
+  if (detectedCondition) state.condition = detectedCondition;
+  if (formData.condition) state.problem_text = formData.condition;
+
+  recomputeQualification(state);
+}
+
+function updateQualificationFromUsageAnswer(state, incomingText) {
+  const parsed = parseUseStatusValue(incomingText);
+  if (!parsed) return false;
+  state.objective_response = true;
+  state.uses_cannabis_now = parsed === "current";
+  state.used_recently = parsed === "recent";
+  state.never_used_for_testing = parsed === "never";
+  recomputeQualification(state);
+  return true;
+}
+
+function updateQualificationFromPainAnswer(state, incomingText) {
+  const parsed = parseMainPainValue(incomingText);
+  if (!parsed) return false;
+  state.objective_response = true;
+  state.main_pain = parsed;
+  state.curious_only = parsed === "curious";
+  if (parsed === "curious") state.review_intent_confirmed = false;
+  if (parsed !== "curious" && hasReviewIntent(incomingText)) {
+    state.review_intent_confirmed = true;
+  } else if (parsed !== "curious") {
+    state.review_intent_confirmed = true;
+  }
+  recomputeQualification(state);
+  return true;
+}
+
+function initializeMetaQualificationState(state) {
+  state.doctor_handoff_offered = !!state.doctor_handoff_offered;
+  state.doctor_handoff_accepted = !!state.doctor_handoff_accepted;
+  state.waiting_doctor_call = !!state.waiting_doctor_call;
+  state.doctor_call_completed = !!state.doctor_call_completed;
+  state.price_hidden_policy = true;
+  state.objective_response = !!state.objective_response;
+  state.review_intent_confirmed = !!state.review_intent_confirmed;
+  state.curious_only = !!state.curious_only;
+  state.never_used_for_testing = !!state.never_used_for_testing;
+  state.reason_codes = Array.isArray(state.reason_codes) ? state.reason_codes : [];
+  return recomputeQualification(state);
+}
+
+async function handleMetaQualificationFlow(phone, incomingText, state, flags) {
+  if (state.lead_source !== "meta_form" && !isMetaQualificationStage(state.stage)) return null;
+
+  initializeMetaQualificationState(state);
+
+  if ((flags.wantsPrice || flags.intentPay) && !state.doctor_handoff_accepted) {
+    return { reply: metaPriceDeflectionReply(), state };
+  }
+
+  if ((flags.wantsBook || flags.asksHours) && !state.doctor_handoff_accepted) {
+    return { reply: "Antes de organizar horário, o doutor faz uma ligação breve de alinhamento para entender se essa revisão faz sentido para você. Se você topar, eu aviso ele por aqui.", state };
+  }
+
+  if (!state.stage || state.stage === "FORM_INTAKE") {
+    recomputeQualification(state);
+    if (state.qualification_band === "C") {
+      state.stage = "DISQUALIFIED_C";
+      state.followup_complete = true;
+      state.followup_due_at = null;
+      return { reply: metaDisqualifyReply(state), state };
+    }
+    if (state.qualification_band === "A") {
+      state.stage = "QUALIFIED_AWAITING_HANDOFF";
+      state.doctor_handoff_offered = true;
+      state.doctor_handoff_offered_at = state.doctor_handoff_offered_at || Date.now();
+      state.nurture_started_at = null;
+      state.followup_due_at = state.doctor_handoff_offered_at + (2 * 60 * 60 * 1000);
+      state.followup_reason = "doctor_handoff_offer";
+      return { reply: metaHandoffOfferReply(state), state };
+    }
+    state.stage = "QUALIFY_Q1";
+    return { reply: metaOpeningReply(state), state };
+  }
+
+  if (state.stage === "QUALIFY_Q1") {
+    if (!updateQualificationFromUsageAnswer(state, incomingText)) {
+      return { reply: "Só para eu entender melhor: hoje você usa ainda ou esse tratamento ficou pelo caminho?", state };
+    }
+    if (state.qualification_band === "C") {
+      state.stage = "DISQUALIFIED_C";
+      state.followup_complete = true;
+      state.followup_due_at = null;
+      return { reply: metaDisqualifyReply(state), state };
+    }
+    state.stage = "QUALIFY_Q2";
+    return { reply: metaQuestion2Reply(), state };
+  }
+
+  if (state.stage === "QUALIFY_Q2") {
+    if (!updateQualificationFromPainAnswer(state, incomingText)) {
+      if (hasReviewIntent(incomingText)) {
+        state.review_intent_confirmed = true;
+        state.objective_response = true;
+        recomputeQualification(state);
+      } else {
+        return { reply: "Me ajuda com uma frase curta: hoje te incomoda mais o custo, a melhora parcial, efeito ruim ou a falta de acompanhamento?", state };
+      }
+    }
+    if (state.qualification_band === "C") {
+      state.stage = "DISQUALIFIED_C";
+      state.followup_complete = true;
+      state.followup_due_at = null;
+      return { reply: metaDisqualifyReply(state), state };
+    }
+    state.stage = "QUALIFY_Q3";
+    return { reply: metaQuestion3Reply(), state };
+  }
+
+  if (state.stage === "QUALIFY_Q3" || state.stage === "QUALIFIED_AWAITING_HANDOFF" || state.stage === "NURTURE_B") {
+    const callAnswer = parseDoctorCallAnswer(incomingText, flags);
+
+    if (callAnswer === "accept") {
+      state.doctor_handoff_offered = true;
+      state.doctor_handoff_accepted = true;
+      state.waiting_doctor_call = true;
+      state.doctor_handoff_offered_at = state.doctor_handoff_offered_at || Date.now();
+      state.doctor_handoff_accepted_at = Date.now();
+      state.nurture_started_at = null;
+      state.followup_due_at = null;
+      state.followup_complete = true;
+      recomputeQualification(state);
+      state.stage = "QUALIFIED_AWAITING_HANDOFF";
+      return { reply: metaAcceptedCallReply(state), state };
+    }
+
+    if (callAnswer === "later" || callAnswer === "reject") {
+      state.doctor_handoff_accepted = false;
+      state.waiting_doctor_call = false;
+      state.stage = "NURTURE_B";
+      state.nurture_started_at = Date.now();
+      state.followup_reason = "nurture_b";
+      state.followup_due_at = Date.now() + (24 * 60 * 60 * 1000);
+      state.followup_complete = false;
+      recomputeQualification(state);
+      return { reply: metaNurtureReply(state), state };
+    }
+
+    state.doctor_handoff_offered = true;
+    state.doctor_handoff_offered_at = state.doctor_handoff_offered_at || Date.now();
+    state.nurture_started_at = null;
+    state.followup_reason = "doctor_handoff_offer";
+    state.followup_due_at = state.doctor_handoff_offered_at + (2 * 60 * 60 * 1000);
+    return { reply: metaHandoffOfferReply(state), state };
+  }
+
+  if (state.stage === "DISQUALIFIED_C") {
+    return { reply: metaDisqualifyReply(state), state };
+  }
+
+  return null;
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    SLOT MANAGEMENT (preservado)
    ═══════════════════════════════════════════════════════════════════ */
@@ -1501,9 +1858,9 @@ FATOS SOBRE ACESSO:
 - O paciente não precisa descobrir isso sozinho
 
 FATOS SOBRE PAGAMENTO:
-- Consulta Médica Online Individual — R$297
+- Consulta online de revisão e orientação médica — R$397
 - Parcelamento no cartão via Mercado Pago (no link o paciente vê todas as opções de parcelamento)
-- Pix: R$297 — CNPJ 46.603.987/0001-30
+- Pix: R$397 — CNPJ 46.603.987/0001-30
 - Aceita cartão e Pix (não aceita boleto)
 - A consulta é particular (não cobre plano, mas pode ter reembolso dependendo do convênio)
 - Pode remarcar com antecedência
@@ -1786,7 +2143,7 @@ function priceInfoReply(state) {
     "- Verifica medicações em uso e possíveis interações\n" +
     "- Define um plano personalizado pro seu caso\n\n" +
     "É online, por videochamada, dura ~45 minutos.\n\n" +
-    "*Consulta Médica Online Individual:* R$297 no Pix\n" +
+    "*Consulta online de revisão e orientação médica:* R$397 no Pix\n" +
     "ou parcelado no cartão."
   );
 }
@@ -1795,9 +2152,9 @@ function priceInfoReply(state) {
 function priceShortReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
   const variations = [
-    `A consulta com o Dr. Alef é online, 45 min, individualizada${nome}.\n\nValor: *R$297* no Pix ou parcelado no cartão.\n\nQuer que eu te passe os detalhes?`,
-    `A consulta é online, dura uns 45 min e é totalmente personalizada${nome}.\n\n*R$297* à vista no Pix, ou dá pra parcelar no cartão.\n\nTe mando mais detalhes?`,
-    `É uma consulta online de 45 min${nome}, bem completa.\n\nO valor é *R$297* no Pix, ou parcelado no cartão.\n\nQuer saber mais?`,
+    `A consulta com o Dr. Alef é online, 45 min, individualizada${nome}.\n\nValor: *R$397* no Pix ou parcelado no cartão.\n\nQuer que eu te passe os detalhes?`,
+    `A consulta é online, dura uns 45 min e é totalmente personalizada${nome}.\n\n*R$397* à vista no Pix, ou dá pra parcelar no cartão.\n\nTe mando mais detalhes?`,
+    `É uma consulta online de 45 min${nome}, bem completa.\n\nO valor é *R$397* no Pix, ou parcelado no cartão.\n\nQuer saber mais?`,
   ];
   return pickRandom(variations);
 }
@@ -1820,7 +2177,7 @@ function paymentSentReply(plan, link, state) {
     : `Vou te enviar o link para pagamento da consulta.`;
   return (
     `${slot}\n\n` +
-    `Aqui está o link para pagamento da *consulta médica online individual*.\n\n` +
+    `Aqui está o link para pagamento da *consulta online de revisão e orientação médica*.\n\n` +
     `${link}\n\n` +
     `Valor: *R$${plan.price}*.\n\n` +
     `Assim que o pagamento for confirmado, eu te aviso por aqui.`
@@ -2469,6 +2826,27 @@ function initializeState(state, bot) {
   state.name_ask_count = Number(state.name_ask_count || 0);
   state.name_skipped = !!state.name_skipped;
   state.sent_instagram_link = !!state.sent_instagram_link;
+  state.lead_source = state.lead_source || "whatsapp_manual";
+  state.uses_cannabis_now = state.uses_cannabis_now === true;
+  state.used_recently = state.used_recently === true;
+  state.out_of_pocket_status = state.out_of_pocket_status || null;
+  state.main_pain = state.main_pain || null;
+  state.wants_resolution_7d = state.wants_resolution_7d || null;
+  state.qualification_score = Number(state.qualification_score || 0);
+  state.qualification_band = state.qualification_band || null;
+  state.doctor_handoff_offered = !!state.doctor_handoff_offered;
+  state.doctor_handoff_accepted = !!state.doctor_handoff_accepted;
+  state.waiting_doctor_call = !!state.waiting_doctor_call;
+  state.doctor_call_completed = !!state.doctor_call_completed;
+  state.doctor_handoff_offered_at = state.doctor_handoff_offered_at || null;
+  state.doctor_handoff_accepted_at = state.doctor_handoff_accepted_at || null;
+  state.nurture_started_at = state.nurture_started_at || null;
+  state.price_hidden_policy = state.price_hidden_policy === true;
+  state.objective_response = !!state.objective_response;
+  state.review_intent_confirmed = !!state.review_intent_confirmed;
+  state.curious_only = !!state.curious_only;
+  state.never_used_for_testing = !!state.never_used_for_testing;
+  state.reason_codes = Array.isArray(state.reason_codes) ? state.reason_codes : [];
   // V25: Follow-up tracking
   state.followup_due_at = state.followup_due_at || null;
   state.followup_reason = state.followup_reason || null;
@@ -2550,6 +2928,13 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
   if (inboundName && !state.nome && !state.form_data?.nome_completo && !state.name_skipped) {
     state.nome = inboundName;
   }
+  const metaFormData = parseMetaFormData(incomingText);
+  if (metaFormData) {
+    const formName = extractFormFirstName(metaFormData.nome_completo || "");
+    if (formName && !state.nome) state.nome = formName;
+    seedMetaQualificationState(state, metaFormData);
+    if (!isMetaQualificationStage(state.stage)) state.stage = "FORM_INTAKE";
+  }
 
   // Salvar mensagem inbound
   logMessage(phone, "lia", incomingText, "inbound");
@@ -2579,11 +2964,17 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
 
   let reply = "";
 
+  const metaQualificationResult = await handleMetaQualificationFlow(phone, incomingText, state, flags);
+  if (metaQualificationResult) {
+    state = metaQualificationResult.state;
+    reply = metaQualificationResult.reply;
+  }
+
   /* ═══════════════════════════════════════════════════════════════
      [CAMADA 0] — PROTEÇÕES
      ═══════════════════════════════════════════════════════════════ */
 
-  if (state.payment?.status === "approved") {
+  if (!reply && state.payment?.status === "approved") {
     // V25: Pós-pagamento adaptativo — slot → dados → confirmed
     if (!state.slot_time || !state.date_key) {
       // Pagou mas sem horário → coletar horário primeiro
@@ -2599,7 +2990,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
       reply = afterPaidReply(state);
     }
   }
-  else if (flags.urgency) {
+  else if (!reply && flags.urgency) {
     reply = "Pela sua mensagem, isso pode precisar de atendimento urgente. Por favor, procure um pronto-socorro ou ligue para o SAMU (192) agora. Quando estiver seguro(a), me chama aqui 😊";
   }
 
@@ -2607,14 +2998,14 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
      [CAMADA 0.5] — RISCO EMOCIONAL / SOFRIMENTO PSÍQUICO (V24.5)
      ═══════════════════════════════════════════════════════════════ */
 
-  else if (flags.emotionalRisk) {
+  else if (!reply && flags.emotionalRisk) {
     const nome = state.nome ? `, ${state.nome}` : "";
     reply = `Preciso te perguntar algo importante${nome}: você está tendo pensamentos de se machucar ou de não querer mais viver?\n\nSe sim, por favor ligue agora para o *CVV: 188* (24h, gratuito, sigilo total). Você não precisa passar por isso sozinho(a).\n\nSe não, fica tranquilo(a) — me conta melhor o que está sentindo que eu te ajudo a encontrar o caminho certo.`;
     state.emotional_risk_flagged = true;
     state.needs_human = true;
   }
 
-  else if (flags.emotionalDistress && !state.emotional_distress_handled) {
+  else if (!reply && flags.emotionalDistress && !state.emotional_distress_handled) {
     const nome = state.nome ? `, ${state.nome}` : "";
     reply = `Entendo${nome}. O que você está sentindo é real e merece atenção.\n\nAntes de falar sobre tratamento, me conta um pouco mais: como está seu dia a dia com isso? Está conseguindo dormir, trabalhar, fazer suas coisas?`;
     state.emotional_distress_handled = true;
@@ -2626,7 +3017,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
      ═══════════════════════════════════════════════════════════════ */
 
   // V24.7: Casual ack ("ok", "beleza", "entendi") fora de coleta de dados → silêncio ou farewell único
-  else if (flags.isCasualAck && !DATA_COLLECTION_STAGES.includes(state.stage) && state.stage !== "ASK_NAME") {
+  else if (!reply && flags.isCasualAck && !DATA_COLLECTION_STAGES.includes(state.stage) && state.stage !== "ASK_NAME") {
     if (state.farewell_sent) {
       // Já mandou farewell antes → silêncio total
       await saveUserState(phone, state);
@@ -2641,7 +3032,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
     ]);
   }
 
-  else if (!DATA_COLLECTION_STAGES.includes(state.stage) && flags.endsConversation && !flags.wantsBook && !flags.wantsPrice && !flags.intentPay) {
+  else if (!reply && !DATA_COLLECTION_STAGES.includes(state.stage) && flags.endsConversation && !flags.wantsBook && !flags.wantsPrice && !flags.intentPay) {
     if (state.farewell_sent) {
       await saveUserState(phone, state);
       return { reply: "", state, flags, skip_send: true };
@@ -2676,7 +3067,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
   }
 
   // V28: isSleepy OU wantsLater — respeitar que o lead quer dormir/falar depois
-  else if ((flags.isSleepy || flags.wantsLater) && !flags.wantsBook && !flags.intentPay) {
+  else if (!reply && (flags.isSleepy || flags.wantsLater) && !flags.wantsBook && !flags.intentPay) {
     if (state.farewell_sent) {
       await saveUserState(phone, state);
       return { reply: "", state, flags, skip_send: true };
@@ -2692,7 +3083,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
   }
 
   // V28: Rejeição de preço — handler empático (antes de saysWillSee)
-  else if ((flags.priceRejection || (flags.saysExpensive && flags.endsConversation)) && !flags.wantsBook && !flags.intentPay) {
+  else if (!reply && (flags.priceRejection || (flags.saysExpensive && flags.endsConversation)) && !flags.wantsBook && !flags.intentPay) {
     if (state.farewell_sent) {
       await saveUserState(phone, state);
       return { reply: "", state, flags, skip_send: true };
@@ -2708,7 +3099,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
     state.followup_reason = "price_rejection";
   }
 
-  else if (flags.saysWillSee && !flags.wantsBook && !flags.intentPay) {
+  else if (!reply && flags.saysWillSee && !flags.wantsBook && !flags.intentPay) {
     if (state.farewell_sent) {
       await saveUserState(phone, state);
       return { reply: "", state, flags, skip_send: true };
@@ -2727,7 +3118,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
     state.followup_reason = "said_will_think";
   }
 
-  else if (flags.saysCheckSpouse && !flags.wantsBook && !flags.intentPay) {
+  else if (!reply && flags.saysCheckSpouse && !flags.wantsBook && !flags.intentPay) {
     if (state.farewell_sent) {
       await saveUserState(phone, state);
       return { reply: "", state, flags, skip_send: true };
@@ -2743,7 +3134,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
      [CAMADA 1] — REPARO CONVERSACIONAL
      ═══════════════════════════════════════════════════════════════ */
 
-  else if (isRepairSignal(incomingText)) {
+  else if (!reply && isRepairSignal(incomingText)) {
     state.repair_count = (state.repair_count || 0) + 1;
     const ai = await runLia({
       incomingText,
@@ -3417,17 +3808,17 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
           };
           // V26: Pix reply com variação
           reply = pickRandom([
-            `Aqui tá o Pix.\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$297*\n\nQuando fizer, me manda o comprovante que eu confirmo na hora.`,
-            `Pix direto:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$297*\n\nÉ só fazer e me mandar o comprovante por aqui.`,
-            `Segue o Pix:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$297*\n\nMe envia o comprovante depois que confirmo rapidinho.`,
+            `Aqui tá o Pix.\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$397*\n\nQuando fizer, me manda o comprovante que eu confirmo na hora.`,
+            `Pix direto:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$397*\n\nÉ só fazer e me mandar o comprovante por aqui.`,
+            `Segue o Pix:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$397*\n\nMe envia o comprovante depois que confirmo rapidinho.`,
           ]);
           state.stage = "WAIT_PAYMENT";
         } else if (saysExpensive) {
           if (!state.sent_instagram_link) {
-            reply = `Entendo. No link você consegue ver todas as opções de parcelamento no cartão.\n\nSe preferir à vista, o Pix é *R$297*.\n\n${authorityInstagramReply("price")}\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
+            reply = `Entendo. No link você consegue ver todas as opções de parcelamento no cartão.\n\nSe preferir à vista, o Pix é *R$397*.\n\n${authorityInstagramReply("price")}\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
             state.sent_instagram_link = true;
           } else {
-            reply = `Entendo. No link você consegue ver todas as opções de parcelamento no cartão.\n\nSe preferir à vista, o Pix é *R$297*.\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
+            reply = `Entendo. No link você consegue ver todas as opções de parcelamento no cartão.\n\nSe preferir à vista, o Pix é *R$397*.\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
           }
         } else if (flags.saysWillSee || flags.endsConversation || flags.saysCheckSpouse) {
           const nome = state.nome ? `, ${state.nome}` : "";
@@ -3461,7 +3852,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
       if (isPendingLink && wantsPix && !wantsLink) {
         console.log(`[LIA_PAY] TROCA link→pix`);
         state.payment = { ...state.payment, status: "pending_pix", method: "pix", switched_at: Date.now() };
-        reply = `Sem problema. Se preferir, podemos fazer no Pix.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$297*\n\nAssim que fizer o pagamento, me envie o comprovante por aqui para eu confirmar sua reserva.`;
+        reply = `Sem problema. Se preferir, podemos fazer no Pix.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$397*\n\nAssim que fizer o pagamento, me envie o comprovante por aqui para eu confirmar sua reserva.`;
       }
       // TROCA: Pix → link
       else if (isPendingPix && wantsLink && !wantsPix) {
@@ -3478,7 +3869,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
           state.needs_human = true;
           reply = "Recebi sua confirmação. Vou verificar o pagamento e te aviso por aqui assim que estiver confirmado.";
         } else {
-          reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$297*`;
+          reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$397*`;
         }
       }
       // V27: "Nenhuma" / "tudo certo" / "ok obrigada" → resposta gentil (não confundir com input genérico)
@@ -3532,7 +3923,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
     // V25: intentPay → pagamento direto (sem exigir slot)
     else if (flags.intentPay) {
       if (state.payment?.status === "pending" && state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
-      else if (state.payment?.status === "pending_pix") { reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$297*`; state.stage = "WAIT_PAYMENT"; }
+      else if (state.payment?.status === "pending_pix") { reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$397*`; state.stage = "WAIT_PAYMENT"; }
       else { const pr = priceAndRoute(state); reply = pr.reply; state.stage = pr.stage; }
     }
 
@@ -3610,6 +4001,11 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
   state.last_bot_reply = reply;
   state.last_user_message = incomingText;
   state.last_sent_at = Date.now();
+  state.recommended_action = getQualificationRecommendedAction(state);
+  if (state.lead_source === "meta_form" || isMetaQualificationStage(state.stage)) {
+    recomputeQualification(state);
+    state.recommended_action = getQualificationRecommendedAction(state);
+  }
   // V28.2: Detectar se LP foi enviada na resposta
   if (!state.lp_sent && reply && /dralefkotula\.com/i.test(reply)) {
     state.lp_sent = true;
@@ -3962,6 +4358,12 @@ app.post("/lia/respond", async (req, res) => {
       stage: result.state?.stage || null,
       intent: detectMainIntent(result.flags) || null,
       action: null,
+      qualification_score: result.state?.qualification_score ?? null,
+      qualification_band: result.state?.qualification_band || null,
+      doctor_handoff_offered: !!result.state?.doctor_handoff_offered,
+      doctor_handoff_accepted: !!result.state?.doctor_handoff_accepted,
+      recommended_action: result.state?.recommended_action || null,
+      reason_codes: Array.isArray(result.state?.reason_codes) ? result.state.reason_codes : [],
       needs_payment: result.state?.stage === "WAIT_PAYMENT",
       needs_human: !!(result.state?.needs_human || result.state?.emotional_risk_flagged),
       payment_link: result.state?.payment?.link || null,
@@ -3969,8 +4371,15 @@ app.post("/lia/respond", async (req, res) => {
       skip_send: false,
       debug: {
         lead_profile: result.state?.lead_profile || null,
+        lead_source: result.state?.lead_source || null,
         condition: result.state?.condition || null,
         nome: result.state?.nome || null,
+        qualification_score: result.state?.qualification_score ?? null,
+        qualification_band: result.state?.qualification_band || null,
+        doctor_handoff_offered: !!result.state?.doctor_handoff_offered,
+        doctor_handoff_accepted: !!result.state?.doctor_handoff_accepted,
+        recommended_action: result.state?.recommended_action || null,
+        reason_codes: Array.isArray(result.state?.reason_codes) ? result.state.reason_codes : [],
         emotional_risk: result.state?.emotional_risk_flagged || false,
         consolidated_messages: wasConsolidated ? allMessages.length : 1,
       },
@@ -4289,7 +4698,13 @@ async function sendFollowupMessage(phone, message, state) {
 app.get("/cron/followups", async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT phone, state FROM wa_users WHERE state->>'stage' IN ('WAIT_PAYMENT') AND state->'payment'->>'status' IN ('pending', 'pending_pix')`
+      `SELECT phone, state
+       FROM wa_users
+       WHERE (
+         (state->>'stage' IN ('WAIT_PAYMENT') AND state->'payment'->>'status' IN ('pending', 'pending_pix'))
+         OR (state->>'stage' = 'QUALIFIED_AWAITING_HANDOFF')
+         OR (state->>'stage' = 'NURTURE_B')
+       )`
     );
 
     let sent = 0;
@@ -4302,9 +4717,7 @@ app.get("/cron/followups", async (req, res) => {
       const state = row.state || {};
       const phone = row.phone;
       const paymentCreatedAt = state.payment?.created_at || 0;
-      if (!paymentCreatedAt) continue;
-
-      const elapsed = now - paymentCreatedAt;
+      const elapsed = paymentCreatedAt ? (now - paymentCreatedAt) : 0;
       const nome = state.nome || "";
       const link = state.payment?.link || "";
 
@@ -4314,7 +4727,29 @@ app.get("/cron/followups", async (req, res) => {
       let message = null;
       let flagKey = null;
 
-      if (elapsed >= SEVENTY_TWO_HOURS && !state.followup_3_sent) {
+      if (state.stage === "QUALIFIED_AWAITING_HANDOFF" && !state.doctor_handoff_accepted && state.qualification_band === "A") {
+        const offeredAt = state.doctor_handoff_offered_at || state.last_sent_at || 0;
+        if (!offeredAt) continue;
+        const leadElapsed = now - offeredAt;
+
+        if (leadElapsed >= TWENTY_FOUR_HOURS && !state.handoff_followup_2_sent) {
+          message = `Oi${nome ? `, ${nome}` : ""}. Se ainda fizer sentido para você, o doutor pode te fazer uma ligação breve por aqui para explicar como funciona a consulta online e alinhar seu caso.`;
+          flagKey = "handoff_followup_2_sent";
+          state.followup_complete = true;
+        } else if (leadElapsed >= TWO_HOURS && !state.handoff_followup_1_sent) {
+          message = `Oi${nome ? `, ${nome}` : ""}. Passando para te dizer que, se você quiser, o doutor ainda pode te fazer uma ligação breve por aqui para alinhar seu caso.`;
+          flagKey = "handoff_followup_1_sent";
+        }
+      } else if (state.stage === "NURTURE_B" && state.qualification_band === "B") {
+        const nurtureAt = state.nurture_started_at || state.last_sent_at || 0;
+        if (!nurtureAt) continue;
+        const leadElapsed = now - nurtureAt;
+        if (leadElapsed >= TWENTY_FOUR_HOURS && !state.nurture_followup_1_sent) {
+          message = `Oi${nome ? `, ${nome}` : ""}. Se você quiser retomar depois, eu consigo deixar registrado para a equipe revisar se vale a ligação breve com o doutor.`;
+          flagKey = "nurture_followup_1_sent";
+          state.followup_complete = true;
+        }
+      } else if (elapsed >= SEVENTY_TWO_HOURS && !state.followup_3_sent) {
         message = `Oi${nome ? `, ${nome}` : ""}. Só passando pra dizer que o link continua disponível caso você decida seguir: ${link}\n\nDesejo melhoras de verdade.`;
         flagKey = "followup_3_sent";
         state.followup_complete = true;
