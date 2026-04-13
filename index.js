@@ -163,10 +163,26 @@ const META_QUALIFY_STAGES = [
   "QUALIFY_Q1",
   "QUALIFY_Q2",
   "QUALIFY_Q3",
-  "QUALIFY_Q4",
+  "QUALIFY_Q4_PRODUCT",
+  "QUALIFY_Q5_PRICE",
+  "QUALIFY_COLD_Q1",
+  "QUALIFY_COLD_Q2",
   "QUALIFIED_AWAITING_HANDOFF",
   "NURTURE_B",
+  "NURTURE_COLD",
   "DISQUALIFIED_C",
+];
+
+const LEGACY_COMMERCE_STAGES = [
+  "ASK_DAY",
+  "OFFER_SLOTS",
+  "ASK_PAY_METHOD",
+  "ASK_FULLNAME",
+  "ASK_BIRTHDATE",
+  "ASK_EMAIL",
+  "ASK_PLAN",
+  "WAIT_PAYMENT",
+  "CONFIRMED",
 ];
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -542,7 +558,7 @@ const PLANS = {
     key: "avaliacao",
     label: "Consulta online de revisão e orientação médica",
     subtitle: "Consulta online",
-    price: 397,
+    price: 297,
     short: "1",
     description: "consulta online de revisão e orientação médica",
   },
@@ -1159,12 +1175,28 @@ function isMetaQualificationStage(stage) {
   return META_QUALIFY_STAGES.includes(stage);
 }
 
+function isLegacyCommerceStage(stage) {
+  return LEGACY_COMMERCE_STAGES.includes(stage);
+}
+
+function shouldUseQualificationFlow(state) {
+  if (state.handoff_locked) return true;
+  if (isMetaQualificationStage(state.stage)) return true;
+  if (state.entry_route === "meta_form" || state.entry_route === "meta_direct") {
+    return !isLegacyCommerceStage(state.stage);
+  }
+  if (state.entry_route === "whatsapp_manual") {
+    return !state.stage;
+  }
+  return false;
+}
+
 function parseUseStatusValue(value) {
   const t = norm(value || "");
   if (!t) return null;
   if (/\b(sim|uso|usando|atualmente|ainda uso)\b/.test(t)) return "current";
   if (/\b(ja usei|já usei|recentemente|parei|ficou pelo caminho|usei antes)\b/.test(t)) return "recent";
-  if (/\b(nunca|nao usei|não usei|quero comecar|quero começar|so pra ver|só pra ver)\b/.test(t)) return "never";
+  if (/\b(nunca|nao usei|não usei|ainda nao usei|ainda não usei|quero comecar|quero começar|so pra ver|só pra ver|estou tentando entender|tô tentando entender|faz sentido pra mim|faz sentido para mim)\b/.test(t)) return "never";
   return null;
 }
 
@@ -1212,6 +1244,7 @@ function parseMainPainValue(value) {
 function parseProductOriginValue(value) {
   const t = norm(value || "");
   if (!t) return null;
+  if (/\b(nao comprei|não comprei|ainda nao comprei|ainda não comprei|nenhum|nao uso ainda|não uso ainda)\b/.test(t)) return "none";
   if (/\b(associacao|associação)\b/.test(t)) return "association";
   if (/\b(farmacia|farmácia)\b/.test(t)) return "pharmacy";
   if (/\b(plataforma|clique cannabis|bliss)\b/.test(t)) return "platform";
@@ -1221,7 +1254,7 @@ function parseProductOriginValue(value) {
 
 function parseConsultPriceAlignmentAnswer(text, flags) {
   const t = norm(text || "");
-  if (flags.confirms || /\b(sim|consigo|ok|pode ser|tudo bem|de acordo|estou de acordo|tenho interesse|topo)\b/.test(t)) return "yes";
+  if (flags.confirms || /\b(sim|consigo|ok|pode ser|tudo bem|de acordo|estou de acordo|tenho interesse|topo|faz sentido|consigo pagar|cabe pra mim|cabe no meu orçamento|297|82[,.]69|parcelado pra mim da)\b/.test(t)) return "yes";
   if (/\b(talvez|depende|preciso pensar|vou ver|vou analisar|quero entender melhor)\b/.test(t)) return "maybe";
   if (flags.priceRejection || flags.saysExpensive || /\b(nao|não|sem condicao|sem condição|muito caro|fora do meu orçamento|nao consigo|não consigo)\b/.test(t)) return "no";
   return null;
@@ -1240,10 +1273,45 @@ function hasReviewIntent(text) {
   return /\b(revisar|entender por que|otimizar|organizar|ajustar|melhorar o acompanhamento|segunda opiniao|segunda opinião)\b/.test(t);
 }
 
+function parseColdIntentAnswer(text) {
+  const t = norm(text || "");
+  if (!t) return null;
+  if (/\b(quero uma avaliacao|quero uma avaliação|quero consulta|quero passar|quero saber se serve pra mim|quero saber se serve para mim|quero entender no meu caso|tenho interesse real|faz sentido pro meu caso|faz sentido para o meu caso)\b/.test(t)) return "real";
+  if (/\b(curiosidade|só queria entender|so queria entender|so queria saber|só queria saber|pesquisando|olhando|sem certeza|só por enquanto)\b/.test(t)) return "curious";
+  return null;
+}
+
+function getQualificationTrack(state) {
+  if (state.never_used_for_testing) return "cold_start";
+  if (state.uses_cannabis_now || state.used_recently) return "hot_review";
+  return "warm_review";
+}
+
+function syncQualificationTrack(state) {
+  state.qualification_track = getQualificationTrack(state);
+  state.cold_start_path = state.qualification_track === "cold_start";
+  return state;
+}
+
+function buildPainContext(state) {
+  switch (state.main_pain) {
+    case "cost": return "sobre custo alto do tratamento";
+    case "partial": return "sobre melhora abaixo do esperado";
+    case "side_effect": return "sobre efeito ruim ou resposta inconsistente";
+    case "confusion": return "sobre confusão com produto, dose ou rotina";
+    case "followup": return "sobre falta de acompanhamento de verdade";
+    default: return "sobre o que você está vivendo hoje";
+  }
+}
+
 function setQualificationReasonCodes(state) {
+  syncQualificationTrack(state);
   const reasons = [];
   if (state.uses_cannabis_now === true) reasons.push("uses_now");
   else if (state.used_recently === true) reasons.push("used_recently");
+  if (state.cold_start_path) reasons.push("cold_start_path");
+  if (state.cold_case_ready === "yes") reasons.push("cold_case_ready");
+  else if (state.cold_case_ready === "no") reasons.push("cold_case_unclear");
   if (state.out_of_pocket_status === "current") reasons.push("out_of_pocket");
   else if (state.out_of_pocket_status === "past") reasons.push("paid_before");
   if (state.monthly_spend_range) reasons.push(`spend_${state.monthly_spend_range}`);
@@ -1251,18 +1319,24 @@ function setQualificationReasonCodes(state) {
   if (state.product_origin) reasons.push(`origin_${state.product_origin}`);
   if (state.wants_resolution_7d === "yes") reasons.push("wants_resolution_fast");
   else if (state.wants_resolution_7d === "maybe") reasons.push("resolution_maybe");
-  if (state.consultation_price_fit === "yes") reasons.push("price_fit_yes");
-  else if (state.consultation_price_fit === "maybe") reasons.push("price_fit_maybe");
-  else if (state.consultation_price_fit === "no") reasons.push("price_fit_no");
+  if (state.price_acceptance === "yes") reasons.push("price_fit_yes");
+  else if (state.price_acceptance === "maybe") reasons.push("price_fit_maybe");
+  else if (state.price_acceptance === "no") reasons.push("price_fit_no");
   if (state.review_intent_confirmed) reasons.push("review_intent");
   if (state.doctor_handoff_accepted) reasons.push("accepted_call");
   if (state.curious_only) reasons.push("curious_only");
   if (state.never_used_for_testing) reasons.push("never_used");
+  if (state.entry_route) reasons.push(`route_${state.entry_route}`);
+  if (state.qualification_track) reasons.push(`track_${state.qualification_track}`);
   state.reason_codes = reasons;
 }
 
 function recomputeQualification(state) {
   let score = 0;
+  syncQualificationTrack(state);
+  const priceFit = state.price_acceptance || state.consultation_price_fit || null;
+  state.price_acceptance = priceFit;
+  state.consultation_price_fit = priceFit;
 
   if (state.uses_cannabis_now === true) score += 3;
   else if (state.used_recently === true) score += 2;
@@ -1281,9 +1355,13 @@ function recomputeQualification(state) {
 
   if (state.objective_response) score += 1;
   if (state.product_origin) score += 1;
-  if (state.consultation_price_fit === "yes") score += 2;
-  else if (state.consultation_price_fit === "maybe") score += 0;
-  else if (state.consultation_price_fit === "no") score -= 3;
+  if (state.current_product_text) score += 1;
+  if (priceFit === "yes") score += 2;
+  else if (priceFit === "maybe") score += 0;
+  else if (priceFit === "no") score -= 3;
+  if (state.cold_start_path) score += 1;
+  if (state.cold_case_ready === "yes") score += 2;
+  else if (state.cold_case_ready === "no") score -= 1;
   if (state.review_intent_confirmed) score += 2;
   if (state.doctor_handoff_accepted) score += 2;
   if (state.curious_only) score -= 2;
@@ -1298,14 +1376,42 @@ function recomputeQualification(state) {
 }
 
 function getQualificationRecommendedAction(state) {
-  if (state.waiting_doctor_call && state.doctor_handoff_accepted && state.qualification_band === "A") return "call_now";
-  if (state.stage === "NURTURE_B") return "nurture";
+  const priceFit = state.price_acceptance || state.consultation_price_fit || null;
+  if (state.waiting_doctor_call && state.doctor_handoff_accepted && priceFit === "yes" && (["A", "B"].includes(state.qualification_band) || state.qualification_track === "cold_start")) return "call_now";
+  if (state.stage === "NURTURE_B" || state.stage === "NURTURE_COLD") return "nurture";
   if (state.qualification_band === "C" || state.stage === "DISQUALIFIED_C") return "stop";
   return null;
 }
 
-function metaPriceDeflectionReply() {
-  return "Já vou te alinhar essa parte direitinho. Antes disso, só preciso confirmar por onde você compra o produto hoje: associação, farmácia, plataforma ou importado?";
+function metaUsageQuestionReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
+  if (state.entry_route === "meta_direct") {
+    return `Oi${nome}. Vi que você veio pelo anúncio. Antes de te passar qualquer valor, preciso entender se isso faz sentido para o seu caso.\n\nVocê já usa cannabis hoje ou ainda está tentando entender se faz sentido para você?`;
+  }
+  if (state.entry_route === "whatsapp_manual") {
+    return `Oi${nome}. Já te explico certinho. Antes disso, preciso entender se essa conversa faz sentido para o seu caso.\n\nVocê já usa cannabis hoje ou ainda está tentando entender se faz sentido para você?`;
+  }
+  return `Oi${nome}. Vi que você já teve contato com cannabis e quer revisar o tratamento. Vou te fazer algumas perguntas rápidas para entender se faz sentido o doutor falar com você, tudo bem?\n\nHoje você usa ainda ou esse tratamento ficou pelo caminho?`;
+}
+
+function metaPainQuestionReply() {
+  return "Entendi. O que mais te fez chamar agora: custo alto, melhora abaixo do esperado, efeito ruim, falta de acompanhamento ou entender se isso serve para você?";
+}
+
+function metaOriginQuestionReply() {
+  return "Perfeito. E hoje você compra por onde: associação, farmácia, plataforma ou importado?";
+}
+
+function metaProductDetailsQuestionReply() {
+  return "Só para o doutor entender melhor depois: qual marca, apresentação e concentração do produto que você usa hoje ou usou por último? Se lembrar, pode me mandar do jeito que vier.";
+}
+
+function metaPriceDeflectionReply(state) {
+  const nextPrompt = getQualificationNextPrompt(state);
+  if (nextPrompt) {
+    return `Já vou te alinhar essa parte direitinho. Antes disso, preciso só fechar uma informação para não te responder no escuro.\n\n${nextPrompt}`;
+  }
+  return "Já vou te alinhar essa parte direitinho. Antes disso, preciso entender um ponto do seu caso para não te responder no escuro.";
 }
 
 function metaHandoffOfferReply(state) {
@@ -1313,21 +1419,28 @@ function metaHandoffOfferReply(state) {
   return `Perfeito${nome}. Como essa faixa está dentro do que você considera, faz sentido o doutor falar com você rapidamente para alinhar o caso e te explicar como funciona a consulta online. Se ele puder te chamar por vídeo ou ligação breve, tudo bem?`;
 }
 
-function metaOpeningReply(state) {
+function metaQuestion5PriceReply(state) {
+  const contexto = buildPainContext(state);
+  return `Antes de eu levar seu caso adiante, preciso te alinhar uma faixa real. Pelo que você me contou ${contexto}, quando o doutor entende que faz sentido seguir com a consulta online de revisão e orientação médica, o valor fica em *R$297* à vista ou em *4x de R$82,69* no cartão por link seguro.\n\nNessa consulta ele pode revisar o que já foi feito, avaliar se existe margem para reorganizar melhor a estratégia, entender se há desperdício, desorganização ou falta de ajuste fino e ver se existe um caminho mais coerente para o seu caso.\n\nIsso ainda não é fechamento. Antes de qualquer coisa, o doutor fala com você para confirmar se a consulta realmente faz sentido para o seu caso. Eu faço essa pergunta agora só para entender se existe interesse real e disponibilidade nessa faixa caso ele veja indicação.\n\nDentro dessa faixa, faz sentido para você?`;
+}
+
+function metaColdStartOpeningReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
-  return `Oi${nome}. Vi que você já teve contato com cannabis e quer revisar o tratamento. Vou te fazer 4 perguntas rápidas para entender se faz sentido o doutor falar com você, tudo bem?\n\nHoje você usa ainda ou esse tratamento ficou pelo caminho?`;
+  return `Entendi${nome}. Como você ainda não usa cannabis, aqui o objetivo não é revisar um tratamento em andamento, e sim entender se faz sentido uma avaliação inicial com o doutor. Me responde uma coisa rápida: você já tem diagnóstico definido e já tentou outros tratamentos ou remédios para isso?`;
 }
 
-function metaQuestion2Reply() {
-  return "Entendi. E o que mais te incomoda hoje: gastou e não compensou, melhorou pouco, efeito ruim ou falta de acompanhamento?";
+function metaColdStartQuestion2Reply() {
+  return "Perfeito. E hoje você está buscando uma avaliação inicial de verdade para entender se cannabis faz sentido no seu caso, ou está mais numa fase de curiosidade e pesquisa?";
 }
 
-function metaQuestion3Reply() {
-  return "Entendi. E você compra por onde hoje: associação, farmácia, plataforma ou importado?";
+function metaColdStartOfferReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
+  return `Perfeito${nome}. Pelo que você me contou, faz sentido o doutor falar com você rapidamente para alinhar o caso e te explicar como funciona essa avaliação inicial online. Se ele puder te chamar por vídeo ou ligação breve, tudo bem?`;
 }
 
-function metaQuestion4Reply() {
-  return "Antes de o doutor falar com você, preciso te alinhar uma coisa: quando ele entende que o caso faz sentido para revisão, a consulta médica online com retorno incluso fica em R$397. Nessa consulta, ele revisa o que você usa hoje, avalia se o tratamento está coerente, se existe margem para organizar melhor a estratégia, buscar opções com melhor custo-benefício e oferecer um acompanhamento mais adequado. Não estou te vendendo a consulta agora; antes disso, o doutor ainda vai te ligar brevemente para ver se faz sentido para o seu caso. Essa pergunta é só para entender se você tem interesse real e disponibilidade nessa faixa caso ele veja indicação. Se sim, eu posso avisar o doutor para falar com você.";
+function metaColdStartNurtureReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
+  return `Sem problema${nome}. Vou deixar isso registrado por aqui. Como você ainda não usa cannabis, o próximo passo seria uma avaliação inicial quando fizer sentido para você. Se quiser retomar depois, pode me chamar por aqui.`;
 }
 
 function metaAcceptedCallReply(state) {
@@ -1352,11 +1465,51 @@ function metaPriceMisalignedReply(state) {
 
 function metaDisqualifyReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
-  return `Entendi${nome}. Pelo que você me contou, essa conversa com o doutor não parece ser a melhor próxima etapa agora. Se depois você quiser revisar um tratamento que já usou ou já está em andamento, pode me chamar por aqui.`;
+  return `Entendi${nome}. Pelo que você me contou, não faz sentido te empurrar uma ligação agora sem clareza real. Vou deixar isso registrado por aqui e, se depois você quiser retomar com mais contexto ou intenção de seguir, pode me chamar.`;
+}
+
+function getQualificationNextPrompt(state) {
+  switch (state.stage) {
+    case null:
+    case undefined:
+    case "FORM_INTAKE":
+    case "QUALIFY_Q1":
+      return metaUsageQuestionReply(state);
+    case "QUALIFY_Q2":
+      return metaPainQuestionReply();
+    case "QUALIFY_Q3":
+      return metaOriginQuestionReply();
+    case "QUALIFY_Q4_PRODUCT":
+      return metaProductDetailsQuestionReply();
+    case "QUALIFY_Q5_PRICE":
+      return metaQuestion5PriceReply(state);
+    case "QUALIFY_COLD_Q1":
+      return metaColdStartOpeningReply(state);
+    case "QUALIFY_COLD_Q2":
+      return metaColdStartQuestion2Reply();
+    case "QUALIFIED_AWAITING_HANDOFF":
+      return state.doctor_handoff_accepted ? metaAcceptedCallReply(state) : metaHandoffOfferReply(state);
+    case "NURTURE_B":
+    case "NURTURE_COLD":
+      return metaQuestion5PriceReply(state);
+    default:
+      return metaUsageQuestionReply(state);
+  }
+}
+
+function primeQualificationStage(state) {
+  recomputeQualification(state);
+  if (!state.stage || state.stage === "FORM_INTAKE") {
+    if (state.qualification_track === "cold_start") state.stage = "QUALIFY_COLD_Q1";
+    else if ((state.uses_cannabis_now || state.used_recently) && state.main_pain) state.stage = "QUALIFY_Q3";
+    else state.stage = "QUALIFY_Q1";
+  }
+  return state;
 }
 
 function seedMetaQualificationState(state, formData) {
   state.lead_source = "meta_form";
+  state.entry_route = "meta_form";
   state.price_hidden_policy = true;
   state.form_data = formData;
   state.meta_flow_started_at = state.meta_flow_started_at || Date.now();
@@ -1371,6 +1524,7 @@ function seedMetaQualificationState(state, formData) {
   if (mainPain) {
     state.main_pain = mainPain;
     state.curious_only = mainPain === "curious";
+    state.review_intent_confirmed = mainPain !== "curious";
   }
 
   const outOfPocket = parseOutOfPocketValue(formData.out_of_pocket);
@@ -1408,12 +1562,7 @@ function updateQualificationFromPainAnswer(state, incomingText) {
   state.objective_response = true;
   state.main_pain = parsed;
   state.curious_only = parsed === "curious";
-  if (parsed === "curious") state.review_intent_confirmed = false;
-  if (parsed !== "curious" && hasReviewIntent(incomingText)) {
-    state.review_intent_confirmed = true;
-  } else if (parsed !== "curious") {
-    state.review_intent_confirmed = true;
-  }
+  state.review_intent_confirmed = parsed !== "curious" || hasReviewIntent(incomingText);
   recomputeQualification(state);
   return true;
 }
@@ -1427,29 +1576,57 @@ function updateQualificationFromOriginAnswer(state, incomingText) {
   return true;
 }
 
+function updateQualificationFromProductAnswer(state, incomingText) {
+  const cleaned = String(incomingText || "").trim();
+  if (!cleaned) return false;
+  state.objective_response = true;
+  state.current_product_text = cleaned.slice(0, 500);
+  if (parseUseStatusValue(cleaned) === "never") {
+    state.uses_cannabis_now = false;
+    state.used_recently = false;
+    state.never_used_for_testing = true;
+  }
+  recomputeQualification(state);
+  return true;
+}
+
+function parseColdCaseReadiness(text) {
+  const t = norm(text || "");
+  if (!t) return null;
+  if (/\b(sim|tenho|ja tentei|já tentei|ja usei remedios|já usei remédios|ja passei|já passei|diagnostico|diagnóstico|trato isso)\b/.test(t)) return "yes";
+  if (/\b(nao|não|nunca tratei|nunca tratei isso|nao tentei|não tentei|nao tenho diagnostico|não tenho diagnóstico|so quero entender|só quero entender)\b/.test(t)) return "no";
+  return null;
+}
+
 function initializeMetaQualificationState(state) {
   state.doctor_handoff_offered = !!state.doctor_handoff_offered;
   state.doctor_handoff_accepted = !!state.doctor_handoff_accepted;
   state.waiting_doctor_call = !!state.waiting_doctor_call;
   state.doctor_call_completed = !!state.doctor_call_completed;
+  state.handoff_locked = !!state.handoff_locked;
   state.price_hidden_policy = true;
+  state.price_presented = !!state.price_presented;
   state.objective_response = !!state.objective_response;
   state.review_intent_confirmed = !!state.review_intent_confirmed;
   state.curious_only = !!state.curious_only;
   state.never_used_for_testing = !!state.never_used_for_testing;
   state.monthly_spend_range = state.monthly_spend_range || null;
   state.product_origin = state.product_origin || null;
-  state.consultation_price_fit = state.consultation_price_fit || null;
+  state.current_product_text = state.current_product_text || null;
+  state.price_acceptance = state.price_acceptance || state.consultation_price_fit || null;
+  state.consultation_price_fit = state.consultation_price_fit || state.price_acceptance || null;
+  state.cold_start_path = !!state.cold_start_path;
+  state.cold_case_ready = state.cold_case_ready || null;
   state.reason_codes = Array.isArray(state.reason_codes) ? state.reason_codes : [];
   return recomputeQualification(state);
 }
 
 async function handleMetaQualificationFlow(phone, incomingText, state, flags) {
-  if (state.lead_source !== "meta_form" && !isMetaQualificationStage(state.stage)) return null;
+  if (!shouldUseQualificationFlow(state)) return null;
 
   initializeMetaQualificationState(state);
 
-  if (state.waiting_doctor_call && state.doctor_handoff_accepted && !state.doctor_call_completed) {
+  if ((state.handoff_locked || state.waiting_doctor_call) && state.doctor_handoff_accepted && !state.doctor_call_completed) {
     if (flags.isCasualAck || /^(ok|okk|okey|beleza|certo|perfeito|obrigad|obrigado|obrigada|ta bom|tá bom)$/i.test(norm(incomingText))) {
       return { reply: "", state, skip_send: true };
     }
@@ -1457,45 +1634,44 @@ async function handleMetaQualificationFlow(phone, incomingText, state, flags) {
   }
 
   if ((flags.wantsPrice || flags.intentPay) && !state.doctor_handoff_accepted) {
-    if (state.stage === "QUALIFY_Q4" || state.product_origin) {
-      state.stage = "QUALIFY_Q4";
-      return { reply: metaQuestion4Reply(), state };
+    primeQualificationStage(state);
+    if (state.stage === "QUALIFY_Q5_PRICE" || state.price_presented) {
+      state.stage = "QUALIFY_Q5_PRICE";
+      state.price_presented = true;
+      return { reply: metaQuestion5PriceReply(state), state };
     }
-    return { reply: metaPriceDeflectionReply(), state };
+    return { reply: metaPriceDeflectionReply(state), state };
   }
 
   if ((flags.wantsBook || flags.asksHours) && !state.doctor_handoff_accepted) {
-    return { reply: "Antes de organizar horário, o doutor faz uma ligação breve de alinhamento para entender se essa revisão faz sentido para você. Se você topar, eu aviso ele por aqui.", state };
+    primeQualificationStage(state);
+    return { reply: `Antes de falar de horário, eu preciso entender se essa conversa realmente faz sentido para você. O doutor só entra depois dessa triagem rápida.\n\n${getQualificationNextPrompt(state)}`, state };
   }
 
   if (!state.stage || state.stage === "FORM_INTAKE") {
     recomputeQualification(state);
-    if (state.qualification_band === "C") {
-      state.stage = "DISQUALIFIED_C";
-      state.followup_complete = true;
-      state.followup_due_at = null;
-      return { reply: metaDisqualifyReply(state), state };
+    if (state.qualification_track === "cold_start") {
+      state.stage = "QUALIFY_COLD_Q1";
+      return { reply: metaColdStartOpeningReply(state), state };
     }
-    if ((state.uses_cannabis_now || state.used_recently || state.never_used_for_testing) && state.main_pain) {
+    if ((state.uses_cannabis_now || state.used_recently) && state.main_pain) {
       state.stage = "QUALIFY_Q3";
-      return { reply: metaQuestion3Reply(), state };
+      return { reply: metaOriginQuestionReply(), state };
     }
     state.stage = "QUALIFY_Q1";
-    return { reply: metaOpeningReply(state), state };
+    return { reply: metaUsageQuestionReply(state), state };
   }
 
   if (state.stage === "QUALIFY_Q1") {
     if (!updateQualificationFromUsageAnswer(state, incomingText)) {
-      return { reply: "Só para eu entender melhor: hoje você usa ainda ou esse tratamento ficou pelo caminho?", state };
+      return { reply: "Só para eu entender melhor: você já usa cannabis hoje, já usou recentemente, ou ainda está tentando entender se faz sentido para você?", state };
     }
-    if (state.qualification_band === "C") {
-      state.stage = "DISQUALIFIED_C";
-      state.followup_complete = true;
-      state.followup_due_at = null;
-      return { reply: metaDisqualifyReply(state), state };
+    if (state.qualification_track === "cold_start") {
+      state.stage = "QUALIFY_COLD_Q1";
+      return { reply: metaColdStartOpeningReply(state), state };
     }
     state.stage = "QUALIFY_Q2";
-    return { reply: metaQuestion2Reply(), state };
+    return { reply: metaPainQuestionReply(), state };
   }
 
   if (state.stage === "QUALIFY_Q2") {
@@ -1505,31 +1681,80 @@ async function handleMetaQualificationFlow(phone, incomingText, state, flags) {
         state.objective_response = true;
         recomputeQualification(state);
       } else {
-        return { reply: "Me ajuda com uma frase curta: hoje te incomoda mais o custo, a melhora parcial, efeito ruim ou a falta de acompanhamento?", state };
+        return { reply: "Me ajuda com uma frase curta: hoje o que mais pesa é custo, melhora abaixo do esperado, efeito ruim, falta de acompanhamento ou entender se isso serve para você?", state };
       }
     }
-    if (state.qualification_band === "C") {
-      state.stage = "DISQUALIFIED_C";
-      state.followup_complete = true;
-      state.followup_due_at = null;
-      return { reply: metaDisqualifyReply(state), state };
+    if (state.qualification_track === "cold_start") {
+      state.stage = "QUALIFY_COLD_Q1";
+      return { reply: metaColdStartOpeningReply(state), state };
     }
     state.stage = "QUALIFY_Q3";
-    return { reply: metaQuestion3Reply(), state };
+    return { reply: metaOriginQuestionReply(), state };
+  }
+
+  if (state.stage === "QUALIFY_COLD_Q1") {
+    const coldReadiness = parseColdCaseReadiness(incomingText);
+    if (!coldReadiness) {
+      return { reply: "Só para eu entender melhor: você já tem um diagnóstico definido e já tentou outros tratamentos ou remédios para isso?", state };
+    }
+    state.cold_case_ready = coldReadiness;
+    state.objective_response = true;
+    state.review_intent_confirmed = coldReadiness === "yes";
+    recomputeQualification(state);
+    state.stage = "QUALIFY_COLD_Q2";
+    return { reply: metaColdStartQuestion2Reply(), state };
+  }
+
+  if (state.stage === "QUALIFY_COLD_Q2") {
+    const coldIntent = parseColdIntentAnswer(incomingText);
+
+    if (coldIntent === "real") {
+      state.review_intent_confirmed = true;
+      state.curious_only = false;
+      state.objective_response = true;
+      state.stage = "QUALIFY_Q5_PRICE";
+      state.price_presented = true;
+      recomputeQualification(state);
+      return { reply: metaQuestion5PriceReply(state), state };
+    }
+
+    if (coldIntent === "curious") {
+      state.curious_only = true;
+      state.review_intent_confirmed = false;
+      state.stage = "NURTURE_COLD";
+      state.nurture_started_at = Date.now();
+      state.followup_reason = "nurture_cold";
+      state.followup_due_at = Date.now() + (24 * 60 * 60 * 1000);
+      state.followup_complete = false;
+      recomputeQualification(state);
+      return { reply: metaColdStartNurtureReply(state), state };
+    }
+
+    return { reply: "Só para eu entender melhor: você está buscando uma avaliação inicial de verdade para o seu caso ou está mais pesquisando e entendendo por curiosidade?", state };
   }
 
   if (state.stage === "QUALIFY_Q3") {
     if (!updateQualificationFromOriginAnswer(state, incomingText)) {
       return { reply: "Só para eu registrar corretamente: você compra por onde hoje, associação, farmácia, plataforma ou importado?", state };
     }
-    state.stage = "QUALIFY_Q4";
-    return { reply: metaQuestion4Reply(), state };
+    state.stage = "QUALIFY_Q4_PRODUCT";
+    return { reply: metaProductDetailsQuestionReply(), state };
   }
 
-  if (state.stage === "QUALIFY_Q4") {
+  if (state.stage === "QUALIFY_Q4_PRODUCT") {
+    if (!updateQualificationFromProductAnswer(state, incomingText)) {
+      return { reply: metaProductDetailsQuestionReply(), state };
+    }
+    state.stage = "QUALIFY_Q5_PRICE";
+    state.price_presented = true;
+    return { reply: metaQuestion5PriceReply(state), state };
+  }
+
+  if (state.stage === "QUALIFY_Q5_PRICE") {
     const priceAlignment = parseConsultPriceAlignmentAnswer(incomingText, flags);
 
     if (priceAlignment === "yes") {
+      state.price_acceptance = "yes";
       state.consultation_price_fit = "yes";
       state.stage = "QUALIFIED_AWAITING_HANDOFF";
       state.doctor_handoff_offered = true;
@@ -1541,29 +1766,59 @@ async function handleMetaQualificationFlow(phone, incomingText, state, flags) {
       return { reply: metaHandoffOfferReply(state), state };
     }
 
-    if (priceAlignment === "maybe" || priceAlignment === "no") {
-      state.consultation_price_fit = priceAlignment;
+    if (priceAlignment === "maybe") {
+      state.price_acceptance = "maybe";
+      state.consultation_price_fit = "maybe";
       state.doctor_handoff_accepted = false;
       state.waiting_doctor_call = false;
-      state.stage = "NURTURE_B";
+      state.handoff_locked = false;
+      state.stage = state.qualification_track === "cold_start" ? "NURTURE_COLD" : "NURTURE_B";
       state.nurture_started_at = Date.now();
-      state.followup_reason = "nurture_b";
+      state.followup_reason = state.qualification_track === "cold_start" ? "nurture_cold" : "nurture_b";
       state.followup_due_at = Date.now() + (24 * 60 * 60 * 1000);
       state.followup_complete = false;
+      recomputeQualification(state);
+      return { reply: metaNurtureReply(state), state };
+    }
+
+    if (priceAlignment === "no") {
+      state.price_acceptance = "no";
+      state.consultation_price_fit = "no";
+      state.doctor_handoff_accepted = false;
+      state.waiting_doctor_call = false;
+      state.handoff_locked = false;
+      state.stage = "DISQUALIFIED_C";
+      state.followup_due_at = null;
+      state.followup_complete = true;
       recomputeQualification(state);
       return { reply: metaPriceMisalignedReply(state), state };
     }
 
-    return { reply: "Só para eu te alinhar corretamente: quando faz sentido para o caso, a consulta online de revisão com retorno fica em R$397. Se essa faixa estiver dentro do que você considera, eu posso avisar o doutor para falar com você.", state };
+    state.price_presented = true;
+    return { reply: metaQuestion5PriceReply(state), state };
   }
 
-  if (state.stage === "QUALIFIED_AWAITING_HANDOFF" || state.stage === "NURTURE_B") {
+  if (state.stage === "QUALIFIED_AWAITING_HANDOFF" || state.stage === "NURTURE_B" || state.stage === "NURTURE_COLD") {
+    const priceAlignment = parseConsultPriceAlignmentAnswer(incomingText, flags);
     const callAnswer = parseDoctorCallAnswer(incomingText, flags);
+
+    if ((state.stage === "NURTURE_B" || state.stage === "NURTURE_COLD") && priceAlignment === "yes") {
+      state.price_acceptance = "yes";
+      state.consultation_price_fit = "yes";
+      state.stage = "QUALIFIED_AWAITING_HANDOFF";
+      state.doctor_handoff_offered = true;
+      state.doctor_handoff_offered_at = Date.now();
+      state.followup_due_at = state.doctor_handoff_offered_at + (2 * 60 * 60 * 1000);
+      state.followup_reason = "doctor_handoff_offer";
+      recomputeQualification(state);
+      return { reply: state.qualification_track === "cold_start" ? metaColdStartOfferReply(state) : metaHandoffOfferReply(state), state };
+    }
 
     if (callAnswer === "accept") {
       state.doctor_handoff_offered = true;
       state.doctor_handoff_accepted = true;
       state.waiting_doctor_call = true;
+      state.handoff_locked = true;
       state.doctor_handoff_offered_at = state.doctor_handoff_offered_at || Date.now();
       state.doctor_handoff_accepted_at = Date.now();
       state.nurture_started_at = null;
@@ -1574,16 +1829,28 @@ async function handleMetaQualificationFlow(phone, incomingText, state, flags) {
       return { reply: metaAcceptedCallReply(state), state };
     }
 
-    if (callAnswer === "later" || callAnswer === "reject") {
+    if (callAnswer === "later") {
       state.doctor_handoff_accepted = false;
       state.waiting_doctor_call = false;
-      state.stage = "NURTURE_B";
+      state.handoff_locked = false;
+      state.stage = state.cold_start_path ? "NURTURE_COLD" : "NURTURE_B";
       state.nurture_started_at = Date.now();
-      state.followup_reason = "nurture_b";
+      state.followup_reason = state.cold_start_path ? "nurture_cold" : "nurture_b";
       state.followup_due_at = Date.now() + (24 * 60 * 60 * 1000);
       state.followup_complete = false;
       recomputeQualification(state);
-      return { reply: metaNurtureReply(state), state };
+      return { reply: state.cold_start_path ? metaColdStartNurtureReply(state) : metaNurtureReply(state), state };
+    }
+
+    if (callAnswer === "reject") {
+      state.doctor_handoff_accepted = false;
+      state.waiting_doctor_call = false;
+      state.handoff_locked = false;
+      state.stage = "DISQUALIFIED_C";
+      state.followup_due_at = null;
+      state.followup_complete = true;
+      recomputeQualification(state);
+      return { reply: metaDisqualifyReply(state), state };
     }
 
     state.doctor_handoff_offered = true;
@@ -1591,7 +1858,7 @@ async function handleMetaQualificationFlow(phone, incomingText, state, flags) {
     state.nurture_started_at = null;
     state.followup_reason = "doctor_handoff_offer";
     state.followup_due_at = state.doctor_handoff_offered_at + (2 * 60 * 60 * 1000);
-    return { reply: metaHandoffOfferReply(state), state };
+    return { reply: state.cold_start_path ? metaColdStartOfferReply(state) : metaHandoffOfferReply(state), state };
   }
 
   if (state.stage === "DISQUALIFIED_C") {
@@ -1981,9 +2248,9 @@ FATOS SOBRE ACESSO:
 - O paciente não precisa descobrir isso sozinho
 
 FATOS SOBRE PAGAMENTO:
-- Consulta online de revisão e orientação médica — R$397
+- Consulta online de revisão e orientação médica — R$297
 - Parcelamento no cartão via Mercado Pago (no link o paciente vê todas as opções de parcelamento)
-- Pix: R$397 — CNPJ 46.603.987/0001-30
+- Pix: R$297 — CNPJ 46.603.987/0001-30
 - Aceita cartão e Pix (não aceita boleto)
 - A consulta é particular (não cobre plano, mas pode ter reembolso dependendo do convênio)
 - Pode remarcar com antecedência
@@ -2266,7 +2533,7 @@ function priceInfoReply(state) {
     "- Verifica medicações em uso e possíveis interações\n" +
     "- Define um plano personalizado pro seu caso\n\n" +
     "É online, por videochamada, dura ~45 minutos.\n\n" +
-    "*Consulta online de revisão e orientação médica:* R$397 no Pix\n" +
+    "*Consulta online de revisão e orientação médica:* R$297 no Pix\n" +
     "ou parcelado no cartão."
   );
 }
@@ -2275,9 +2542,9 @@ function priceInfoReply(state) {
 function priceShortReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
   const variations = [
-    `A consulta com o Dr. Alef é online, 45 min, individualizada${nome}.\n\nValor: *R$397* no Pix ou parcelado no cartão.\n\nQuer que eu te passe os detalhes?`,
-    `A consulta é online, dura uns 45 min e é totalmente personalizada${nome}.\n\n*R$397* à vista no Pix, ou dá pra parcelar no cartão.\n\nTe mando mais detalhes?`,
-    `É uma consulta online de 45 min${nome}, bem completa.\n\nO valor é *R$397* no Pix, ou parcelado no cartão.\n\nQuer saber mais?`,
+    `A consulta com o Dr. Alef é online, 45 min, individualizada${nome}.\n\nValor: *R$297* no Pix ou parcelado no cartão.\n\nQuer que eu te passe os detalhes?`,
+    `A consulta é online, dura uns 45 min e é totalmente personalizada${nome}.\n\n*R$297* à vista no Pix, ou dá pra parcelar no cartão.\n\nTe mando mais detalhes?`,
+    `É uma consulta online de 45 min${nome}, bem completa.\n\nO valor é *R$297* no Pix, ou parcelado no cartão.\n\nQuer saber mais?`,
   ];
   return pickRandom(variations);
 }
@@ -2950,12 +3217,15 @@ function initializeState(state, bot) {
   state.name_skipped = !!state.name_skipped;
   state.sent_instagram_link = !!state.sent_instagram_link;
   state.lead_source = state.lead_source || "whatsapp_manual";
+  state.entry_route = state.entry_route || state.lead_source || "whatsapp_manual";
+  state.qualification_track = state.qualification_track || null;
   state.uses_cannabis_now = state.uses_cannabis_now === true;
   state.used_recently = state.used_recently === true;
   state.out_of_pocket_status = state.out_of_pocket_status || null;
   state.monthly_spend_range = state.monthly_spend_range || null;
   state.main_pain = state.main_pain || null;
   state.product_origin = state.product_origin || null;
+  state.current_product_text = state.current_product_text || null;
   state.wants_resolution_7d = state.wants_resolution_7d || null;
   state.qualification_score = Number(state.qualification_score || 0);
   state.qualification_band = state.qualification_band || null;
@@ -2963,15 +3233,20 @@ function initializeState(state, bot) {
   state.doctor_handoff_accepted = !!state.doctor_handoff_accepted;
   state.waiting_doctor_call = !!state.waiting_doctor_call;
   state.doctor_call_completed = !!state.doctor_call_completed;
+  state.handoff_locked = !!state.handoff_locked;
   state.doctor_handoff_offered_at = state.doctor_handoff_offered_at || null;
   state.doctor_handoff_accepted_at = state.doctor_handoff_accepted_at || null;
   state.nurture_started_at = state.nurture_started_at || null;
   state.price_hidden_policy = state.price_hidden_policy === true;
+  state.price_presented = !!state.price_presented;
+  state.price_acceptance = state.price_acceptance || state.consultation_price_fit || null;
   state.objective_response = !!state.objective_response;
   state.review_intent_confirmed = !!state.review_intent_confirmed;
   state.curious_only = !!state.curious_only;
   state.never_used_for_testing = !!state.never_used_for_testing;
-  state.consultation_price_fit = state.consultation_price_fit || null;
+  state.cold_start_path = !!state.cold_start_path;
+  state.cold_case_ready = state.cold_case_ready || null;
+  state.consultation_price_fit = state.consultation_price_fit || state.price_acceptance || null;
   state.reason_codes = Array.isArray(state.reason_codes) ? state.reason_codes : [];
   // V25: Follow-up tracking
   state.followup_due_at = state.followup_due_at || null;
@@ -3066,6 +3341,26 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
   logMessage(phone, "lia", incomingText, "inbound");
 
   const flags = detectIntent(incomingText);
+
+  if (!metaFormData && isMetaAdsEntry(incomingText) && state.entry_route !== "meta_form" && (!state.stage || isMetaQualificationStage(state.stage))) {
+    state.entry_route = "meta_direct";
+    state.lead_source = "meta_direct";
+  } else if (!metaFormData && !state.stage && !state.entry_route) {
+    state.entry_route = "whatsapp_manual";
+    state.lead_source = "whatsapp_manual";
+  }
+
+  if ((state.entry_route === "meta_form" || state.entry_route === "meta_direct")
+    && state.stage
+    && !isMetaQualificationStage(state.stage)
+    && !state.payment?.status
+    && !state.doctor_handoff_accepted) {
+    state.stage = "FORM_INTAKE";
+    state.date_key = null;
+    state.slot_time = null;
+    state.slot_key = null;
+    state.offered_slots = [];
+  }
 
   // V24.7: Reset farewell_sent quando lead volta com intent real (não é casual ack)
   if (state.farewell_sent && !flags.isCasualAck && !flags.endsConversation && !flags.saysWillSee) {
@@ -3967,17 +4262,17 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
           };
           // V26: Pix reply com variação
           reply = pickRandom([
-            `Aqui tá o Pix.\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$397*\n\nQuando fizer, me manda o comprovante que eu confirmo na hora.`,
-            `Pix direto:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$397*\n\nÉ só fazer e me mandar o comprovante por aqui.`,
-            `Segue o Pix:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$397*\n\nMe envia o comprovante depois que confirmo rapidinho.`,
+            `Aqui tá o Pix.\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$297*\n\nQuando fizer, me manda o comprovante que eu confirmo na hora.`,
+            `Pix direto:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$297*\n\nÉ só fazer e me mandar o comprovante por aqui.`,
+            `Segue o Pix:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *R$297*\n\nMe envia o comprovante depois que confirmo rapidinho.`,
           ]);
           state.stage = "WAIT_PAYMENT";
         } else if (saysExpensive) {
           if (!state.sent_instagram_link) {
-            reply = `Entendo. No link você consegue ver todas as opções de parcelamento no cartão.\n\nSe preferir à vista, o Pix é *R$397*.\n\n${authorityInstagramReply("price")}\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
+            reply = `Entendo. No link você consegue ver todas as opções de parcelamento no cartão.\n\nSe preferir à vista, o Pix é *R$297*.\n\n${authorityInstagramReply("price")}\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
             state.sent_instagram_link = true;
           } else {
-            reply = `Entendo. No link você consegue ver todas as opções de parcelamento no cartão.\n\nSe preferir à vista, o Pix é *R$397*.\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
+            reply = `Entendo. No link você consegue ver todas as opções de parcelamento no cartão.\n\nSe preferir à vista, o Pix é *R$297*.\n\nComo prefere: 1️⃣ link ou 2️⃣ Pix?`;
           }
         } else if (flags.saysWillSee || flags.endsConversation || flags.saysCheckSpouse) {
           const nome = state.nome ? `, ${state.nome}` : "";
@@ -4011,7 +4306,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
       if (isPendingLink && wantsPix && !wantsLink) {
         console.log(`[LIA_PAY] TROCA link→pix`);
         state.payment = { ...state.payment, status: "pending_pix", method: "pix", switched_at: Date.now() };
-        reply = `Sem problema. Se preferir, podemos fazer no Pix.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$397*\n\nAssim que fizer o pagamento, me envie o comprovante por aqui para eu confirmar sua reserva.`;
+        reply = `Sem problema. Se preferir, podemos fazer no Pix.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$297*\n\nAssim que fizer o pagamento, me envie o comprovante por aqui para eu confirmar sua reserva.`;
       }
       // TROCA: Pix → link
       else if (isPendingPix && wantsLink && !wantsPix) {
@@ -4028,7 +4323,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
           state.needs_human = true;
           reply = "Recebi sua confirmação. Vou verificar o pagamento e te aviso por aqui assim que estiver confirmado.";
         } else {
-          reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$397*`;
+          reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$297*`;
         }
       }
       // V27: "Nenhuma" / "tudo certo" / "ok obrigada" → resposta gentil (não confundir com input genérico)
@@ -4082,7 +4377,7 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
     // V25: intentPay → pagamento direto (sem exigir slot)
     else if (flags.intentPay) {
       if (state.payment?.status === "pending" && state.payment?.link) { reply = pendingPaymentReply(state); state.stage = "WAIT_PAYMENT"; }
-      else if (state.payment?.status === "pending_pix") { reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$397*`; state.stage = "WAIT_PAYMENT"; }
+      else if (state.payment?.status === "pending_pix") { reply = `Para confirmar sua reserva, é só fazer o Pix e me enviar o comprovante.\n\nPix CNPJ: *${PIX_CNPJ}*\nValor: *R$297*`; state.stage = "WAIT_PAYMENT"; }
       else { const pr = priceAndRoute(state); reply = pr.reply; state.stage = pr.stage; }
     }
 
@@ -4521,6 +4816,10 @@ app.post("/lia/respond", async (req, res) => {
       qualification_band: result.state?.qualification_band || null,
       doctor_handoff_offered: !!result.state?.doctor_handoff_offered,
       doctor_handoff_accepted: !!result.state?.doctor_handoff_accepted,
+      entry_route: result.state?.entry_route || null,
+      qualification_track: result.state?.qualification_track || null,
+      price_acceptance: result.state?.price_acceptance || null,
+      handoff_locked: !!result.state?.handoff_locked,
       recommended_action: result.state?.recommended_action || null,
       reason_codes: Array.isArray(result.state?.reason_codes) ? result.state.reason_codes : [],
       needs_payment: result.state?.stage === "WAIT_PAYMENT",
@@ -4531,10 +4830,15 @@ app.post("/lia/respond", async (req, res) => {
       debug: {
         lead_profile: result.state?.lead_profile || null,
         lead_source: result.state?.lead_source || null,
+        entry_route: result.state?.entry_route || null,
+        qualification_track: result.state?.qualification_track || null,
         condition: result.state?.condition || null,
         nome: result.state?.nome || null,
         qualification_score: result.state?.qualification_score ?? null,
         qualification_band: result.state?.qualification_band || null,
+        price_acceptance: result.state?.price_acceptance || null,
+        handoff_locked: !!result.state?.handoff_locked,
+        current_product_text: result.state?.current_product_text || null,
         doctor_handoff_offered: !!result.state?.doctor_handoff_offered,
         doctor_handoff_accepted: !!result.state?.doctor_handoff_accepted,
         recommended_action: result.state?.recommended_action || null,
@@ -4863,6 +5167,7 @@ app.get("/cron/followups", async (req, res) => {
          (state->>'stage' IN ('WAIT_PAYMENT') AND state->'payment'->>'status' IN ('pending', 'pending_pix'))
          OR (state->>'stage' = 'QUALIFIED_AWAITING_HANDOFF')
          OR (state->>'stage' = 'NURTURE_B')
+         OR (state->>'stage' = 'NURTURE_COLD')
        )`
     );
 
@@ -4886,7 +5191,7 @@ app.get("/cron/followups", async (req, res) => {
       let message = null;
       let flagKey = null;
 
-      if (state.stage === "QUALIFIED_AWAITING_HANDOFF" && !state.doctor_handoff_accepted && state.qualification_band === "A") {
+      if (state.stage === "QUALIFIED_AWAITING_HANDOFF" && !state.doctor_handoff_accepted && state.price_acceptance === "yes" && (["A", "B"].includes(state.qualification_band) || state.qualification_track === "cold_start")) {
         const offeredAt = state.doctor_handoff_offered_at || state.last_sent_at || 0;
         if (!offeredAt) continue;
         const leadElapsed = now - offeredAt;
@@ -4899,7 +5204,7 @@ app.get("/cron/followups", async (req, res) => {
           message = `Oi${nome ? `, ${nome}` : ""}. Passando para te dizer que, se você quiser, o doutor ainda pode te fazer uma ligação breve por aqui para alinhar seu caso.`;
           flagKey = "handoff_followup_1_sent";
         }
-      } else if (state.stage === "NURTURE_B" && state.qualification_band === "B") {
+      } else if (state.stage === "NURTURE_B") {
         const nurtureAt = state.nurture_started_at || state.last_sent_at || 0;
         if (!nurtureAt) continue;
         const leadElapsed = now - nurtureAt;
@@ -4907,6 +5212,18 @@ app.get("/cron/followups", async (req, res) => {
           message = `Oi${nome ? `, ${nome}` : ""}. Se você quiser retomar depois, eu consigo deixar registrado para a equipe revisar se vale a ligação breve com o doutor.`;
           flagKey = "nurture_followup_1_sent";
           state.followup_complete = true;
+        }
+      } else if (state.stage === "NURTURE_COLD") {
+        const nurtureAt = state.nurture_started_at || state.last_sent_at || 0;
+        if (!nurtureAt) continue;
+        const leadElapsed = now - nurtureAt;
+        if (leadElapsed >= (48 * 60 * 60 * 1000) && !state.nurture_cold_followup_2_sent) {
+          message = `Oi${nome ? `, ${nome}` : ""}. Se ainda fizer sentido para você entender se cannabis pode ser um caminho viável no seu caso, eu consigo retomar essa triagem por aqui.`;
+          flagKey = "nurture_cold_followup_2_sent";
+          state.followup_complete = true;
+        } else if (leadElapsed >= TWENTY_FOUR_HOURS && !state.nurture_cold_followup_1_sent) {
+          message = `Oi${nome ? `, ${nome}` : ""}. Se você quiser retomar com calma e entender se vale uma avaliação inicial, pode me responder por aqui que eu continuo a triagem.`;
+          flagKey = "nurture_cold_followup_1_sent";
         }
       } else if (elapsed >= SEVENTY_TWO_HOURS && !state.followup_3_sent) {
         message = `Oi${nome ? `, ${nome}` : ""}. Só passando pra dizer que o link continua disponível caso você decida seguir: ${link}\n\nDesejo melhoras de verdade.`;
