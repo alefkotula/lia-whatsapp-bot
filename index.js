@@ -331,7 +331,7 @@ function normalizeLeadFieldKey(text) {
 
 function extractMetaField(text, labelPattern) {
   if (!text) return null;
-  const nextLabel = String.raw`(?=\n|(?:\s+(?:nome[_\s-]*completo|telefone|h[aá][_\s-]*quanto[_\s-]*tempo|o[_\s-]*que[_\s-]*voc[eê][_\s-]*quer[_\s-]*resolver|qual[_\s-]*problema[_\s-]*voc[eê][_\s-]*esta[_\s-]*tratando[_\s-]*ou[_\s-]*tentou[_\s-]*tratar|voc[eê][_\s-]*(?:j[aá][_\s-]*)?tentou|voc[eê][_\s-]*(?:tem|t[eê]m)[_\s-]*interesse|voc[eê][_\s-]*usa[_\s-]*cannabis|qual[_\s-]*e[_\s-]*a[_\s-]*principal[_\s-]*dificuldade|hoje[_\s-]*voc[eê][_\s-]*pagou[_\s-]*ou[_\s-]*paga|hoje[_\s-]*quanto[_\s-]*voc[eê][_\s-]*gasta[_\s-]*por[_\s-]*m[eê]s|voc[eê][_\s-]*quer[_\s-]*resolver[_\s-]*isso)\s*:)|$)`;
+  const nextLabel = String.raw`(?=\n|(?:\s+(?:nome[_\s-]*completo|telefone|h[aá][_\s-]*quanto[_\s-]*tempo|o[_\s-]*que[_\s-]*voc[eê][_\s-]*quer[_\s-]*resolver|o[_\s-]*que[_\s-]*voc[eê][_\s-]*mais[_\s-]*quer[_\s-]*resolver[_\s-]*agora|qual[_\s-]*problema[_\s-]*voc[eê][_\s-]*esta[_\s-]*tratando[_\s-]*ou[_\s-]*tentou[_\s-]*tratar|voc[eê][_\s-]*(?:j[aá][_\s-]*)?tentou|voc[eê][_\s-]*(?:tem|t[eê]m)[_\s-]*interesse|voc[eê][_\s-]*usa[_\s-]*cannabis|qual[_\s-]*e[_\s-]*a[_\s-]*principal[_\s-]*dificuldade|hoje[_\s-]*voc[eê][_\s-]*pagou[_\s-]*ou[_\s-]*paga|hoje[_\s-]*quanto[_\s-]*voc[eê][_\s-]*gasta[_\s-]*por[_\s-]*m[eê]s|hoje[_\s-]*voc[eê][_\s-]*compra[_\s-]*por[_\s-]*onde|voc[eê][_\s-]*quer[_\s-]*resolver[_\s-]*isso|r[_\s-]*200|r[_\s-]*397|avaliac[aã]o[_\s-]*m[eé]dica|consulta[_\s-]*m[eé]dica[_\s-]*completa)\s*:)|$)`;
   const re = new RegExp(`${labelPattern}\\s*:\\s*([\\s\\S]*?)${nextLabel}`, "i");
   const match = String(text).match(re);
   return match?.[1]?.trim() || null;
@@ -360,6 +360,10 @@ function parseMetaFormData(text) {
     else if (!fields.main_difficulty && (label.includes("principal_dificuldade") || label.includes("tratamento_hoje"))) fields.main_difficulty = value;
     else if (!fields.out_of_pocket && (label.includes("proprio_bolso") || label.includes("pagou_ou_paga"))) fields.out_of_pocket = value;
     else if (!fields.monthly_spend && (label.includes("quanto_voce_gasta_por_mes") || label.includes("gasta_por_mes") || label.includes("tratamento_por_mes"))) fields.monthly_spend = value;
+    else if (!fields.treatment_origin && (label.includes("compra_por_onde") || label.includes("compra_por_onde_o_seu_tratamento") || label.includes("hoje_voce_compra_por_onde"))) fields.treatment_origin = value;
+    else if (!fields.treatment_goal && (label.includes("o_que_voce_mais_quer_resolver_agora") || label.includes("objetivo_principal") || label.includes("mais_quer_resolver_agora"))) fields.treatment_goal = value;
+    else if (!fields.offer_200_fit && (label.includes("r_200") || label.includes("avaliacao_medica_focada") || label.includes("avaliacao_focada"))) fields.offer_200_fit = value;
+    else if (!fields.offer_397_fit && (label.includes("r_397") || label.includes("consulta_medica_completa") || label.includes("consulta_completa"))) fields.offer_397_fit = value;
     else if (!fields.resolve_window && (label.includes("proximos_7_dias") || label.includes("proximos_sete_dias") || label.includes("quer_resolver_isso"))) fields.resolve_window = value;
   }
 
@@ -395,6 +399,24 @@ function parseMetaFormData(text) {
   }
   if (!fields.monthly_spend) {
     fields.monthly_spend = extractMetaField(raw, String.raw`hoje[_\s-]*quanto[_\s-]*voc[eê][_\s-]*gasta[_\s-]*por[_\s-]*m[eê]s[^:]*`) || null;
+  }
+  if (!fields.treatment_origin) {
+    fields.treatment_origin = extractMetaField(raw, String.raw`hoje[_\s-]*voc[eê][_\s-]*compra[_\s-]*por[_\s-]*onde[^:]*`) || null;
+  }
+  if (!fields.treatment_goal) {
+    fields.treatment_goal = extractMetaField(raw, String.raw`o[_\s-]*que[_\s-]*voc[eê][_\s-]*mais[_\s-]*quer[_\s-]*resolver[_\s-]*agora[^:]*`) || null;
+  }
+  if (!fields.offer_200_fit) {
+    fields.offer_200_fit =
+      extractMetaField(raw, String.raw`avaliac[aã]o[_\s-]*m[eé]dica[^:]*r[_\s-]*200[^:]*`) ||
+      extractMetaField(raw, String.raw`r[_\s-]*200[^:]*faria[_\s-]*sentido[^:]*`) ||
+      null;
+  }
+  if (!fields.offer_397_fit) {
+    fields.offer_397_fit =
+      extractMetaField(raw, String.raw`consulta[_\s-]*m[eé]dica[_\s-]*completa[^:]*r[_\s-]*397[^:]*`) ||
+      extractMetaField(raw, String.raw`r[_\s-]*397[^:]*faria[_\s-]*sentido[^:]*`) ||
+      null;
   }
   if (!fields.resolve_window) {
     fields.resolve_window = extractMetaField(raw, String.raw`voc[eê][_\s-]*quer[_\s-]*resolver[_\s-]*isso[^:]*`) || null;
@@ -1228,10 +1250,14 @@ function parseMonthlySpendValue(value) {
   const t = norm(value || "");
   if (!t) return null;
   if (/\b(nao gasto|não gasto|parei|zero)\b/.test(t)) return "none";
+  if (/\b(ate|até)\s*r?\$?\s*299\b/.test(t)) return "up_to_299";
+  if (/\b300\b.*\b499\b/.test(t)) return "from_300_to_499";
+  if (/\b500\b.*\b699\b/.test(t)) return "from_500_to_699";
+  if (/\b700\b.*\b999\b/.test(t)) return "from_700_to_999";
   if (/\b(ate|até)\s*r?\$?\s*250\b/.test(t)) return "up_to_250";
   if (/\b250\b.*\b500\b/.test(t)) return "from_250_to_500";
   if (/\b500\b.*\b1000\b/.test(t)) return "from_500_to_1000";
-  if (/\bmais de\b.*\b1000\b/.test(t) || /\bacima de\b.*\b1000\b/.test(t)) return "over_1000";
+  if (/\br\$?\s*1\.?000\b.*\bou mais\b/.test(t) || /\bmais de\b.*\b1000\b/.test(t) || /\bacima de\b.*\b1000\b/.test(t)) return "over_1000";
   return null;
 }
 
@@ -1267,9 +1293,50 @@ function parseProductOriginValue(value) {
   return null;
 }
 
+function parseTreatmentGoalValue(value) {
+  const t = norm(value || "");
+  if (!t) return null;
+  if (/\b(pagar menos|reduzir custo|baratear|mais barato|economizar|baixar o custo)\b/.test(t)) return "reduce_cost";
+  if (/\b(manter|melhorar gastando menos|melhorar e reduzir|otimizar gastando menos)\b/.test(t)) return "optimize_and_reduce";
+  if (/\b(revisar o tratamento completo|revisar completo|tratamento completo|mal ajustado|estrategia completa|estratégia completa)\b/.test(t)) return "full_review";
+  if (/\b(so quero mais informacoes|só quero mais informações|mais informacoes|mais informações|curios)\b/.test(t)) return "info_only";
+  return null;
+}
+
+function parseBinaryFitValue(value) {
+  const t = norm(value || "");
+  if (!t) return null;
+  if (/\b(sim|aceito|faz sentido|cabe|consigo|ok|topo)\b/.test(t)) return "yes";
+  if (/\b(talvez|depende|vou pensar|quero avaliar)\b/.test(t)) return "maybe";
+  if (/\b(nao|não)\b/.test(t)) return "no";
+  return null;
+}
+
+function hasEconomicPotentialOrigin(origin) {
+  return ["pharmacy", "platform", "imported"].includes(origin);
+}
+
+function getOfferTrack(state) {
+  if (state.offer_track) return state.offer_track;
+  if (state.form_offer_397_fit === "yes") return "full_review_397";
+  if (state.form_offer_200_fit === "yes") return "cost_review_200";
+  if (state.treatment_goal === "full_review") return "full_review_397";
+  if (state.treatment_goal === "reduce_cost" || state.treatment_goal === "optimize_and_reduce") return "cost_review_200";
+  return null;
+}
+
+function isStructuredCostForm(state) {
+  return !!(state?.form_data && (
+    state.form_data.treatment_origin ||
+    state.form_data.treatment_goal ||
+    state.form_data.offer_200_fit ||
+    state.form_data.offer_397_fit
+  ));
+}
+
 function parseConsultPriceAlignmentAnswer(text, flags) {
   const t = norm(text || "");
-  if (flags.confirms || /\b(sim|consigo|ok|pode ser|tudo bem|de acordo|estou de acordo|tenho interesse|topo|faz sentido|consigo pagar|cabe pra mim|cabe no meu orçamento|397|99[,.]25|parcelado pra mim da)\b/.test(t)) return "yes";
+  if (flags.confirms || /\b(sim|consigo|ok|pode ser|tudo bem|de acordo|estou de acordo|tenho interesse|topo|faz sentido|consigo pagar|cabe pra mim|cabe no meu orçamento|200|397|99[,.]25|parcelado pra mim da)\b/.test(t)) return "yes";
   if (/\b(talvez|depende|preciso pensar|vou ver|vou analisar|quero entender melhor)\b/.test(t)) return "maybe";
   if (flags.priceRejection || flags.saysExpensive || /\b(nao|não|sem condicao|sem condição|muito caro|fora do meu orçamento|nao consigo|não consigo)\b/.test(t)) return "no";
   return null;
@@ -1309,6 +1376,9 @@ function syncQualificationTrack(state) {
 }
 
 function buildPainContext(state) {
+  if (state.treatment_goal === "reduce_cost") return "sobre reduzir o custo do óleo atual";
+  if (state.treatment_goal === "optimize_and_reduce") return "sobre manter ou melhorar o tratamento gastando menos";
+  if (state.treatment_goal === "full_review") return "sobre revisar o tratamento completo";
   switch (state.main_pain) {
     case "cost": return "sobre custo alto do tratamento";
     case "partial": return "sobre melhora abaixo do esperado";
@@ -1331,7 +1401,9 @@ function setQualificationReasonCodes(state) {
   else if (state.out_of_pocket_status === "past") reasons.push("paid_before");
   if (state.monthly_spend_range) reasons.push(`spend_${state.monthly_spend_range}`);
   if (state.main_pain) reasons.push(`pain_${state.main_pain}`);
+  if (state.treatment_goal) reasons.push(`goal_${state.treatment_goal}`);
   if (state.product_origin) reasons.push(`origin_${state.product_origin}`);
+  if (state.offer_track) reasons.push(`offer_${state.offer_track}`);
   if (state.wants_resolution_7d === "yes") reasons.push("wants_resolution_fast");
   else if (state.wants_resolution_7d === "maybe") reasons.push("resolution_maybe");
   if (state.price_acceptance === "yes") reasons.push("price_fit_yes");
@@ -1349,6 +1421,7 @@ function setQualificationReasonCodes(state) {
 function recomputeQualification(state) {
   let score = 0;
   syncQualificationTrack(state);
+  state.offer_track = getOfferTrack(state);
   const priceFit = state.price_acceptance || state.consultation_price_fit || null;
   state.price_acceptance = priceFit;
   state.consultation_price_fit = priceFit;
@@ -1360,17 +1433,25 @@ function recomputeQualification(state) {
 
   if (state.out_of_pocket_status === "current") score += 3;
   else if (state.out_of_pocket_status === "past") score += 1;
-  else if (state.monthly_spend_range === "up_to_250") score += 1;
-  else if (state.monthly_spend_range === "from_250_to_500") score += 2;
-  else if (state.monthly_spend_range === "from_500_to_1000") score += 3;
-  else if (state.monthly_spend_range === "over_1000") score += 4;
+  else if (state.monthly_spend_range === "up_to_250" || state.monthly_spend_range === "up_to_299") score -= 2;
+  else if (state.monthly_spend_range === "from_250_to_500" || state.monthly_spend_range === "from_300_to_499") score += 2;
+  else if (state.monthly_spend_range === "from_500_to_699") score += 3;
+  else if (state.monthly_spend_range === "from_700_to_999" || state.monthly_spend_range === "from_500_to_1000") score += 4;
+  else if (state.monthly_spend_range === "over_1000") score += 5;
 
   if (state.wants_resolution_7d === "yes") score += 2;
   else if (state.wants_resolution_7d === "maybe") score += 1;
 
   if (state.objective_response) score += 1;
-  if (state.product_origin) score += 1;
+  if (state.product_origin && hasEconomicPotentialOrigin(state.product_origin)) score += 2;
+  else if (state.product_origin === "association") score -= 6;
+  else if (state.product_origin) score += 1;
   if (state.current_product_text) score += 1;
+  if (state.treatment_goal === "reduce_cost" || state.treatment_goal === "optimize_and_reduce") score += 2;
+  else if (state.treatment_goal === "full_review") score += 2;
+  else if (state.treatment_goal === "info_only") score -= 5;
+  if (state.offer_track === "cost_review_200") score += 2;
+  else if (state.offer_track === "full_review_397") score += 3;
   if (priceFit === "yes") score += 2;
   else if (priceFit === "maybe") score += 0;
   else if (priceFit === "no") score -= 3;
@@ -1380,7 +1461,11 @@ function recomputeQualification(state) {
   if (state.review_intent_confirmed) score += 2;
   if (state.doctor_handoff_accepted) score += 2;
   if (state.curious_only) score -= 2;
-  if (state.never_used_for_testing) score -= 3;
+  if (state.never_used_for_testing) score -= 6;
+
+  if (state.product_origin === "association" || state.monthly_spend_range === "up_to_299" || state.treatment_goal === "info_only") {
+    score = Math.min(score, 1);
+  }
 
   state.qualification_score = score;
   if (score >= 9) state.qualification_band = "A";
@@ -1409,6 +1494,18 @@ function metaUsageQuestionReply(state) {
   return `Oi${nome}. Vi que você já teve contato com cannabis e quer revisar o tratamento. Vou te fazer algumas perguntas rápidas para entender se faz sentido o doutor falar com você, tudo bem?\n\nHoje você usa ainda ou esse tratamento ficou pelo caminho?`;
 }
 
+function metaStructuredFormOpeningReply(state) {
+  const nome = state?.nome ? `, ${state.nome}` : "";
+  const useContext = state.used_recently ? "já teve contato com cannabis" : "já usa cannabis";
+  if (state.offer_track === "cost_review_200") {
+    return `Oi${nome}. Aqui é a Lia, da equipe do Dr. Alef. Vi no seu formulário que você ${useContext} e quer revisar o custo do tratamento.\n\nAntes de eu avisar o doutor, me responde só uma coisa: qual óleo você usa hoje ou usou por último? Se lembrar, pode me mandar marca, apresentação e concentração.`;
+  }
+  if (state.offer_track === "full_review_397") {
+    return `Oi${nome}. Aqui é a Lia, da equipe do Dr. Alef. Vi no seu formulário que você ${useContext} e quer revisar o tratamento de forma mais completa.\n\nAntes de eu avisar o doutor, me responde só uma coisa: qual óleo você usa hoje ou usou por último? Se lembrar, pode me mandar marca, apresentação e concentração.`;
+  }
+  return `Oi${nome}. Aqui é a Lia, da equipe do Dr. Alef. Vi seu formulário e preciso confirmar um ponto rápido para não te encaminhar no escuro.\n\nQual óleo você usa hoje ou usou por último? Se lembrar, pode me mandar marca, apresentação e concentração.`;
+}
+
 function metaPainQuestionReply() {
   return "Entendi. O que mais te fez chamar agora: custo alto, melhora abaixo do esperado, efeito ruim, falta de acompanhamento ou entender se isso serve para você?";
 }
@@ -1431,11 +1528,20 @@ function metaPriceDeflectionReply(state) {
 
 function metaHandoffOfferReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
+  if (state.offer_track === "cost_review_200") {
+    return `Perfeito${nome}. Como essa faixa faz sentido para você, o próximo passo é o doutor falar com você rapidamente para entender se seu caso entra nessa avaliação focada em custo e te explicar como funciona. Se ele puder te chamar por vídeo ou ligação breve, tudo bem?`;
+  }
+  if (state.offer_track === "full_review_397") {
+    return `Perfeito${nome}. Como essa faixa faz sentido para você, o próximo passo é o doutor falar com você rapidamente para alinhar o caso e te explicar como funciona a consulta completa. Se ele puder te chamar por vídeo ou ligação breve, tudo bem?`;
+  }
   return `Perfeito${nome}. Como essa faixa está dentro do que você considera, faz sentido o doutor falar com você rapidamente para alinhar o caso e te explicar como funciona a consulta online. Se ele puder te chamar por vídeo ou ligação breve, tudo bem?`;
 }
 
 function metaQuestion5PriceReply(state) {
   const contexto = buildPainContext(state);
+  if (state.offer_track === "cost_review_200") {
+    return `Antes de eu levar seu caso adiante, preciso te alinhar a faixa dessa avaliação. Pelo que você me contou ${contexto}, se houver indicação de um produto com potencial de reduzir em até 50% o custo do seu tratamento, a avaliação médica focada nisso fica em *R$200*.\n\nIsso ainda não é fechamento. Antes de qualquer coisa, o doutor fala com você para confirmar se essa avaliação realmente faz sentido para o seu caso. Eu faço essa pergunta agora só para entender se existe interesse real nessa faixa.\n\nDentro disso, faz sentido para você?`;
+  }
   return `Antes de eu levar seu caso adiante, preciso te alinhar uma faixa real. Pelo que você me contou ${contexto}, quando o doutor entende que faz sentido seguir com a consulta online de revisão e orientação médica, o valor fica em *R$397* à vista ou em *4x de R$99,25* no cartão por link seguro.\n\nNessa consulta ele pode revisar o que já foi feito, avaliar se existe margem para reorganizar melhor a estratégia, entender se há desperdício, desorganização ou falta de ajuste fino e ver se existe um caminho mais coerente para o seu caso.\n\nIsso ainda não é fechamento. Antes de qualquer coisa, o doutor fala com você para confirmar se a consulta realmente faz sentido para o seu caso. Eu faço essa pergunta agora só para entender se existe interesse real e disponibilidade nessa faixa caso ele veja indicação.\n\nDentro dessa faixa, faz sentido para você?`;
 }
 
@@ -1460,6 +1566,12 @@ function metaColdStartNurtureReply(state) {
 
 function metaAcceptedCallReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
+  if (state.offer_track === "cost_review_200") {
+    return `Perfeito${nome}. Vou avisar o doutor por aqui. Se ele estiver disponível, ele pode te chamar por vídeo ou por ligação breve no próprio WhatsApp para alinhar essa avaliação focada em custo.`;
+  }
+  if (state.offer_track === "full_review_397") {
+    return `Perfeito${nome}. Vou avisar o doutor por aqui. Se ele estiver disponível, ele pode te chamar por vídeo ou por ligação breve no próprio WhatsApp para alinhar essa revisão completa.`;
+  }
   return `Perfeito${nome}. Vou avisar o doutor por aqui. Se ele estiver disponível, ele pode te chamar por vídeo ou por ligação breve no próprio WhatsApp.`;
 }
 
@@ -1475,11 +1587,17 @@ function metaNurtureReply(state) {
 
 function metaPriceMisalignedReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
+  if (state.offer_track === "cost_review_200") {
+    return `Sem problema${nome}. Eu quis te alinhar essa faixa antes justamente para não ocupar seu tempo sem necessidade. Vou deixar isso registrado por aqui e, se fizer sentido depois, a gente pode retomar com calma.`;
+  }
   return `Sem problema${nome}. Eu quis te alinhar essa faixa antes justamente para não ocupar seu tempo sem necessidade. Vou deixar seu caso registrado por aqui e, se fizer sentido depois, a gente pode retomar com calma.`;
 }
 
 function metaDisqualifyReply(state) {
   const nome = state?.nome ? `, ${state.nome}` : "";
+  if (state.product_origin === "association" || state.monthly_spend_range === "up_to_299" || state.never_used_for_testing || state.treatment_goal === "info_only") {
+    return `Entendi${nome}. Pelas informações que você me passou, essa etapa não é a mais adequada para o seu perfil agora. Vou deixar isso registrado por aqui.`;
+  }
   return `Entendi${nome}. Pelo que você me contou, não faz sentido te empurrar uma ligação agora sem clareza real. Vou deixar isso registrado por aqui e, se depois você quiser retomar com mais contexto ou intenção de seguir, pode me chamar.`;
 }
 
@@ -1488,6 +1606,10 @@ function getQualificationNextPrompt(state) {
     case null:
     case undefined:
     case "FORM_INTAKE":
+      if (isStructuredCostForm(state) && state.offer_track && state.price_acceptance === "yes") {
+        return metaStructuredFormOpeningReply(state);
+      }
+      return metaUsageQuestionReply(state);
     case "QUALIFY_Q1":
       return metaUsageQuestionReply(state);
     case "QUALIFY_Q2":
@@ -1515,6 +1637,23 @@ function getQualificationNextPrompt(state) {
 function primeQualificationStage(state) {
   recomputeQualification(state);
   if (!state.stage || state.stage === "FORM_INTAKE") {
+    if (isStructuredCostForm(state)) {
+      if (
+        state.never_used_for_testing ||
+        state.product_origin === "association" ||
+        state.monthly_spend_range === "up_to_299" ||
+        state.treatment_goal === "info_only" ||
+        state.price_acceptance === "no" ||
+        state.price_acceptance === "maybe"
+      ) {
+        state.stage = "DISQUALIFIED_C";
+      } else if (state.offer_track && state.price_acceptance === "yes") {
+        state.stage = state.current_product_text ? "QUALIFIED_AWAITING_HANDOFF" : "QUALIFY_Q4_PRODUCT";
+      } else {
+        state.stage = "QUALIFY_Q1";
+      }
+      return state;
+    }
     if (state.qualification_track === "cold_start") state.stage = "QUALIFY_COLD_Q1";
     else if ((state.uses_cannabis_now || state.used_recently) && state.main_pain) state.stage = "QUALIFY_Q3";
     else state.stage = "QUALIFY_Q1";
@@ -1542,6 +1681,25 @@ function seedMetaQualificationState(state, formData) {
     state.review_intent_confirmed = mainPain !== "curious";
   }
 
+  const treatmentGoal = parseTreatmentGoalValue(formData.treatment_goal);
+  if (treatmentGoal) {
+    state.treatment_goal = treatmentGoal;
+    if (!state.main_pain && (treatmentGoal === "reduce_cost" || treatmentGoal === "optimize_and_reduce")) {
+      state.main_pain = "cost";
+    }
+    if (!state.main_pain && treatmentGoal === "full_review") {
+      state.main_pain = "partial";
+    }
+    if (treatmentGoal === "reduce_cost" || treatmentGoal === "optimize_and_reduce" || treatmentGoal === "full_review") {
+      state.review_intent_confirmed = true;
+      state.curious_only = false;
+    }
+    if (treatmentGoal === "info_only") {
+      state.curious_only = true;
+      state.review_intent_confirmed = false;
+    }
+  }
+
   const outOfPocket = parseOutOfPocketValue(formData.out_of_pocket);
   if (outOfPocket) state.out_of_pocket_status = outOfPocket;
   const monthlySpend = parseMonthlySpendValue(formData.monthly_spend);
@@ -1552,6 +1710,29 @@ function seedMetaQualificationState(state, formData) {
 
   const resolveWindow = parseResolveWindowValue(formData.resolve_window || formData.interesse);
   if (resolveWindow) state.wants_resolution_7d = resolveWindow;
+
+  const parsedOrigin = parseProductOriginValue(formData.treatment_origin);
+  if (parsedOrigin) state.product_origin = parsedOrigin;
+
+  state.form_offer_200_fit = parseBinaryFitValue(formData.offer_200_fit) || state.form_offer_200_fit || null;
+  state.form_offer_397_fit = parseBinaryFitValue(formData.offer_397_fit) || state.form_offer_397_fit || null;
+  state.offer_track = getOfferTrack(state);
+
+  if (state.form_offer_397_fit === "yes") {
+    state.price_acceptance = "yes";
+    state.consultation_price_fit = "yes";
+    state.offer_track = "full_review_397";
+  } else if (state.form_offer_200_fit === "yes") {
+    state.price_acceptance = "yes";
+    state.consultation_price_fit = "yes";
+    state.offer_track = "cost_review_200";
+  } else if (state.form_offer_200_fit === "maybe" || state.form_offer_397_fit === "maybe") {
+    state.price_acceptance = "maybe";
+    state.consultation_price_fit = "maybe";
+  } else if (state.form_offer_200_fit === "no" || state.form_offer_397_fit === "no") {
+    state.price_acceptance = "no";
+    state.consultation_price_fit = "no";
+  }
 
   const detectedCondition = detectCondition(formData.condition || "");
   if (detectedCondition) state.condition = detectedCondition;
@@ -1627,6 +1808,10 @@ function initializeMetaQualificationState(state) {
   state.never_used_for_testing = !!state.never_used_for_testing;
   state.monthly_spend_range = state.monthly_spend_range || null;
   state.product_origin = state.product_origin || null;
+  state.treatment_goal = state.treatment_goal || null;
+  state.offer_track = state.offer_track || null;
+  state.form_offer_200_fit = state.form_offer_200_fit || null;
+  state.form_offer_397_fit = state.form_offer_397_fit || null;
   state.current_product_text = state.current_product_text || null;
   state.price_acceptance = state.price_acceptance || state.consultation_price_fit || null;
   state.consultation_price_fit = state.consultation_price_fit || state.price_acceptance || null;
@@ -1665,6 +1850,24 @@ async function handleMetaQualificationFlow(phone, incomingText, state, flags) {
 
   if (!state.stage || state.stage === "FORM_INTAKE") {
     recomputeQualification(state);
+    if (isStructuredCostForm(state)) {
+      primeQualificationStage(state);
+      if (state.stage === "DISQUALIFIED_C") {
+        state.followup_due_at = null;
+        state.followup_complete = true;
+        return { reply: metaDisqualifyReply(state), state };
+      }
+      if (state.stage === "QUALIFIED_AWAITING_HANDOFF") {
+        state.doctor_handoff_offered = true;
+        state.doctor_handoff_offered_at = state.doctor_handoff_offered_at || Date.now();
+        state.followup_reason = "doctor_handoff_offer";
+        state.followup_due_at = state.doctor_handoff_offered_at + (2 * 60 * 60 * 1000);
+        return { reply: metaHandoffOfferReply(state), state };
+      }
+      if (state.stage === "QUALIFY_Q4_PRODUCT") {
+        return { reply: metaStructuredFormOpeningReply(state), state };
+      }
+    }
     if (state.qualification_track === "cold_start") {
       state.stage = "QUALIFY_COLD_Q1";
       return { reply: metaColdStartOpeningReply(state), state };
@@ -1758,7 +1961,16 @@ async function handleMetaQualificationFlow(phone, incomingText, state, flags) {
 
   if (state.stage === "QUALIFY_Q4_PRODUCT") {
     if (!updateQualificationFromProductAnswer(state, incomingText)) {
-      return { reply: metaProductDetailsQuestionReply(), state };
+      return { reply: isStructuredCostForm(state) ? metaStructuredFormOpeningReply(state) : metaProductDetailsQuestionReply(), state };
+    }
+    if (isStructuredCostForm(state) && state.offer_track && state.price_acceptance === "yes") {
+      state.stage = "QUALIFIED_AWAITING_HANDOFF";
+      state.doctor_handoff_offered = true;
+      state.doctor_handoff_offered_at = state.doctor_handoff_offered_at || Date.now();
+      state.followup_reason = "doctor_handoff_offer";
+      state.followup_due_at = state.doctor_handoff_offered_at + (2 * 60 * 60 * 1000);
+      recomputeQualification(state);
+      return { reply: metaHandoffOfferReply(state), state };
     }
     state.stage = "QUALIFY_Q5_PRICE";
     state.price_presented = true;
@@ -3240,6 +3452,10 @@ function initializeState(state, bot) {
   state.monthly_spend_range = state.monthly_spend_range || null;
   state.main_pain = state.main_pain || null;
   state.product_origin = state.product_origin || null;
+  state.treatment_goal = state.treatment_goal || null;
+  state.offer_track = state.offer_track || null;
+  state.form_offer_200_fit = state.form_offer_200_fit || null;
+  state.form_offer_397_fit = state.form_offer_397_fit || null;
   state.current_product_text = state.current_product_text || null;
   state.wants_resolution_7d = state.wants_resolution_7d || null;
   state.qualification_score = Number(state.qualification_score || 0);
@@ -4837,6 +5053,7 @@ app.post("/lia/respond", async (req, res) => {
       doctor_handoff_accepted: !!result.state?.doctor_handoff_accepted,
       entry_route: result.state?.entry_route || null,
       qualification_track: result.state?.qualification_track || null,
+      offer_track: result.state?.offer_track || null,
       price_acceptance: result.state?.price_acceptance || null,
       handoff_locked: !!result.state?.handoff_locked,
       recommended_action: result.state?.recommended_action || null,
@@ -4851,6 +5068,7 @@ app.post("/lia/respond", async (req, res) => {
         lead_source: result.state?.lead_source || null,
         entry_route: result.state?.entry_route || null,
         qualification_track: result.state?.qualification_track || null,
+        offer_track: result.state?.offer_track || null,
         condition: result.state?.condition || null,
         nome: result.state?.nome || null,
         qualification_score: result.state?.qualification_score ?? null,
@@ -4858,6 +5076,9 @@ app.post("/lia/respond", async (req, res) => {
         price_acceptance: result.state?.price_acceptance || null,
         handoff_locked: !!result.state?.handoff_locked,
         current_product_text: result.state?.current_product_text || null,
+        treatment_goal: result.state?.treatment_goal || null,
+        product_origin: result.state?.product_origin || null,
+        monthly_spend_range: result.state?.monthly_spend_range || null,
         doctor_handoff_offered: !!result.state?.doctor_handoff_offered,
         doctor_handoff_accepted: !!result.state?.doctor_handoff_accepted,
         recommended_action: result.state?.recommended_action || null,
