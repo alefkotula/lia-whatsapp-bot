@@ -1102,7 +1102,11 @@ async function buildSiteCheckoutLink({ paymentLink, phone, planKey, externalRefe
     created_at: Date.now(),
   };
   await saveCheckoutRef(ref, data);
-  return { ref, url: `${BASE_URL}/checkout/${ref}` };
+  return {
+    ref,
+    url: `${BASE_URL}/checkout/${ref}`,
+    public_url: `${SITE_URL}/checkout-consulta/?ref=${ref}`,
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1150,12 +1154,13 @@ function connectQuestion(state) {
 
 function buildPriceLinkReply(state, checkoutUrl) {
   const nome = state.nome ? `, ${state.nome}` : "";
-  const url = checkoutUrl || (state.payment?.link) || "";
+  const url = checkoutUrl || (state.payment?.public_url) || (state.payment?.link) || "";
   const main = [
     `A consulta completa com o Dr. Alef é *${CONSULT_PRICE_LABEL}*${nome} — videochamada de cerca de 40 min (WhatsApp ou Google Meet, o que for mais fácil).`,
-    `Pagamento direto pelo *site oficial do Dr.*: cartão em até *12x sem juros* ou Pix.`,
+    `Pagamento direto pelo *site oficial do Dr.* (www.dralefkotula.com): cartão em até *12x sem juros* ou Pix.`,
     ``,
-    `Link seguro: ${url}`,
+    `Link seguro do checkout no site oficial:`,
+    `${url}`,
   ].join("\n");
   // O follow-up curto sai como "second message" no caller (oferta combinada)
   return main;
@@ -1171,13 +1176,13 @@ function priceShortReply(state) {
 }
 
 function pendingPaymentReply(state) {
-  const url = state.payment?.link || "";
-  return `Tá quase, é só finalizar por aqui:\n\n${url}\n\nAssim que o pagamento for confirmado eu te aviso e a gente passa pros horários.`;
+  const url = state.payment?.public_url || state.payment?.link || "";
+  return `Tá quase, é só finalizar pelo site oficial (www.dralefkotula.com):\n\n${url}\n\nAssim que o pagamento for confirmado eu te aviso e a gente passa pros horários.`;
 }
 
 function objectionPriceReply(state) {
-  const url = state.payment?.link || "";
-  const linkPart = url ? `\n\nNo link você vê todas as opções de parcelamento: ${url}` : "";
+  const url = state.payment?.public_url || state.payment?.link || "";
+  const linkPart = url ? `\n\nNo link do site oficial (www.dralefkotula.com) você vê todas as opções de parcelamento:\n${url}` : "";
   return `Entendo. No cartão dá pra parcelar em até *12x* — fica menos pesado no mês. Se for à vista no Pix é o mesmo valor: ${CONSULT_PRICE_LABEL}.${linkPart}\n\n${authorityInstagramReply("price")}`;
 }
 
@@ -1672,13 +1677,13 @@ async function openOffer(state, flags, incomingText, phone) {
     });
     state.payment = {
       status: "pending", plan_key: "avaliacao",
-      preference_id: pref.preference_id, link: checkout.url, mp_link: pref.link,
+      preference_id: pref.preference_id, link: checkout.url, public_url: checkout.public_url, mp_link: pref.link,
       checkout_ref: checkout.ref, external_reference: pref.external_reference,
       created_at: Date.now(), method: "link",
     };
     state.stage = "PAY_WAIT";
     return {
-      reply: buildPriceLinkReply(state, checkout.url),
+      reply: buildPriceLinkReply(state, checkout.public_url),
       followup: buildPriceLinkFollowup(state),
     };
   } catch (err) {
@@ -1729,7 +1734,7 @@ async function handlePayWait(state, flags, incomingText, phone) {
   if (flags.asksIsScam || flags.asksWho) return buildTrustBlock(state);
 
   // Pergunta livre durante espera
-  const ai = await runLia({ incomingText, state, flags, stageCTA: `O lead já recebeu o link. Tire a dúvida com clareza e termine reforçando que o link tá ativo: ${state.payment?.link || ""}` });
+  const ai = await runLia({ incomingText, state, flags, stageCTA: `O lead já recebeu o link. Tire a dúvida com clareza e termine reforçando que o link tá ativo: ${state.payment?.public_url || state.payment?.link || ""}` });
   return ai.reply;
 }
 
@@ -1978,13 +1983,13 @@ app.post("/lia/respond", async (req, res) => {
         const checkout = await buildSiteCheckoutLink({ paymentLink: pref.link, phone, planKey: "avaliacao", externalReference: pref.external_reference, state: st });
         st.payment = {
           status: "pending", plan_key: "avaliacao",
-          preference_id: pref.preference_id, link: checkout.url, mp_link: pref.link,
+          preference_id: pref.preference_id, link: checkout.url, public_url: checkout.public_url, mp_link: pref.link,
           checkout_ref: checkout.ref, external_reference: pref.external_reference,
           created_at: Date.now(), method: "link",
         };
         st.stage = "PAY_WAIT";
         await saveUserState(phone, st);
-        return res.json({ ok: true, reply: `Pra confirmar a consulta, toque no link:\n\n${checkout.url}`, skip_send: false, delay_ms: 1000 });
+        return res.json({ ok: true, reply: `Pra confirmar a consulta, toque no link do site oficial (www.dralefkotula.com):\n\n${checkout.public_url}`, skip_send: false, delay_ms: 1000 });
       } catch (err) { return res.json({ ok: true, reply: `Erro ao gerar link: ${err.message}`, skip_send: false, delay_ms: 500 }); }
     }
     if (cmdNorm === "." || cmdNorm === "..") {
@@ -2309,7 +2314,7 @@ app.get("/cron/followups", async (_req, res) => {
       if (!created || state.followup_complete) continue;
       const elapsed = now - created;
       const nome = state.nome ? `, ${state.nome}` : "";
-      const link = state.payment?.link || "";
+      const link = state.payment?.public_url || state.payment?.link || "";
       let message = null, flagKey = null;
 
       if (elapsed >= SEVENTY_TWO_H && !state.followup_3_sent) {
