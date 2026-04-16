@@ -317,6 +317,12 @@ function extendedFormParser(text) {
     else if (!fields.aceita_preco && (label.includes("aceita_r") || label.includes("249") || label.includes("aceita_pagar") || label.includes("aceita_o_valor"))) fields.aceita_preco = value;
     else if (!fields.aceita_videochamada && (label.includes("aceita_videochamada") || label.includes("aceita_por_videochamada") || label.includes("videoconsulta"))) fields.aceita_videochamada = value;
     else if (!fields.telefone && label.includes("telefone")) fields.telefone = value;
+    // ── Roteiro 3 (REVISAR O TRATAMENTO — público já em cannabis) ──
+    else if (!fields.ja_usa_cannabis && (label.includes("voce_usa_cannabis") || label.includes("usa_cannabis_medicinal"))) fields.ja_usa_cannabis = value;
+    else if (!fields.dificuldades_tratamento && (label.includes("principal_dificuldade") || label.includes("dificuldade_no_seu_tratamento"))) fields.dificuldades_tratamento = value;
+    else if (!fields.problema_tratado && (label.includes("qual_problema_voce_esta_tratando") || label.includes("problema_voce_esta_tratando") || label.includes("tentou_tratar"))) fields.problema_tratado = value;
+    else if (!fields.gasto_mensal && (label.includes("quanto_voce_gasta_por_mes") || label.includes("gasta_por_mes") || label.includes("gasto_mensal"))) fields.gasto_mensal = value;
+    else if (!fields.resolver_7dias && (label.includes("resolver_isso_nos_proximos_7_dias") || label.includes("proximos_7_dias") || label.includes("nos_proximos_7"))) fields.resolver_7dias = value;
   }
 
   // Fallbacks regex para layouts soltos
@@ -329,6 +335,12 @@ function extendedFormParser(text) {
   if (!fields.aceita_preco) fields.aceita_preco = extractMetaField(raw, String.raw`aceita[_\s-]*(?:r\$?[_\s-]*)?249[^:]*`) || extractMetaField(raw, String.raw`aceita[_\s-]*o[_\s-]*valor[^:]*`) || null;
   if (!fields.aceita_videochamada) fields.aceita_videochamada = extractMetaField(raw, String.raw`aceita[_\s-]*(?:por[_\s-]*)?videochamada[^:]*`) || extractMetaField(raw, String.raw`videoconsulta[^:]*`) || null;
   if (!fields.telefone) fields.telefone = extractMetaField(raw, String.raw`telefone`) || null;
+  // Roteiro 3 fallbacks
+  if (!fields.ja_usa_cannabis) fields.ja_usa_cannabis = extractMetaField(raw, String.raw`voc[eê][_\s-]*usa[_\s-]*cannabis[^:]*`) || null;
+  if (!fields.dificuldades_tratamento) fields.dificuldades_tratamento = extractMetaField(raw, String.raw`principal[_\s-]*dificuldade[^:]*`) || extractMetaField(raw, String.raw`dificuldade[_\s-]*no[_\s-]*seu[_\s-]*tratamento[^:]*`) || null;
+  if (!fields.problema_tratado) fields.problema_tratado = extractMetaField(raw, String.raw`qual[_\s-]*problema[_\s-]*voc[eê][_\s-]*est[aá][_\s-]*tratando[^:]*`) || extractMetaField(raw, String.raw`tentou[_\s-]*tratar[^:]*`) || null;
+  if (!fields.gasto_mensal) fields.gasto_mensal = extractMetaField(raw, String.raw`quanto[_\s-]*voc[eê][_\s-]*gasta[_\s-]*por[_\s-]*m[eê]s[^:]*`) || extractMetaField(raw, String.raw`gasto[_\s-]*mensal[^:]*`) || null;
+  if (!fields.resolver_7dias) fields.resolver_7dias = extractMetaField(raw, String.raw`resolver[_\s-]*isso[_\s-]*nos[_\s-]*pr[oó]ximos[_\s-]*7[_\s-]*dias[^:]*`) || extractMetaField(raw, String.raw`pr[oó]ximos[_\s-]*7[_\s-]*dias[^:]*`) || null;
 
   Object.keys(fields).forEach((key) => { if (!fields[key]) delete fields[key]; });
   return Object.keys(fields).length ? fields : null;
@@ -356,9 +368,50 @@ function markFormQualified(state) {
   const fd = state.form_data || {};
   const okPreco = isAffirmativeFormAnswer(fd.aceita_preco);
   const okVideo = isAffirmativeFormAnswer(fd.aceita_videochamada);
-  const richEnough = !!(fd.nome_completo && fd.condition);
-  state.form_qualified = okPreco && okVideo ? true : (richEnough ? true : !!state.form_qualified);
+  const richEnoughR4 = !!(fd.nome_completo && fd.condition);
+  const richEnoughR3 = !!(fd.nome_completo && (fd.ja_usa_cannabis || fd.dificuldades_tratamento || fd.gasto_mensal));
+  state.form_qualified = (okPreco && okVideo) || richEnoughR4 || richEnoughR3 ? true : !!state.form_qualified;
   return state.form_qualified;
+}
+
+/* V30: detecta qual campanha o lead veio — Roteiro 3 (revisão de tratamento)
+   ou Roteiro 4 (dor neuropática / primeira vez) ou outro. */
+function detectFormTrack(formPayload, state) {
+  const fd = formPayload || state?.form_data || {};
+  const hasR3 = !!(fd.ja_usa_cannabis || fd.dificuldades_tratamento || fd.gasto_mensal || fd.resolver_7dias);
+  if (hasR3) {
+    // Confirma: se já usa cannabis ou parou, é R3 (revisão)
+    const v = String(fd.ja_usa_cannabis || "").toLowerCase();
+    if (/sim|uso|atualmente|recentemente|j[aá]\s+usei/.test(v)) return "r3_revisao";
+    // Mesmo se "nunca usei" apareceu, mas tem gasto/dificuldade, trata como R3
+    if (fd.gasto_mensal || fd.dificuldades_tratamento) return "r3_revisao";
+  }
+  if (fd.condition || fd.tentou_tratamento || fd.aceita_preco || fd.aceita_videochamada) return "r4_dor_neuro";
+  return fd.nome_completo ? "generic" : null;
+}
+
+/* Parseia o texto livre de "dificuldades" do Roteiro 3 em flags estruturadas */
+function parseDifficulties(raw) {
+  const s = String(raw || "").toLowerCase();
+  return {
+    caro: /caro|custo|pre[cç]o|gasto|gastando/.test(s),
+    pouco_efeito: /melhorou\s+pouco|pouco\s+efeito|n[aã]o\s+melhorou|sem\s+efeito|pouca\s+melhora/.test(s),
+    efeito_ruim: /efeito\s+ruim|efeito\s+colateral|passou\s+mal|reac[cç][aã]o/.test(s),
+    confuso: /confuso|confus[aã]o|perdido|n[aã]o\s+sei\s+(?:a\s+)?dose|dose|hor[aá]rio|produto/.test(s),
+    sem_acompanhamento: /sem\s+acompanhamento|n[aã]o\s+senti\s+acompanhamento|sozinho|abandonado/.test(s),
+  };
+}
+
+/* Classifica o gasto mensal em faixas pra usar no reframe */
+function parseMonthlySpend(raw) {
+  const s = String(raw || "").toLowerCase();
+  if (/mais\s+de\s+r?\$?\s*1[.\s]?0{3}|acima.*1000|>\s*1000/.test(s)) return "mais_1000";
+  if (/500.*1[.\s]?0{3}|500.*1000/.test(s)) return "500_1000";
+  if (/250.*500/.test(s)) return "250_500";
+  if (/at[eé]\s+r?\$?\s*250|at[eé]\s+250/.test(s)) return "ate_250";
+  if (/j[aá]\s+gastei.*parei|parei/.test(s)) return "parei";
+  if (/n[aã]o\s+gasto|zero|nada/.test(s)) return "nao_gasto";
+  return null;
 }
 
 function getNested(obj, path) {
@@ -965,6 +1018,34 @@ const EVIDENCE_DB = {
   epilepsia: { direct_answer: "Sim — é uma das indicações com mais evidência, principalmente em crises refratárias." },
   cancer:    { direct_answer: "Sim, como suporte: ajuda em dor, náusea da quimio, apetite e sono." },
   dor_cronica: { direct_answer: "Sim. Cannabis medicinal tem evidência sólida para dor crônica refratária a tratamentos convencionais." },
+
+  /* ── Roteiro 3: público já em cannabis, com dificuldades (custo alto, sem efeito, sem acompanhamento) ── */
+  revisao_tratamento: {
+    direct_answer: "A maioria dos casos em que a cannabis não funcionou bem não é problema da planta — é prescrição inadequada, produto errado, dose errada ou falta de ajuste ao longo do tempo.",
+    empathy: [
+      "Usar cannabis medicinal sem sentir resultado, ou sentindo que está gastando muito sem retorno — é frustrante. Faz a pessoa questionar se vale continuar.",
+      "Sem acompanhamento médico de verdade, a pessoa acaba tocando o próprio tratamento no escuro. E quando não vem resultado, fica sem saber o que mudar.",
+      "Tratamento caro que não melhora deixa a pessoa esgotada — financeiramente e emocionalmente.",
+      "Muito paciente que chega aqui já usou cannabis, mas sem o produto certo pra condição dele ou sem ajuste de dose. É comum e tem solução.",
+    ],
+    // Diferencial do Dr. Alef pra esse público — ARGUMENTO PRINCIPAL: óleo de associação
+    value_prop: "O Dr. Alef é médico pós-graduado internacionalmente em cannabis medicinal. Diferente de clínico geral, ele prescreve *óleo de associação* — que costuma custar mais de 50% a menos que o óleo comum de farmácia ou o importado. Além disso, revisa produto, dose e horário do seu tratamento atual.",
+    cost_reframe: "O óleo de associação que o Dr. Alef trabalha é mais de 50% mais barato que o óleo de farmácia ou importado. Só isso já costuma reduzir pela metade (ou mais) o que você paga por mês.",
+    accompaniment: "O Dr. Alef acompanha o caso do início ao fim: primeira consulta, ajuste de protocolo e retorno incluso. Você não fica mais sozinho no tratamento.",
+    testimony: "Tenho pacientes que chegaram gastando R$500–R$800 por mês em óleo de farmácia. Com o óleo de associação prescrito pelo Dr., caiu pra R$180–R$250 o mesmo óleo (às vezes mais concentrado).",
+    oil_argument: "Todo óleo de cannabis de farmácia ou importado é mais caro — mais de 50% mais caro. O Dr. Alef prescreve óleo de associação, que sai muito mais em conta. É a mesma cannabis medicinal, só que sem o preço inflado da farmácia.",
+    mechanism: "Quando o tratamento não funciona, geralmente o problema está na combinação produto + concentração + dose + horário. Mudar só um desses fatores pode mudar completamente o resultado.",
+    hope: "Se a cannabis não funcionou como esperado, o problema quase nunca é a cannabis. É a prescrição e o tipo de óleo.",
+    bridge: "Faz sentido o Dr. Alef revisar seu protocolo atual — ele vai identificar o que ajustar e, provavelmente, trocar pra óleo de associação pra você gastar bem menos.",
+    objections: {
+      ja_gastei_muito_nao_quero_mais: "Entendo — mas é exatamente por isso que vale. O óleo de associação que o Dr. prescreve é mais de 50% mais barato que o óleo de farmácia. A R$249 da consulta se paga em 1–2 meses de economia no óleo.",
+      nao_confio_mais: "Faz sentido desconfiar depois de uma experiência ruim. O Dr. Alef é pós-graduado em cannabis medicinal — não é clínico geral. Ele revisa o que foi feito e, se for o caso, troca pra óleo de associação pra reduzir o custo.",
+      meu_medico_atual_prescreveu: "Nada contra o médico atual — mas a maioria prescreve óleo de farmácia ou importado, que é muito mais caro. O Dr. Alef trabalha com óleo de associação, que é a mesma cannabis só que bem mais em conta.",
+      esta_funcionando_mas_caro: "Se está funcionando, o Dr. pode avaliar se dá pra chegar no mesmo resultado com óleo de associação — que costuma custar pela metade do que você paga hoje.",
+      nunca_soube_a_dose_certa: "Dose errada muda completamente o resultado. E, junto com isso, o Dr. também ajusta o tipo de óleo — quase sempre troca pra óleo de associação pra baratear o tratamento.",
+      tipo_oleo_pergunta: "Óleo de associação é um óleo de cannabis medicinal prescrito pelo médico, manipulado de forma específica. A diferença é que sai mais de 50% mais barato que o óleo de farmácia comum ou o importado — sem perder qualidade.",
+    },
+  },
 };
 
 function getEvidence(condition, key = "direct_answer") {
@@ -1135,6 +1216,104 @@ function greetFromForm(state) {
     "Posso te passar como é a consulta com o Dr. Alef?",
   ]);
   return `${ola} Aqui é a Lia, da equipe do Dr. Alef Kotula — vi que você preencheu o formulário sobre ${condLabel}.\n\n${empath}\n\n${tail}`;
+}
+
+/* ── R3: saudação para quem já usa cannabis e tem dificuldades ── */
+function greetFromFormR3(state) {
+  const nome = state.nome || extractFormFirstName(state.form_data?.nome_completo || "") || "";
+  const fd = state.form_data || {};
+  const difs = parseDifficulties(fd.dificuldades_tratamento || "");
+  const gasto = parseMonthlySpend(fd.gasto_mensal || "");
+
+  const ola = nome ? `Oi, ${nome}.` : "Oi.";
+
+  // Linha de empatia personalizada pela dificuldade marcada
+  let empathyLine = "";
+  if (difs.caro && gasto && gasto !== "nao_gasto") {
+    const gastoLabel = { "mais_1000": "mais de R$1.000 por mês", "500_1000": "entre R$500 e R$1.000 por mês", "250_500": "entre R$250 e R$500 por mês", "ate_250": "até R$250 por mês", "parei": "bastante antes de parar" }[gasto] || "bastante";
+    empathyLine = `Vi que você está gastando ${gastoLabel} com o tratamento. Esse é um dos principais motivos que o Dr. Alef resolve — ele prescreve *óleo de associação*, que costuma custar *mais de 50% a menos* que o óleo comum de farmácia ou importado.`;
+  } else if (difs.sem_acompanhamento) {
+    empathyLine = pickRandom(["Vi que você sente que está tocando o tratamento meio que sozinho.", "Entendo — tratar sem um acompanhamento de verdade é difícil."]);
+  } else if (difs.pouco_efeito) {
+    empathyLine = pickRandom(["Vi que o tratamento melhorou pouco até agora.", "Usar cannabis e não sentir o efeito esperado é frustrante — e tem solução."]);
+  } else if (difs.confuso) {
+    empathyLine = "Vi que ficou confuso com produto, dose ou horário — isso é mais comum do que parece e dá pra resolver.";
+  } else if (difs.efeito_ruim) {
+    empathyLine = "Vi que teve efeito ruim em algum momento. Com a prescrição certa, isso costuma mudar.";
+  } else {
+    empathyLine = pickRandom(EVIDENCE_DB.revisao_tratamento.empathy);
+  }
+
+  const tail = pickRandom([
+    "Posso te explicar como funciona a revisão de tratamento com o Dr. Alef?",
+    "Quer entender como o Dr. Alef pode ajudar a melhorar isso?",
+    "Me conta um pouco mais — o que incomoda mais no tratamento hoje?",
+  ]);
+
+  return `${ola} Aqui é a Lia, da equipe do *Dr. Alef Kotula* — médico pós-graduado em cannabis medicinal.\n\n${empathyLine}\n\n${tail}`;
+}
+
+/* ── R3: pergunta de conexão para quem já está em cannabis ── */
+function connectQuestionR3(state) {
+  const nome = state.nome ? `, ${state.nome}` : "";
+  const difs = parseDifficulties(state.form_data?.dificuldades_tratamento || "");
+
+  if (difs.caro) return `Antes de te explicar como funciona${nome}: qual produto você usa hoje e, se souber, em que concentração? Isso me ajuda a entender o que o Dr. pode revisar.`;
+  if (difs.confuso) return `Pra te orientar melhor${nome}: o que mais te confunde — é o produto em si, a dose, o horário, ou não tem certeza se está sentindo efeito?`;
+  if (difs.pouco_efeito) return `Pra entender o que aconteceu${nome}: você usa CBD puro, CBD com THC ou outro perfil? E usa há quanto tempo?`;
+  if (difs.sem_acompanhamento) return `Me conta rapidinho${nome}: quem prescreveu o tratamento atual, e vocês têm tido retorno ou ficou sem contato depois da primeira receita?`;
+  return `Me conta rapidinho${nome}: o que mais está te incomodando no tratamento hoje — é o custo, o efeito, ou falta de orientação?`;
+}
+
+/* ── R3: bloco de proposta de valor (diferencial do Dr. — argumento principal: óleo de associação) ── */
+function buildValuePropR3(state) {
+  const nome = state.nome ? `, ${state.nome}` : "";
+  const fd = state.form_data || {};
+  const gasto = parseMonthlySpend(fd.gasto_mensal || "");
+
+  // Linha de custo personalizada com o número concreto quando disponível
+  let costLine = "";
+  if (gasto === "mais_1000") {
+    costLine = `Se hoje você gasta mais de R$1.000 por mês, tem paciente que saiu disso pra faixa de R$300–R$450 só trocando pra óleo de associação. É um corte real, todo mês.`;
+  } else if (gasto === "500_1000") {
+    costLine = `Se hoje você gasta entre R$500 e R$1.000 por mês, com óleo de associação costuma cair pra metade ou menos — na faixa de R$180–R$350.`;
+  } else if (gasto === "250_500") {
+    costLine = `Mesmo quem gasta entre R$250 e R$500 costuma baixar bem: óleo de associação sai em torno de R$150–R$250, às vezes até mais concentrado.`;
+  } else if (gasto === "parei") {
+    costLine = `Muita gente que parou foi por causa do preço. Com óleo de associação, o mesmo tratamento fica mais de 50% mais barato — por isso vale revisar.`;
+  } else if (gasto === "ate_250") {
+    costLine = `Mesmo nessa faixa, com óleo de associação dá pra conseguir um óleo às vezes mais forte pelo mesmo valor ou menos.`;
+  }
+
+  return [
+    `O Dr. Alef${nome} é especialista — pós-graduado internacionalmente em cannabis medicinal. Não é clínico geral.`,
+    ``,
+    `O principal diferencial: ele prescreve *óleo de associação*, que costuma custar *mais de 50% a menos* que o óleo comum de farmácia ou o importado. Mesma cannabis medicinal, sem o preço inflado.`,
+    ``,
+    `Além disso, ele revisa produto, dose e horário do seu tratamento — e *acompanha o caso*: a primeira consulta e o retorno estão incluídos.`,
+    costLine ? `\n${costLine}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+/* ── R3: resposta à objeção "já gastei muito / não quero gastar mais R$249" ── */
+function objectionHighSpendReply(state) {
+  const nome = state.nome ? `${state.nome}, ` : "";
+  const fd = state.form_data || {};
+  const gasto = parseMonthlySpend(fd.gasto_mensal || "");
+
+  if (gasto === "mais_1000") {
+    return `${nome}entendo — e é justamente por isso que faz sentido. Você gasta *mais de R$1.000 por mês*. O Dr. Alef prescreve *óleo de associação*, que custa mais de 50% a menos que o óleo de farmácia ou importado. Tem paciente que caiu pra faixa de R$300–R$450 por mês. A consulta de R$249 se paga no primeiro mês só com a economia no óleo.`;
+  }
+  if (gasto === "500_1000") {
+    return `${nome}entendo. Só que você já gasta *entre R$500 e R$1.000 por mês*. O óleo de associação que o Dr. Alef prescreve é mais de 50% mais barato que o óleo de farmácia — costuma cair pra faixa de R$180–R$350. A consulta de R$249 se paga em *um mês* de economia.`;
+  }
+  if (gasto === "250_500") {
+    return `${nome}entendo. Com óleo de associação, muitos pacientes que gastavam R$250–R$500 caem pra faixa de R$150–R$250 — e às vezes com óleo mais concentrado. A consulta se paga em 1–2 meses.`;
+  }
+  if (gasto === "parei") {
+    return `${nome}faz total sentido ter parado — óleo de farmácia ou importado é caro demais pra manter a longo prazo. O Dr. Alef prescreve *óleo de associação*, que custa mais de 50% menos. É outro patamar de preço. Por R$249 na consulta, o Dr. revisa seu caso e ajusta o tratamento pra algo sustentável.`;
+  }
+  return `${nome}entendo. A consulta é R$249 — e o principal motivo pra fazer é justamente economizar depois: o Dr. Alef prescreve *óleo de associação*, que custa mais de 50% a menos que o óleo de farmácia ou importado. A economia mensal no óleo paga a consulta rapidinho.`;
 }
 
 function connectQuestion(state) {
@@ -1309,6 +1488,37 @@ function buildSystemPrompt(state) {
   const profile = state.lead_profile || "padrao";
   const guide = PROFILE_GUIDES[profile] || PROFILE_GUIDES.padrao;
   const formQ = state.form_qualified ? "SIM" : "NÃO";
+  const formTrack = state.form_track || "generic";
+  const difs = parseDifficulties(state.form_data?.dificuldades_tratamento || "");
+  const gasto = parseMonthlySpend(state.form_data?.gasto_mensal || "");
+  const gastoLabel = { "mais_1000": "mais de R$1.000/mês", "500_1000": "R$500–R$1.000/mês", "250_500": "R$250–R$500/mês", "ate_250": "até R$250/mês", "parei": "parou de gastar", "nao_gasto": "não gasta" }[gasto] || "(não informado)";
+
+  const r3Block = formTrack === "r3_revisao" ? `
+▶ CAMPANHA: REVISÃO DE TRATAMENTO (Roteiro 3 — público JÁ em cannabis)
+Este lead JÁ USA ou USOU cannabis medicinal. Ele não precisa ser convencido de que cannabis funciona — precisa ser convencido de que o Dr. Alef vai resolver o que não está certo no tratamento DELE.
+
+PERFIL DO LEAD:
+- Usa cannabis: ${state.form_data?.ja_usa_cannabis || "(não informado)"}
+- Dificuldades: ${state.form_data?.dificuldades_tratamento || "(não informado)"}
+- Condição tratada: ${state.form_data?.problema_tratado || cond}
+- Gasto mensal atual: ${gastoLabel}
+- Quer resolver em 7 dias: ${state.form_data?.resolver_7dias || "(não informado)"}
+
+ESTRATÉGIA (obrigatória):
+1. EMPATIA com a dificuldade específica marcada (caro / pouco efeito / sem acompanhamento / confuso / efeito ruim).
+2. ARGUMENTO PRINCIPAL (usar sempre que lead tocar em custo, gasto, ou pouco efeito): *óleo de associação*. O Dr. Alef prescreve óleo de associação, que custa *mais de 50% a menos* que o óleo comum de farmácia ou o importado. É a mesma cannabis medicinal, só que muito mais barata. Esse é o diferencial mais concreto e deve ser mencionado com clareza.
+3. DIFERENCIAL complementar: Dr. Alef é pós-graduado internacionalmente em cannabis medicinal (não é clínico geral). Revisa produto, concentração, dose, horário. Acompanha o caso — primeira consulta + retorno incluídos.
+4. REFRAME de valor: se lead gasta muito, o argumento concreto é — "óleo de associação costuma cair pela metade (ou menos) vs farmácia. A consulta de R$249 se paga no primeiro mês só com a economia no óleo."
+5. CALL TO ACTION: link da consulta R$249 assim que lead demonstrar interesse.
+
+OBJEÇÕES DESTE PÚBLICO (use o argumento do óleo sempre que fizer sentido):
+- "R$249 a mais é caro, já gasto muito" → "O óleo de associação que o Dr. prescreve é mais de 50% mais barato que o óleo de farmácia. A consulta se paga em 1–2 meses de economia no óleo."
+- "Já usei e não funcionou" → Pode ser dose, produto ou tipo de óleo. O Dr. revisa — e se for o caso troca pra óleo de associação, que além de mais barato pode ter perfil mais adequado.
+- "Meu médico já prescreveu" → A maioria prescreve óleo de farmácia ou importado (caro). O Dr. Alef trabalha com óleo de associação, que é a mesma cannabis medicinal só que bem mais em conta.
+- "Está funcionando, só tá caro" → O Dr. pode manter o efeito com óleo de associação, que custa pela metade ou menos do que você paga hoje.
+
+REGRA CRÍTICA: Use o argumento *óleo de associação* com naturalidade sempre que custo for o tema. Seja específica: "mais de 50% mais barato", "mesma cannabis medicinal", "sem o preço inflado da farmácia". NÃO dê reframe genérico tipo "com a prescrição certa reduz o custo" — isso é vago demais. Nomeie a coisa: óleo de associação.
+` : "";
 
   return `Você é a *Lia*, secretária virtual humanizada do Dr. Alef Kotula (médico, cannabis medicinal). Você fala por WhatsApp.
 
@@ -1325,6 +1535,8 @@ function buildSystemPrompt(state) {
 - Condição detectada: ${cond}
 - Perfil: ${profile} → ${guide}
 - *LEAD_QUALIFICADO_PELO_FORM*: ${formQ}
+- Campanha: ${formTrack === "r3_revisao" ? "REVISÃO DE TRATAMENTO (já usa cannabis)" : formTrack === "r4_dor_neuro" ? "DOR NEUROPÁTICA (primeiro tratamento)" : "ORGÂNICO"}
+${r3Block}
 
 ▶ REGRA LEAD QUALIFICADO (CRÍTICA)
 Se LEAD_QUALIFICADO_PELO_FORM = SIM:
@@ -1497,7 +1709,14 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
       if (c) state.condition = c;
     }
     markFormQualified(state);
-    console.log(`[LIA v30] form parsed phone=${phone} qualified=${state.form_qualified} cond=${state.condition}`);
+    // Detecta campanha de origem
+    if (!state.form_track) state.form_track = detectFormTrack(formPayload, state);
+    // Se R3 e não tem condition ainda, tenta extrair de problema_tratado
+    if (state.form_track === "r3_revisao" && !state.condition && formPayload.problema_tratado) {
+      const c = detectCondition(formPayload.problema_tratado);
+      if (c) state.condition = c;
+    }
+    console.log(`[LIA v30] form parsed phone=${phone} qualified=${state.form_qualified} track=${state.form_track} cond=${state.condition}`);
   }
 
   // Se contactName veio do envelope e não temos nome
@@ -1563,9 +1782,14 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
     case "GREET":
       reply = await handleGreet(state, flags, incomingText, phone);
       break;
-    case "CONNECT":
-      reply = await handleConnect(state, flags, incomingText, phone);
+    case "CONNECT": {
+      const connectOut = await handleConnect(state, flags, incomingText, phone);
+      if (connectOut && typeof connectOut === "object" && "reply" in connectOut) {
+        return await finalize(state, phone, incomingText, connectOut.reply, flags, connectOut.followup);
+      }
+      reply = connectOut;
       break;
+    }
     case "OFFER": {
       const out = await handleOffer(state, flags, incomingText, phone);
       return await finalize(state, phone, incomingText, out.reply, flags, out.followup);
@@ -1615,6 +1839,8 @@ async function handleGreet(state, flags, incomingText, phone) {
   if (state.form_qualified && !state.greeted_from_form) {
     state.greeted_from_form = true;
     state.stage = "CONNECT";
+    // Roteia pelo track da campanha
+    if (state.form_track === "r3_revisao") return greetFromFormR3(state);
     return greetFromForm(state);
   }
   // Se chegou direto sem form (orgânico)
@@ -1653,7 +1879,16 @@ async function handleConnect(state, flags, incomingText, phone) {
     return await openOfferText(state, phone);
   }
 
-  // Validação + 1 dado clínico curto
+  // R3: usa pergunta de conexão específica e proposta de valor
+  if (state.form_track === "r3_revisao") {
+    if (state.connect_turns <= 1) {
+      return connectQuestionR3(state);
+    }
+    // 2º turno: entrega proposta de valor + encaminha pra oferta
+    return await openOfferText(state, phone);
+  }
+
+  // Validação + 1 dado clínico curto (fluxos R4 e orgânico)
   const cond = state.condition || "dor_neuropatica";
   const ev = EVIDENCE_DB[cond] || EVIDENCE_DB.dor_cronica;
   const empath = pickRandom(ev.empathy || EMPATHY_POOL.pain);
@@ -1693,6 +1928,15 @@ async function openOffer(state, flags, incomingText, phone) {
 }
 
 async function openOfferText(state, phone) {
+  // R3: antes do link, entrega proposta de valor específica em msg separada
+  if (state.form_track === "r3_revisao" && !state.r3_value_prop_sent) {
+    state.r3_value_prop_sent = true;
+    state.stage = "OFFER";
+    const valueProp = buildValuePropR3(state);
+    const out = await openOffer(state, {}, "", phone);
+    // Retorna proposta de valor + link numa sequência (caller vai separar em 2 msgs via followup)
+    return { reply: valueProp, followup: out.reply + (out.followup ? `\n\n${out.followup}` : "") };
+  }
   const out = await openOffer(state, {}, "", phone);
   return out.reply + (out.followup ? `\n\n${out.followup}` : "");
 }
@@ -1703,7 +1947,11 @@ async function handleOffer(state, flags, incomingText, phone) {
     return await openOffer(state, flags, incomingText, phone);
   }
   if (flags.saysExpensive) {
-    return { reply: objectionPriceReply(state), followup: null };
+    // R3: reframe específico pra quem já gasta muito vs generic
+    const expReply = state.form_track === "r3_revisao"
+      ? objectionHighSpendReply(state)
+      : objectionPriceReply(state);
+    return { reply: expReply, followup: null };
   }
   // Caso o lead pergunte algo, GPT responde mantendo CTA
   const ai = await runLia({ incomingText, state, flags, stageCTA: "Mantenha curto. Responda a dúvida e termine reforçando que o link de pagamento já está disponível." });
