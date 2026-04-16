@@ -230,6 +230,8 @@ const DEBOUNCE_WINDOW_MS = 6000;
 const _lastBotReplyAt = new Map();
 const _lastAudioReplyAt = new Map();
 const AUDIO_COOLDOWN_MS = 90_000;
+const _lastMediaReplyAt = new Map();
+const MEDIA_COOLDOWN_MS = 90_000;
 const MIN_BOT_GAP_MS = 12000;
 
 setInterval(() => {
@@ -1585,33 +1587,90 @@ Reforce: Dr. Alef Kotula é médico CRM-SP, formação na Rússia, especializaç
 Responda sempre em PT-BR. Sem emojis em excesso. Mensagem curta e humana.`;
 }
 
+/* Fallback inteligente quando o GPT falha — evita cair em loop de "pera um instante" */
+function runLiaFallback({ state, flags, incomingText }) {
+  const nome = state.nome ? `${state.nome}, ` : "";
+  const hasLink = !!(state.payment?.public_url || state.payment?.link);
+  const link = state.payment?.public_url || state.payment?.link || "";
+
+  // Se lead tá falando de preço/link e já existe link → re-entrega
+  if (flags?.wantsPrice || flags?.intentPay || flags?.asksPayMethod) {
+    if (hasLink) return pendingPaymentReply(state);
+    return `Consulta com o Dr. Alef${state.nome ? ", " + state.nome : ""} é *${CONSULT_PRICE_LABEL}* — videochamada, cerca de 40 min, cartão em até 12x ou Pix.`;
+  }
+  // Golpe/desconfiança
+  if (flags?.asksIsScam || flags?.asksWho) return buildTrustBlock(state);
+  // Diz que tá caro
+  if (flags?.saysExpensive) {
+    return state.form_track === "r3_revisao" ? objectionHighSpendReply(state) : objectionPriceReply(state);
+  }
+  // R3 — condição/tratamento: cai na proposta de valor
+  if (state.form_track === "r3_revisao") {
+    return `${nome}deixa eu te ajudar direto: o Dr. Alef é pós-graduado em cannabis medicinal e prescreve *óleo de associação* (mais de 50% mais barato que farmácia/importado). Consulta R$249 com retorno incluso. ${hasLink ? "Link ativo:\n\n" + link : ""}`.trim();
+  }
+  // R4 / orgânico com link
+  if (hasLink) {
+    return `${nome}me conta com mais detalhe o que está te incomodando — enquanto isso o link da consulta continua ativo:\n\n${link}`;
+  }
+  // Último recurso (raro): pergunta aberta útil
+  return `${nome}me conta rapidinho o que está te incomodando mais — assim eu te oriento direito.`;
+}
+
 async function runLia({ incomingText, state, flags, stageCTA }) {
-  if (!openai) return { reply: "Desculpa, tô com um problema técnico aqui. Pode me mandar de novo daqui a pouco?", updates: {} };
+  if (!openai) {
+    console.warn("[LIA] OpenAI client ausente — usando fallback");
+    return { reply: runLiaFallback({ state, flags, incomingText }), updates: {}, fallback: true };
+  }
+
+  const messages = [
+    { role: "system", content: buildSystemPrompt(state) },
+  ];
+  const hist = (state.conversation_history || []).slice(-12);
+  for (const turn of hist) {
+    if (turn.user) messages.push({ role: "user", content: clip(turn.user, 600) });
+    if (turn.bot) messages.push({ role: "assistant", content: clip(turn.bot, 600) });
+  }
+  messages.push({ role: "user", content: clip(incomingText, 800) });
+  if (stageCTA) {
+    messages.push({ role: "system", content: `Direção desta mensagem: ${stageCTA}` });
+  }
+
+  // Timeout + retry (1 tentativa extra se primeira falhar)
+  const callOnce = async (attempt) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 18000); // 18s hard timeout
+    try {
+      const completion = await openai.chat.completions.create({
+        model: CHAT_MODEL,
+        temperature: 0.78,
+        messages,
+        max_tokens: 350,
+      }, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      return (completion.choices?.[0]?.message?.content || "").trim();
+    } catch (err) {
+      clearTimeout(timeoutId);
+      console.error(`❌ runLia attempt=${attempt} erro: ${err?.name || ""} ${err?.message || err}`);
+      throw err;
+    }
+  };
+
   try {
-    const messages = [
-      { role: "system", content: buildSystemPrompt(state) },
-    ];
-    // pequeno histórico (últimos 6 turnos)
-    const hist = (state.conversation_history || []).slice(-12);
-    for (const turn of hist) {
-      if (turn.user) messages.push({ role: "user", content: clip(turn.user, 600) });
-      if (turn.bot) messages.push({ role: "assistant", content: clip(turn.bot, 600) });
+    const reply = await callOnce(1);
+    if (reply) return { reply, updates: {} };
+    // reply vazio → retry uma vez
+    const retry = await callOnce(2);
+    if (retry) return { reply: retry, updates: {} };
+    return { reply: runLiaFallback({ state, flags, incomingText }), updates: {}, fallback: true };
+  } catch (err1) {
+    try {
+      await sleep(600);
+      const reply = await callOnce(2);
+      if (reply) return { reply, updates: {} };
+    } catch (err2) {
+      console.error("❌ runLia falhou após retry:", err2?.message || err2);
     }
-    messages.push({ role: "user", content: clip(incomingText, 800) });
-    if (stageCTA) {
-      messages.push({ role: "system", content: `Direção desta mensagem: ${stageCTA}` });
-    }
-    const completion = await openai.chat.completions.create({
-      model: CHAT_MODEL,
-      temperature: 0.78,
-      messages,
-      max_tokens: 350,
-    });
-    const reply = (completion.choices?.[0]?.message?.content || "").trim();
-    return { reply: reply || "Pode me dizer um pouco mais sobre o que te trouxe aqui?", updates: {} };
-  } catch (err) {
-    console.error("❌ runLia erro:", err.message);
-    return { reply: "Pera um instante que eu te respondo direito.", updates: {} };
+    return { reply: runLiaFallback({ state, flags, incomingText }), updates: {}, fallback: true };
   }
 }
 
@@ -1972,16 +2031,18 @@ async function handlePayWait(state, flags, incomingText, phone) {
     return `Sem problema. Pode pagar por Pix:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *${CONSULT_PRICE_LABEL}*\n\nDepois me manda o comprovante por aqui que eu confirmo na hora.`;
   }
 
-  // Re-pede link
-  if (flags.intentPay || /\b(link|reenvia|me manda de novo)\b/.test(low)) {
+  // Re-pede link OU pergunta preço (aqui o lead já tem link; re-envia)
+  if (flags.intentPay || flags.wantsPrice || flags.wantsBook || flags.asksPayMethod || /\b(link|reenvia|me manda de novo|qual\s+o\s+valor|qual\s+o\s+pre[cç]o)\b/.test(low)) {
     return pendingPaymentReply(state);
   }
 
-  if (flags.saysExpensive) return objectionPriceReply(state);
+  if (flags.saysExpensive) {
+    return state.form_track === "r3_revisao" ? objectionHighSpendReply(state) : objectionPriceReply(state);
+  }
 
   if (flags.asksIsScam || flags.asksWho) return buildTrustBlock(state);
 
-  // Pergunta livre durante espera
+  // Pergunta livre durante espera — GPT com fallback inteligente
   const ai = await runLia({ incomingText, state, flags, stageCTA: `O lead já recebeu o link. Tire a dúvida com clareza e termine reforçando que o link tá ativo: ${state.payment?.public_url || state.payment?.link || ""}` });
   return ai.reply;
 }
@@ -2280,15 +2341,10 @@ app.post("/lia/respond", async (req, res) => {
       await saveUserState(phone, quickState);
     }
 
-    // Filtro de mensagem de sistema
-    if (!incomingText || isSystemMessage(incomingText)) {
-      return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
-    }
-
-    // ÁUDIO
+    // ÁUDIO (detecta antes do isSystemMessage pq o placeholder "[audio]" seria filtrado)
     const isAudioMsg =
-      /^(audio|ptt|voice|audiomessage|pttmessage|voicemessage|audio\/ogg|audio\/opus|audio\/mpeg|audio\/mp4)$/.test(incomingMsgType)
-      || /^(\[?(audio|áudio|voice|voz|ptt)\]?\s*\.?\s*)$/i.test(incomingText);
+      /^(audio|ptt|voice|audiomessage|pttmessage|voicemessage|audio\/ogg|audio\/opus|audio\/mpeg|audio\/mp4)$/.test(incomingMsgType || "")
+      || /^(\[?(audio|áudio|voice|voz|ptt)\]?\s*\.?\s*)$/i.test(incomingText || "");
     if (isAudioMsg) {
       const now = Date.now();
       const lastAudio = _lastAudioReplyAt.get(phone) || 0;
@@ -2296,9 +2352,46 @@ app.post("/lia/respond", async (req, res) => {
       _lastAudioReplyAt.set(phone, now);
       return res.json({
         ok: true,
-        reply: "Recebi seu áudio. No momento não consigo ouvir — me escreve por texto que eu continuo te atendendo.",
+        reply: "Recebi seu áudio, mas no momento eu não consigo escutar áudio aqui. Pode me *escrever por texto* o que você quer me dizer? Assim eu continuo te atendendo direitinho.",
         skip_send: false, delay_ms: 2000,
       });
+    }
+
+    // IMAGEM / VÍDEO / DOCUMENTO / STICKER / LOCALIZAÇÃO / CONTATO
+    const mediaKind = (() => {
+      const t = String(incomingMsgType || "").toLowerCase();
+      const raw = String(incomingText || "").toLowerCase().trim();
+      if (/^(image|imagem|foto|photo|picture|imagemessage)/.test(t) || /^\[?(imagem|foto|image|picture)\]?\s*\.?\s*$/.test(raw)) return "imagem";
+      if (/^(video|vídeo|videomessage|movie|video\/mp4)/.test(t) || /^\[?(video|vídeo)\]?\s*\.?\s*$/.test(raw)) return "vídeo";
+      if (/^(document|documento|documentmessage|pdf|application\/)/.test(t) || /^\[?(documento|document|pdf|arquivo)\]?\s*\.?\s*$/.test(raw)) return "documento";
+      if (/^(sticker|figurinha|stickermessage)/.test(t) || /^\[?(sticker|figurinha)\]?\s*\.?\s*$/.test(raw)) return "figurinha";
+      if (/^(location|localiza[cç][aã]o|locationmessage)/.test(t) || /^\[?(localiza[cç][aã]o|location)\]?\s*\.?\s*$/.test(raw)) return "localização";
+      if (/^(contact|contato|contactmessage|vcard)/.test(t) || /^\[?(contato|contact)\]?\s*\.?\s*$/.test(raw)) return "contato";
+      if (/^(gif|gifmessage)/.test(t) || /^\[?(gif)\]?\s*\.?\s*$/.test(raw)) return "gif";
+      return null;
+    })();
+    if (mediaKind) {
+      const now = Date.now();
+      const lastMedia = _lastMediaReplyAt.get(phone) || 0;
+      if (now - lastMedia < MEDIA_COOLDOWN_MS) return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
+      _lastMediaReplyAt.set(phone, now);
+      const reply = (mediaKind === "imagem" || mediaKind === "foto")
+        ? "Recebi sua *imagem*, mas no momento eu não consigo abrir imagens aqui. Pode me *descrever em texto* o que você queria me mostrar? Assim eu continuo te ajudando."
+        : mediaKind === "vídeo"
+          ? "Recebi seu *vídeo*, mas no momento eu não consigo abrir vídeos aqui. Pode me *escrever em texto* o que está acontecendo? Assim eu te oriento direito."
+          : mediaKind === "documento"
+            ? "Recebi seu *documento*, mas aqui eu não consigo abrir arquivos. Se for algo importante, pode me *resumir por texto* que eu continuo te atendendo."
+            : mediaKind === "figurinha" || mediaKind === "gif"
+              ? `Recebi sua ${mediaKind}! Pode me escrever por texto o que você quer saber?`
+              : mediaKind === "localização"
+                ? "Recebi sua localização, obrigada. Mas pra te atender me escreve por texto o que você precisa."
+                : "Recebi seu contato, obrigada. Pode me escrever por texto o que você precisa que eu continuo te ajudando.";
+      return res.json({ ok: true, reply, skip_send: false, delay_ms: 2000 });
+    }
+
+    // Filtro de mensagem de sistema (APÓS detecção de mídia real)
+    if (!incomingText || isSystemMessage(incomingText)) {
+      return res.json({ ok: true, reply: "", skip_send: true, delay_ms: 0 });
     }
 
     // DEBOUNCE
