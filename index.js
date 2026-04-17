@@ -380,12 +380,22 @@ function markFormQualified(state) {
    ou Roteiro 4 (dor neuropática / primeira vez) ou outro. */
 function detectFormTrack(formPayload, state) {
   const fd = formPayload || state?.form_data || {};
-  const hasR3 = !!(fd.ja_usa_cannabis || fd.dificuldades_tratamento || fd.gasto_mensal || fd.resolver_7dias);
-  if (hasR3) {
-    // Confirma: se já usa cannabis ou parou, é R3 (revisão)
-    const v = String(fd.ja_usa_cannabis || "").toLowerCase();
-    if (/sim|uso|atualmente|recentemente|j[aá]\s+usei/.test(v)) return "r3_revisao";
-    // Mesmo se "nunca usei" apareceu, mas tem gasto/dificuldade, trata como R3
+  const hasAnyR3Field = !!(fd.ja_usa_cannabis || fd.dificuldades_tratamento || fd.gasto_mensal || fd.resolver_7dias || fd.problema_tratado);
+  const v = String(fd.ja_usa_cannabis || "").toLowerCase();
+
+  // Detecta o sub-track pelo campo "você usa cannabis?"
+  if (hasAnyR3Field) {
+    // "Nunca usei" → primeira vez (NÃO perguntar sobre produto atual)
+    if (/nunca\s+us[ei]/.test(v)) return "r3_primeira_vez";
+    // "Sim, uso atualmente" → revisão
+    if (/sim|uso\s+atualmente|uso\s+recentemente|atualmente|recentemente/.test(v)) return "r3_revisao";
+    // "Já usei, mas parei" → retorno
+    if (/j[aá]\s+usei.*parei|j[aá]\s+gastei.*parei|parei\s+de\s+usar|parei/.test(v)) return "r3_parou";
+    // Sem ja_usa_cannabis explícito mas com outros sinais: olha o gasto
+    const gasto = String(fd.gasto_mensal || "").toLowerCase();
+    if (/nunca\s+us[ei]|n[aã]o\s+gasto|n[aã]o\s+uso/.test(gasto)) return "r3_primeira_vez";
+    if (/parei|j[aá]\s+gastei.*parei/.test(gasto)) return "r3_parou";
+    // Padrão: quem tem gasto/dificuldade mas não explicitou → revisão
     if (fd.gasto_mensal || fd.dificuldades_tratamento) return "r3_revisao";
   }
   if (fd.condition || fd.tentou_tratamento || fd.aceita_preco || fd.aceita_videochamada) return "r4_dor_neuro";
@@ -1220,6 +1230,69 @@ function greetFromForm(state) {
   return `${ola} Aqui é a Lia, da equipe do Dr. Alef Kotula — vi que você preencheu o formulário sobre ${condLabel}.\n\n${empath}\n\n${tail}`;
 }
 
+/* ── R3 PRIMEIRA VEZ: nunca usou cannabis — NÃO perguntar sobre produto ── */
+function greetPrimeiraVez(state) {
+  const nome = state.nome || extractFormFirstName(state.form_data?.nome_completo || "") || "";
+  const fd = state.form_data || {};
+  const problema = String(fd.problema_tratado || fd.condition || "").trim();
+  const gasto = parseMonthlySpend(fd.gasto_mensal || "");
+  const difs = parseDifficulties(fd.dificuldades_tratamento || "");
+
+  const ola = nome ? `Oi, ${nome}!` : "Oi!";
+
+  // Linha 1: validação específica do problema marcado no form (NÃO "me conta o que te incomoda")
+  let validation = "";
+  if (/dor\s*cr[oô]nica|cr[oô]nica/i.test(problema)) validation = "Li aqui que você tá lidando com dor crônica. Imagino o desgaste de conviver com isso todo dia.";
+  else if (/neurop[aá]tica|neuropatia/i.test(problema)) validation = "Vi que é dor neuropática — queimação, choque, formigamento. É uma das dores mais difíceis de tratar com remédio comum.";
+  else if (/ins[oô]nia|sono/i.test(problema)) validation = "Li que é insônia/ansiedade. Noite mal dormida vira dia ruim, e vira ciclo.";
+  else if (/ansiedade/i.test(problema)) validation = "Vi que é ansiedade. Quando ela aperta, ela rouba energia pra tudo.";
+  else if (/fibromialgia/i.test(problema)) validation = "Vi que é fibromialgia. Dor difusa e cansaço pesam demais — é uma condição que muita gente subestima.";
+  else if (/enxaqueca/i.test(problema)) validation = "Li que é enxaqueca. É um tipo de dor que paralisa o dia.";
+  else if (/depress[aã]o/i.test(problema)) validation = "Vi que é depressão. Peso de viver assim é real — e tem caminho.";
+  else if (/artrose|lombar|coluna|quadril/i.test(problema)) validation = "Vi que é dor articular/coluna. Tira liberdade de fazer coisa simples — levantar, caminhar, dormir bem.";
+  else validation = "Li aqui o que você preencheu. Obrigada por se abrir logo no formulário.";
+
+  // Linha 2: reflexo da frustração (dificuldade + gasto)
+  let pain = "";
+  if (difs.caro || gasto === "mais_1000" || gasto === "500_1000" || gasto === "250_500") {
+    pain = "E vi também que o custo do tratamento tá pesando — isso é o que faz a maioria desistir.";
+  } else if (gasto === "parei") {
+    pain = "Vi que você já tentou gastar e parou — faz total sentido, tratamento caro não se sustenta.";
+  } else {
+    pain = "Nunca usou cannabis medicinal até agora — tranquilo, muita gente chega aqui pela primeira vez.";
+  }
+
+  // Linha 3: pergunta de CONEXÃO (não de diagnóstico robótico)
+  const connect = pickRandom([
+    "Me conta rapidinho: há quanto tempo você convive com isso, e como tá atrapalhando o seu dia?",
+    "Antes de te explicar como o Dr. Alef pode te ajudar — me conta o quanto essa situação tá pesando no seu dia a dia?",
+    "Em uma escala rápida — essa dor/sintoma tá no dia a dia ou vem em crises? E o que você já tentou até agora?",
+  ]);
+
+  return `${ola} Aqui é a *Lia*, da equipe do *Dr. Alef Kotula* — médico especialista em cannabis medicinal.\n\n${validation} ${pain}\n\n${connect}`;
+}
+
+/* ── R3 PAROU: já usou e parou — foco em "dá pra voltar mais barato" ── */
+function greetParou(state) {
+  const nome = state.nome || extractFormFirstName(state.form_data?.nome_completo || "") || "";
+  const fd = state.form_data || {};
+  const problema = String(fd.problema_tratado || fd.condition || "").trim();
+  const ola = nome ? `Oi, ${nome}!` : "Oi!";
+
+  const validation = problema
+    ? `Li que você tentou tratar ${problema.toLowerCase()} e acabou parando.`
+    : "Vi que você já usou cannabis medicinal e acabou parando em algum momento.";
+
+  const frame = "A maioria que para é por causa do preço do óleo de farmácia ou importado — é caro demais pra manter por meses.";
+  const hook = "O Dr. Alef trabalha com *óleo de associação*, que custa *mais de 50% a menos*. É a mesma cannabis medicinal, sem o preço inflado.";
+  const connect = pickRandom([
+    "Posso te perguntar: o que te fez parar — foi o preço, o efeito, ou outra coisa?",
+    "Me conta rapidinho: quando você parou, era por causa do custo, ou também tinha algo do efeito que não funcionou?",
+  ]);
+
+  return `${ola} Aqui é a *Lia*, da equipe do *Dr. Alef Kotula*.\n\n${validation} ${frame}\n\n${connect}\n\n${hook}`;
+}
+
 /* ── R3: saudação para quem já usa cannabis e tem dificuldades ── */
 function greetFromFormR3(state) {
   const nome = state.nome || extractFormFirstName(state.form_data?.nome_completo || "") || "";
@@ -1255,10 +1328,19 @@ function greetFromFormR3(state) {
   return `${ola} Aqui é a Lia, da equipe do *Dr. Alef Kotula* — médico pós-graduado em cannabis medicinal.\n\n${empathyLine}\n\n${tail}`;
 }
 
-/* ── R3: pergunta de conexão para quem já está em cannabis ── */
+/* ── R3 REVISÃO: pergunta de conexão para quem JÁ USA cannabis ── */
 function connectQuestionR3(state) {
   const nome = state.nome ? `, ${state.nome}` : "";
+  const track = state.form_track || "";
   const difs = parseDifficulties(state.form_data?.dificuldades_tratamento || "");
+
+  // GUARDA CRÍTICA: se NÃO usa cannabis, nunca pergunta sobre produto
+  if (track === "r3_primeira_vez") {
+    return `Me conta um pouco mais${nome}: o que mais pesa hoje — a dor em si, o impacto no sono/energia, ou o custo com remédio que já tá tentando? Quero entender seu caso antes de te explicar.`;
+  }
+  if (track === "r3_parou") {
+    return `Rapidinho${nome}: quando você parou, foi mais pelo custo, pelo efeito que não veio como esperava, ou por outro motivo? Isso me ajuda a te orientar melhor.`;
+  }
 
   if (difs.caro) return `Antes de te explicar como funciona${nome}: qual produto você usa hoje e, se souber, em que concentração? Isso me ajuda a entender o que o Dr. pode revisar.`;
   if (difs.confuso) return `Pra te orientar melhor${nome}: o que mais te confunde — é o produto em si, a dose, o horário, ou não tem certeza se está sentindo efeito?`;
@@ -1522,15 +1604,41 @@ OBJEÇÕES DESTE PÚBLICO (use o argumento do óleo sempre que fizer sentido):
 REGRA CRÍTICA: Use o argumento *óleo de associação* com naturalidade sempre que custo for o tema. Seja específica: "mais de 50% mais barato", "mesma cannabis medicinal", "sem o preço inflado da farmácia". NÃO dê reframe genérico tipo "com a prescrição certa reduz o custo" — isso é vago demais. Nomeie a coisa: óleo de associação.
 ` : "";
 
-  return `Você é a *Lia*, secretária virtual humanizada do Dr. Alef Kotula (médico, cannabis medicinal). Você fala por WhatsApp.
+  const usaCannabis = String(state.form_data?.ja_usa_cannabis || "").toLowerCase();
+  const neverUsed = /nunca\s+us[ei]/.test(usaCannabis);
 
-▶ PERSONA
+  return `Você é a *Lia*, assistente de vendas humanizada do consultório do Dr. Alef Kotula (médico, cannabis medicinal). Você fala por WhatsApp. Seu papel não é só marcar consulta — é CONVERTER. O lead já passou por um formulário com múltiplas etapas, ele tá quente. Você é uma VENDEDORA consultiva: valida a dor, gera confiança, quebra objeções, e fecha.
+
+▶ PERSONA (humana, não robótica)
 - Você é uma pessoa real conversando com outra pessoa real.
-- Tom: caloroso, claro, direto, sem floreio. NUNCA robótico.
-- Mensagens curtas (1–4 linhas em geral). Quando precisar explicar algo, vá em até 6 linhas.
+- Tom: caloroso, claro, direto, sem floreio. NUNCA robótico. NUNCA começa com fórmula pronta tipo "me conta o que te incomodou mais" sem antes validar o que a pessoa JÁ TE CONTOU no formulário.
+- Mensagens curtas (1–4 linhas em geral). Quando precisar explicar, vá em até 6 linhas.
 - Use o nome da pessoa naturalmente, sem repetir em toda mensagem.
 - Não invente. Não prometa cura. Não diagnostique. Não prescreva.
 - NÃO use emojis em excesso. NUNCA assine como "Lia" ou "Att".
+
+▶ REGRA #0 — LEIA O FORMULÁRIO ANTES DE RESPONDER (CRÍTICA)
+Você TEM ACESSO ao que o lead preencheu no formulário (ver CONTEXTO DO LEAD abaixo). SEMPRE use esses dados na PRIMEIRA mensagem — valide a condição, cite o gasto, reconheça a dificuldade. NUNCA faça perguntas que o formulário já respondeu. É ofensivo fazer a pessoa se repetir.
+
+${neverUsed ? `▶ BLOQUEIO CRÍTICO — LEAD MARCOU "NUNCA USEI" CANNABIS
+Este lead NUNCA USOU cannabis medicinal. É PROIBIDO perguntar:
+- "qual produto você usa hoje"
+- "em que concentração"
+- "qual perfil — CBD puro, CBD com THC"
+- "quem prescreveu o tratamento atual"
+- "qual óleo você toma"
+Se você fizer QUALQUER uma dessas perguntas a este lead, você falhou. Em vez disso: valide a dor/condição marcada no form, explore IMPACTO NA VIDA, e depois apresente o Dr. Alef como primeiro tratamento.` : ""}
+
+▶ HABILIDADES DE VENDEDORA
+1. EXPLORAR DOR (física + emocional): "há quanto tempo convive com isso?", "como tá atrapalhando seu dia?", "o que você deixou de fazer por causa disso?"
+2. GERAR CONFIANÇA: cite credenciais do Dr. Alef (médico CRM-SP, pós-graduado internacionalmente em cannabis medicinal, Instagram @dralefkotula, site oficial, consultório físico em SP). Ofereça verificação antes.
+3. QUEBRAR OBJEÇÕES específicas de cada público. Nunca devolva objeção com frase genérica.
+4. FECHAR com frases de fechamento consultivo:
+   - "Até quando você pretende viver assim?"
+   - "Quanto tempo de vida você tá abrindo mão por causa disso?"
+   - "Se em 30 dias você tivesse redução real do sintoma, o que voltaria a fazer?"
+   - "O tratamento certo não é custo — é o que te devolve a vida que você tá perdendo."
+5. NUNCA empurrar. A dor é real, o argumento é real, a urgência é real — você só devolve o que o lead já sente.
 
 ▶ CONTEXTO DO LEAD
 - Nome: ${nome}
@@ -1898,17 +2006,32 @@ async function handleGreet(state, flags, incomingText, phone) {
   if (state.form_qualified && !state.greeted_from_form) {
     state.greeted_from_form = true;
     state.stage = "CONNECT";
+    state.followup_2h_at = Date.now() + 2 * 60 * 60 * 1000; // agenda re-engajamento se não responder em 2h
     // Roteia pelo track da campanha
+    if (state.form_track === "r3_primeira_vez") return greetPrimeiraVez(state);
+    if (state.form_track === "r3_parou") return greetParou(state);
     if (state.form_track === "r3_revisao") return greetFromFormR3(state);
     return greetFromForm(state);
   }
   // Se chegou direto sem form (orgânico)
   if (!state.nome) {
-    return `Oi! Aqui é a *Lia*, da equipe do *Dr. Alef Kotula* (médico, cannabis medicinal).\n\nMe diz seu *primeiro nome* e me conta rapidamente o que te trouxe até aqui — assim eu te oriento direito.`;
+    return `Oi! Aqui é a *Lia*, da equipe do *Dr. Alef Kotula* — médico especialista em cannabis medicinal.\n\nPra te ajudar melhor, me diz seu *primeiro nome* e o que tá te incomodando hoje — dor, insônia, ansiedade, outra coisa?`;
   }
   state.stage = "CONNECT";
-  return `Oi, ${state.nome}! Aqui é a Lia, da equipe do Dr. Alef. Me conta o que tem te incomodado mais — assim eu falo do que vai te servir.`;
+  state.followup_2h_at = Date.now() + 2 * 60 * 60 * 1000;
+  return `Oi, ${state.nome}! Aqui é a *Lia*, da equipe do *Dr. Alef Kotula* — médico especialista em cannabis medicinal.\n\nMe conta rapidinho o que tá te incomodando — o que tá afetando seu dia a dia? Assim eu te oriento direito sobre como o Dr. pode ajudar.`;
 }
+
+/* Frases de fechamento — usadas em 2º turno de CONNECT pra apertar a dor com empatia */
+const CLOSER_PHRASES = [
+  "Até quando você pretende viver assim? Porque dor/sintoma que não trata, só aumenta.",
+  "Pensa comigo: quanto tempo de vida você tá abrindo mão por causa disso? Porque cada dia que passa sem tratar, é um dia que a gente não volta.",
+  "Se em 30 dias você tivesse uma redução real no sintoma, o que você voltaria a fazer que hoje não consegue?",
+  "O que tá te impedindo de tentar um tratamento que funcione? Porque o que você tá fazendo hoje claramente não tá resolvendo.",
+  "O tratamento certo não é custo — é o que te devolve a vida que você tá perdendo.",
+];
+
+function pickCloser() { return pickRandom(CLOSER_PHRASES); }
 
 async function handleConnect(state, flags, incomingText, phone) {
   // Se ainda não tem nome (lead orgânico) e a mensagem traz nome
@@ -1926,33 +2049,65 @@ async function handleConnect(state, flags, incomingText, phone) {
     }
   }
 
-  // Após 1–2 turnos em CONNECT, ofereça naturalmente
-  state.connect_turns = (state.connect_turns || 0) + 1;
+  // Renova o follow-up de 2h a cada interação
+  state.followup_2h_at = Date.now() + 2 * 60 * 60 * 1000;
 
-  // Lead qualificado: 1 turno de validação + oferta
-  if (state.form_qualified && state.connect_turns >= 1) {
+  state.connect_turns = (state.connect_turns || 0) + 1;
+  const track = state.form_track || "";
+
+  /* ═══ R3 PRIMEIRA VEZ: 2 turnos de exploração + closer + oferta ═══ */
+  if (track === "r3_primeira_vez") {
+    if (state.connect_turns === 1) {
+      // Turno 1: validação emocional + closer + pergunta de impacto
+      const cond = state.condition || "dor_cronica";
+      const ev = EVIDENCE_DB[cond] || EVIDENCE_DB.dor_neuropatica || {};
+      const empath = pickRandom(ev.empathy || EMPATHY_POOL.pain);
+      const closer = pickCloser();
+      return `${empath}\n\n${closer}\n\nMe conta: você já tentou remédio de tarja, fisioterapia, outros tratamentos? Como foi?`;
+    }
+    // Turno 2+: entrega evidência clínica + proposta de valor + oferta
     return await openOfferText(state, phone);
   }
-  // Orgânico: até 2 turnos de descoberta antes de ofertar
+
+  /* ═══ R3 PAROU: 1-2 turnos + argumento óleo associação + oferta ═══ */
+  if (track === "r3_parou") {
+    if (state.connect_turns === 1) {
+      return `Entendi. O que a gente vê muito é: pessoa paga consulta cara, recebe prescrição de óleo de farmácia ou importado de R$400, R$600, R$800/mês — e em 2-3 meses não aguenta mais pagar.\n\nO Dr. Alef trabalha com *óleo de associação* que é *mais de 50% mais barato*, pra tratamento ser sustentável no longo prazo.\n\n${pickCloser()}`;
+    }
+    return await openOfferText(state, phone);
+  }
+
+  /* ═══ R3 REVISÃO: 1-2 turnos + proposta de valor ═══ */
+  if (track === "r3_revisao") {
+    if (state.connect_turns === 1) {
+      return connectQuestionR3(state);
+    }
+    return await openOfferText(state, phone);
+  }
+
+  /* ═══ R4 / orgânico qualificado: 2 turnos de descoberta ═══ */
+  if (state.form_qualified && state.connect_turns === 1) {
+    const cond = state.condition || "dor_neuropatica";
+    const ev = EVIDENCE_DB[cond] || EVIDENCE_DB.dor_cronica || {};
+    const empath = pickRandom(ev.empathy || EMPATHY_POOL.pain);
+    const dataLine = ev.direct_answer || "";
+    return `${empath}\n\n${dataLine}\n\n${pickCloser()}`;
+  }
+  if (state.form_qualified && state.connect_turns >= 2) {
+    return await openOfferText(state, phone);
+  }
+
+  /* ═══ Orgânico não qualificado: até 2 turnos antes da oferta ═══ */
   if (state.connect_turns >= 2) {
     return await openOfferText(state, phone);
   }
 
-  // R3: usa pergunta de conexão específica e proposta de valor
-  if (state.form_track === "r3_revisao") {
-    if (state.connect_turns <= 1) {
-      return connectQuestionR3(state);
-    }
-    // 2º turno: entrega proposta de valor + encaminha pra oferta
-    return await openOfferText(state, phone);
-  }
-
-  // Validação + 1 dado clínico curto (fluxos R4 e orgânico)
+  // Validação + 1 dado clínico + closer (fluxos R4 e orgânico)
   const cond = state.condition || "dor_neuropatica";
-  const ev = EVIDENCE_DB[cond] || EVIDENCE_DB.dor_cronica;
+  const ev = EVIDENCE_DB[cond] || EVIDENCE_DB.dor_cronica || {};
   const empath = pickRandom(ev.empathy || EMPATHY_POOL.pain);
   const dataLine = ev.direct_answer || "";
-  return `${empath}\n\n${dataLine}\n\nPosso te explicar como funciona a consulta com o Dr. Alef?`;
+  return `${empath}\n\n${dataLine}\n\n${pickCloser()}`;
 }
 
 /* openOffer: cria preference MP + checkout curto, devolve reply + followup curto */
@@ -2638,16 +2793,76 @@ async function sendFollowupMessage(phone, message, state) {
   return false;
 }
 
+/* Gera mensagem de re-engajamento 2h pra lead que parou de responder ANTES de pagar.
+   Varia pelo track da campanha e aperta a dor suavemente. */
+function buildPrePay2hFollowup(state) {
+  const nome = state.nome ? `, ${state.nome}` : "";
+  const track = state.form_track || "";
+  const options = [];
+
+  if (track === "r3_primeira_vez") {
+    options.push(
+      `Oi${nome}. Me sumi aqui? Só queria te perguntar uma coisa: o que tá te fazendo adiar — é desconfiança, preço ou outra coisa? Fala a verdade que eu te ajudo.`,
+      `Oi${nome}, tô voltando porque fiquei pensando no que você me contou. Até quando você pretende viver com essa dor? Só você pode decidir mudar isso.`,
+    );
+  } else if (track === "r3_parou") {
+    options.push(
+      `Oi${nome}. Você já parou uma vez por causa do preço — não deixa isso te impedir de voltar. O óleo de associação do Dr. Alef é mais de 50% mais barato que o que você pagava antes.`,
+      `Oi${nome}. Só passando pra lembrar: não precisa gastar o que você gastava antes. O Dr. trabalha com óleo de associação justamente pra caber no bolso.`,
+    );
+  } else if (track === "r3_revisao") {
+    options.push(
+      `Oi${nome}. Fiquei pensando aqui no que você tá gastando todo mês com o óleo. Com óleo de associação costuma cair pela metade — vale a consulta só pela economia.`,
+      `Oi${nome}, tô voltando aqui. Você já investe muito no tratamento todo mês — uma revisão do Dr. pode economizar bastante. Quer que eu te mande o link?`,
+    );
+  } else {
+    options.push(
+      `Oi${nome}. Só passando pra saber — consegue falar agora ou prefere mais tarde?`,
+      `Oi${nome}, tô por aqui. Qualquer dúvida que tiver sobre a consulta, me chama.`,
+    );
+  }
+  return pickRandom(options);
+}
+
 app.get("/cron/followups", async (_req, res) => {
   try {
+    const now = Date.now();
+    const TWO_H = 2*3600*1000, TWENTY_FOUR_H = 24*3600*1000, SEVENTY_TWO_H = 72*3600*1000;
+    let sent = 0;
+
+    /* ── TRILHA 1: Leads PRE-PAY (GREET / CONNECT / OFFER) que ficaram silenciosos ── */
+    const prePay = await pool.query(
+      `SELECT phone, state FROM wa_users
+       WHERE state->>'stage' IN ('GREET','CONNECT','OFFER')
+       AND (state->'payment'->>'status' IS NULL OR state->'payment'->>'status' NOT IN ('approved'))
+       AND state->>'pre_pay_2h_sent' IS NULL`
+    );
+    for (const row of prePay.rows) {
+      const state = row.state || {};
+      const phone = row.phone;
+      const lastSent = state.last_sent_at || 0;
+      if (!lastSent) continue;
+      const elapsed = now - lastSent;
+      // Só dispara se passou 2h SEM o lead responder (last_user_message_at seria ideal; usamos last_sent_at como proxy)
+      if (elapsed < TWO_H) continue;
+      // Evita enviar de madrugada (22h–8h horário Brasília)
+      const hour = new Date().getUTCHours() - 3; // BR = UTC-3
+      const brHour = (hour + 24) % 24;
+      if (brHour >= 22 || brHour < 8) continue;
+      const msg = buildPrePay2hFollowup(state);
+      const ok = await sendFollowupMessage(phone, msg, state);
+      state.pre_pay_2h_sent = true;
+      state.pre_pay_2h_at = now;
+      await saveUserState(phone, state);
+      if (ok) sent++;
+    }
+
+    /* ── TRILHA 2: Leads PAY_WAIT (pendente de pagamento) — followup clássico ── */
     const { rows } = await pool.query(
       `SELECT phone, state FROM wa_users
        WHERE state->>'stage' IN ('PAY_WAIT')
        AND state->'payment'->>'status' IN ('pending', 'pending_pix')`
     );
-    let sent = 0;
-    const now = Date.now();
-    const TWO_H = 2*3600*1000, TWENTY_FOUR_H = 24*3600*1000, SEVENTY_TWO_H = 72*3600*1000;
     for (const row of rows) {
       const state = row.state || {};
       const phone = row.phone;
@@ -2665,7 +2880,7 @@ app.get("/cron/followups", async (_req, res) => {
         message = `Oi${nome}, tudo bem? Se tiver qualquer dúvida sobre a consulta, tô aqui. O link continua ativo: ${link}`;
         flagKey = "followup_2_sent";
       } else if (elapsed >= TWO_H && !state.followup_1_sent) {
-        message = `Oi${nome}. Vi que ficou pendente. Se precisar de ajuda com alguma coisa, pode me chamar.`;
+        message = `Oi${nome}. Vi que o link ficou pendente. Se travou algo no pagamento ou quiser outra forma, me chama aqui que eu te ajudo.\n\n${link}`;
         flagKey = "followup_1_sent";
       }
       if (message && flagKey) {
@@ -2676,7 +2891,7 @@ app.get("/cron/followups", async (_req, res) => {
         if (ok) sent++;
       }
     }
-    return res.json({ ok: true, processed: rows.length, sent });
+    return res.json({ ok: true, processed_prepay: prePay.rows.length, processed_paywait: rows.length, sent });
   } catch (err) {
     console.error("❌ /cron/followups:", err);
     return res.status(500).json({ ok: false, error: err.message });
