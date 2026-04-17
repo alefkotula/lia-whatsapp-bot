@@ -853,6 +853,9 @@ function detectIntent(text) {
     isSubstantiveMessage: (t.length >= 120) || ((text.match(/\?/g) || []).length >= 2) || ((t.match(/[.,]/g) || []).length >= 3 && t.length >= 60),
     hasMultipleAsks: (text.match(/\?/g) || []).length >= 2 || /\b(e|tamb[eé]m|al[eé]m|outra\s+coisa|outra\s+pergunta|segunda\s+pergunta|mais\s+uma)\b/.test(t) && /\?/.test(text || ""),
     sharesPersonalStory: t.length >= 100 && /\b(meu|minha|eu (tenho|sofro|sou|tive|fiz|uso|tomo|estou|estava|perdi|perdo|convivo)|sou\s+portador|portadora)\b/.test(t),
+
+    /* V30.2 — compromisso com data específica (lead tá postergando pagamento com justificativa real) */
+    schedulingCommitment: /\b(quarto\s+dia\s+[uú]til|quinto\s+dia\s+[uú]til|pr[oó]ximo\s+(dia|m[eê]s|final\s+de\s+semana)|dia\s+(0?[1-9]|[12][0-9]|3[01])\b|quando\s+(eu\s+)?receber|quando\s+cair\s+(o|meu)\s+sal[aá]rio|assim\s+que\s+receber|assim\s+que\s+cair|semana\s+que\s+vem|m[eê]s\s+que\s+vem|pr[oó]xima\s+semana|pr[oó]ximo\s+m[eê]s|no\s+final\s+do\s+m[eê]s|depois\s+do\s+dia|ap[oó]s\s+o\s+dia|vou\s+fazer\s+(a\s+)?consulta\s+(dia|em|no|depois)|farei\s+(a\s+)?consulta|farei\s+uma\s+consulta)\b/.test(t),
   };
 }
 
@@ -870,6 +873,209 @@ function classifyLead(flags, text, state) {
 }
 
 function hasQuestion(text) { return /\?/.test(text || ""); }
+
+/* ═══════════════════════════════════════════════════════════════════
+   V30.3 — POSTPONEMENT DETECTION
+   Detecta quando o lead marca um compromisso de retomar depois
+   (financeiro, data específica, evento, decisional, vago) e extrai
+   a referência temporal. Substitui o regex binário `schedulingCommitment`
+   por classificação estruturada que permite resposta adaptativa.
+   ═══════════════════════════════════════════════════════════════════ */
+
+function _numFromPtWord(s) {
+  const m = String(s || "").match(/\d+/);
+  if (m) return parseInt(m[0], 10);
+  const words = {
+    primeiro:1, segundo:2, terceiro:3, quarto:4, quinto:5, sexto:6,
+    setimo:7, "sétimo":7, oitavo:8, nono:9, decimo:10, "décimo":10,
+    um:1, uma:1, dois:2, duas:2, tres:3, "três":3, quatro:4, cinco:5,
+    seis:6, sete:7, oito:8, nove:9, dez:10, onze:11, doze:12,
+    quinze:15, vinte:20, trinta:30
+  };
+  const low = String(s || "").toLowerCase();
+  for (const w in words) if (new RegExp(`\\b${w}\\b`).test(low)) return words[w];
+  return null;
+}
+
+function detectPostponement(text) {
+  const t = (norm(text || "")).toLowerCase();
+  if (!t) return { detected: false };
+
+  // ─── FINANCIAL ─────────────────────────────────────────────────
+  const mBusDay = t.match(/\b((?:primeiro|segundo|terceiro|quarto|quinto|sexto|s[eé]timo|oitavo|nono|d[eé]cimo|\d+)[º°o]?)\s*dia\s*[uú]til/);
+  if (mBusDay) {
+    const n = _numFromPtWord(mBusDay[1]) || 5;
+    return { detected: true, type: "financial", timeRef: { kind: "business_days", value: n }, rawMatch: mBusDay[0] };
+  }
+
+  if (/\b(receber|cair|chegar|entrar|vir)\s+(o\s+|meu\s+|a\s+)?sal[aá]rio\b|\bdepois\s+do\s+pagamento\b|\bdia\s+do\s+(meu\s+)?sal[aá]rio\b|\bquando\s+cair\s+o\s+pg\b|\b(depois\s+que|quando)\s+(eu\s+)?receber\b(?!\s+(o\s+)?resultado|\s+(o\s+)?retorno|\s+(o\s+)?laudo|\s+(a\s+)?resposta)/.test(t)) {
+    return { detected: true, type: "financial", timeRef: { kind: "salary" }, rawMatch: "salário" };
+  }
+
+  if (/\b(inss|aposentadoria|aposentar|benef[ií]cio|bpc|bolsa\s*fam[ií]lia|aux[ií]lio|pens[aã]o)\b/.test(t)) {
+    return { detected: true, type: "financial", timeRef: { kind: "benefit" }, rawMatch: "benefício" };
+  }
+
+  if (/\b(13[º°o]?\b|d[eé]cimo\s*terceiro|decimo terceiro)\b/.test(t)) {
+    return { detected: true, type: "financial", timeRef: { kind: "thirteenth" }, rawMatch: "13º" };
+  }
+
+  if (/\bquinzena\b/.test(t)) {
+    return { detected: true, type: "financial", timeRef: { kind: "fortnight" }, rawMatch: "quinzena" };
+  }
+
+  if (/\b(virada\s+do\s+m[eê]s|fim\s+do\s+m[eê]s|final\s+do\s+m[eê]s|m[eê]s\s+que\s+vem|pr[oó]ximo\s+m[eê]s|outro\s+m[eê]s|m[eê]s\s+que\s+entra)\b/.test(t)) {
+    return { detected: true, type: "financial", timeRef: { kind: "next_month" }, rawMatch: "próximo mês" };
+  }
+
+  if (/\b(quando\s+(eu\s+|a\s+gente\s+)?tiver\s+(o\s+|a\s+)?(dinheiro|grana|condi[cç][aã]o)|quando\s+juntar|quando\s+conseguir\s+(o\s+dinheiro|a\s+grana|juntar)|juntar\s+a\s+grana|assim\s+que\s+conseguir|quando\s+der\s+pra\s+pagar|sem\s+condi[cç][oõ]es\s+agora|t[oô]\s+sem\s+dinheiro)\b/.test(t)) {
+    return { detected: true, type: "financial", timeRef: { kind: "when_possible" }, rawMatch: "quando conseguir" };
+  }
+
+  // ─── DATED ─────────────────────────────────────────────────────
+  const mDay = t.match(/\b(?:dia|a partir do dia|depois do dia|ap[oó]s o dia|no dia)\s+(\d{1,2})(?!\s*[uú]til)/);
+  if (mDay) {
+    const d = parseInt(mDay[1], 10);
+    if (d >= 1 && d <= 31) {
+      return { detected: true, type: "dated", timeRef: { kind: "month_day", value: d }, rawMatch: mDay[0] };
+    }
+  }
+
+  const mDate = t.match(/\b(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?\b/);
+  if (mDate) {
+    return { detected: true, type: "dated", timeRef: { kind: "date_literal", value: mDate[0] }, rawMatch: mDate[0] };
+  }
+
+  const mAhead = t.match(/\bdaqui\s+(?:a\s+)?(\d+|uma?|dois|duas|tr[eê]s|quatro|cinco|seis|sete|oito|nove|dez|quinze)\s*(dia|dias|semana|semanas|m[eê]s|m[eê]ses)\b/);
+  if (mAhead) {
+    const n = _numFromPtWord(mAhead[1]) || 1;
+    const unit = /semana/.test(mAhead[2]) ? "weeks" : /m[eê]s/.test(mAhead[2]) ? "months" : "days";
+    return { detected: true, type: "dated", timeRef: { kind: "ahead", unit, value: n }, rawMatch: mAhead[0] };
+  }
+
+  if (/\b(semana\s+que\s+vem|pr[oó]xima\s+semana|outra\s+semana|semana\s+que\s+entra)\b/.test(t)) {
+    return { detected: true, type: "dated", timeRef: { kind: "nextweek" }, rawMatch: "semana que vem" };
+  }
+
+  const mWk = t.match(/\b(segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)(?:-feira|\s+feira)?\b/);
+  if (mWk && /\b(pr[oó]xim[ao]|que\s+vem|na\s+pr[oó]xima)\b/.test(t)) {
+    return { detected: true, type: "dated", timeRef: { kind: "next_weekday", value: mWk[1] }, rawMatch: mWk[0] };
+  }
+
+  // ─── EVENT-BASED ───────────────────────────────────────────────
+  if (/\b(depois\s+do\s+feriado|ap[oó]s\s+o\s+feriado|passando\s+o\s+feriado|passar\s+o\s+feriado)\b/.test(t)) {
+    return { detected: true, type: "event", timeRef: { kind: "holiday" }, rawMatch: "feriado" };
+  }
+
+  const mEvt = t.match(/\b(cirurgia|opera[cç][aã]o|procedimento|exame|viagem|f[eé]rias|mudan[cç]a|reuni[aã]o|reabilita[cç][aã]o|interna[cç][aã]o|tratamento\s+(que\s+)?fa[cç]o)\b/);
+  if (mEvt && /\b(depois|ap[oó]s|quando\s+(voltar|acabar|terminar|passar|melhorar))\b/.test(t)) {
+    return { detected: true, type: "event", timeRef: { kind: "event_end", value: mEvt[1] }, rawMatch: mEvt[0] };
+  }
+
+  if (/\b(depois\s+do?\s+(resultado|retorno|laudo|resposta)|quando\s+(sair|chegar|vier|receber)\s+(o|a)\s+(resultado|retorno|laudo|resposta)|quando\s+(eu\s+)?receber\s+(o|a)\s+(resultado|retorno|laudo|resposta)|depois\s+que\s+(eu\s+)?receber\s+(o|a)\s+(resultado|retorno|laudo|resposta)|depois\s+que\s+o\s+(m[eé]dico|doutor)\s+(me\s+)?ver)\b/.test(t)) {
+    return { detected: true, type: "event", timeRef: { kind: "medical_pending" }, rawMatch: "resultado/consulta médica" };
+  }
+
+  // ─── DECISIONAL ────────────────────────────────────────────────
+  if (/\b(conversar|falar|ver|consultar|combinar|alinhar)\s+com\s+(m(eu|inha)|a|o|os|as)\s+(esposa|esposo|marido|mulher|companheir[ao]|fam[ií]lia|filh[oa]s?|m[aã]e|pai|irm[aã]o|irm[aã]|m[eé]dico|doutor[a]?|namorad[oa])/.test(t)) {
+    return { detected: true, type: "decisional", timeRef: { kind: "consult_family" }, rawMatch: "conversar com família/médico" };
+  }
+
+  if (/\b(vou\s+(pensar|ver|analisar|avaliar|decidir)|preciso\s+(pensar|ver|analisar|avaliar|decidir|me\s+organizar)|deixa\s+eu\s+(pensar|ver)|ainda\s+estou\s+pensando|tenho\s+que\s+pensar)\b/.test(t)) {
+    return { detected: true, type: "decisional", timeRef: { kind: "think" }, rawMatch: "pensar" };
+  }
+
+  // ─── VAGUE ─────────────────────────────────────────────────────
+  if (/\b(mais\s+tarde|daqui\s+a\s+pouco|mais\s+pra\s+frente|depois\s+eu\s+volto|outra\s+hora|outro\s+dia|qualquer\s+hora|quando\s+puder|quando\s+der|agora\s+n[aã]o|n[aã]o\s+agora|mais\s+pra?\s+frente)\b/.test(t)) {
+    return { detected: true, type: "vague", timeRef: { kind: "later" }, rawMatch: "mais tarde" };
+  }
+
+  return { detected: false };
+}
+
+function estimateCommitmentTimestamp(timeRef, nowMs = Date.now()) {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = new Date(nowMs);
+  if (!timeRef || !timeRef.kind) return nowMs + 3 * DAY;
+
+  const addDaysTo = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x.getTime(); };
+  const nthBusinessDay = (y, m, n) => {
+    const d = new Date(y, m, 1);
+    let counted = 0;
+    while (counted < n) {
+      const dow = d.getDay();
+      if (dow !== 0 && dow !== 6) counted += 1;
+      if (counted < n) d.setDate(d.getDate() + 1);
+    }
+    return d.getTime();
+  };
+
+  switch (timeRef.kind) {
+    case "business_days": {
+      const n = Math.max(1, Math.min(20, timeRef.value || 5));
+      let ts = nthBusinessDay(now.getFullYear(), now.getMonth(), n);
+      if (ts < nowMs - DAY) ts = nthBusinessDay(now.getFullYear(), now.getMonth() + 1, n);
+      return ts + DAY; // followup 1 dia depois do compromisso
+    }
+    case "salary":         return addDaysTo(new Date(now.getFullYear(), now.getMonth() + 1, 5), 1);
+    case "benefit":        return addDaysTo(new Date(now.getFullYear(), now.getMonth() + 1, 2), 1);
+    case "thirteenth":     return new Date(now.getFullYear(), 11, 15).getTime();
+    case "fortnight":      return nowMs + 15 * DAY;
+    case "next_month":     return new Date(now.getFullYear(), now.getMonth() + 1, 3).getTime();
+    case "when_possible":  return nowMs + 7 * DAY;
+    case "month_day": {
+      const d = Math.max(1, Math.min(31, timeRef.value || 1));
+      const cand = new Date(now.getFullYear(), now.getMonth(), d).getTime();
+      return (cand < nowMs ? new Date(now.getFullYear(), now.getMonth() + 1, d).getTime() : cand) + DAY;
+    }
+    case "date_literal":   return nowMs + 5 * DAY;
+    case "ahead": {
+      const v = timeRef.value || 1;
+      if (timeRef.unit === "weeks")  return nowMs + v * 7 * DAY + DAY;
+      if (timeRef.unit === "months") return nowMs + v * 30 * DAY;
+      return nowMs + v * DAY + DAY;
+    }
+    case "nextweek":       return nowMs + 8 * DAY;
+    case "next_weekday":   return nowMs + 7 * DAY;
+    case "holiday":        return nowMs + 4 * DAY;
+    case "event_end":      return nowMs + 7 * DAY;
+    case "medical_pending":return nowMs + 10 * DAY;
+    case "think":          return nowMs + 2 * DAY;
+    case "consult_family": return nowMs + 2 * DAY;
+    case "later":          return nowMs + 1 * DAY;
+    default:               return nowMs + 3 * DAY;
+  }
+}
+
+function _echoPostponement(timeRef) {
+  if (!timeRef) return "quando fizer sentido pra você";
+  switch (timeRef.kind) {
+    case "business_days":  return `até o ${timeRef.value}º dia útil`;
+    case "salary":         return "assim que o salário cair";
+    case "benefit":        return "quando o benefício cair";
+    case "thirteenth":     return "quando o 13º chegar";
+    case "fortnight":      return "na próxima quinzena";
+    case "next_month":     return "quando virar o mês";
+    case "when_possible":  return "quando conseguir se organizar";
+    case "month_day":      return `a partir do dia ${timeRef.value}`;
+    case "date_literal":   return `na data que você combinou (${timeRef.value})`;
+    case "ahead":          return "no prazo que você se programou";
+    case "nextweek":       return "na próxima semana";
+    case "next_weekday":   return `na ${timeRef.value} que vem`;
+    case "holiday":        return "depois do feriado";
+    case "event_end": {
+      const evt = String(timeRef.value || "compromisso");
+      const FEM = new Set(["cirurgia","operacao","operação","viagem","mudança","mudanca","reunião","reuniao","reabilitação","reabilitacao","internação","internacao","consulta"]);
+      const art = FEM.has(evt) ? "dessa" : "desse";
+      return `depois ${art} ${evt}`;
+    }
+    case "medical_pending":return "quando esse acompanhamento chegar num ponto certo";
+    case "think":          return "quando tiver pensado com calma";
+    case "consult_family": return "depois que conversar em casa";
+    case "later":
+    default:               return "quando fizer sentido pra você";
+  }
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    SLOT MANAGEMENT
@@ -1537,6 +1743,68 @@ function cvvReply() {
   return "Eu sinto muito que você esteja passando por isso. Por favor, ligue agora pro *CVV — 188* (24h, gratuito, sigiloso). Se quiser, também procure um *pronto-socorro*. Você não está só.";
 }
 
+/* V30.3 — Resposta adaptativa ao compromisso futuro do lead
+   Usa detectPostponement() (financial/dated/event/decisional/vague) + timeRef
+   pra escolher tom, eco da referência temporal e seguir. Salva commitment
+   em state pra followup contextualizado. */
+function postponementReply(state, detection, incomingText) {
+  const nome = state.nome || "";
+  const nomeV = nome ? `, ${nome}` : "";
+  const kind = detection?.timeRef?.kind || "later";
+  const echo = _echoPostponement(detection?.timeRef);
+
+  state.commitment = {
+    type: detection?.type || "vague",
+    timeRef: detection?.timeRef || { kind: "later" },
+    estimated_at: estimateCommitmentTimestamp(detection?.timeRef || { kind: "later" }),
+    raw_text: String(incomingText || "").slice(0, 240),
+    saved_at: Date.now(),
+  };
+  state.followup_needed_at = state.commitment.estimated_at;
+  state.scheduling_committed = true;
+
+  switch (detection?.type) {
+    case "financial":
+      return pickRandom([
+        `Entendi${nomeV}. Faz total sentido esperar ${echo} — não faz sentido comprometer o orçamento antes da hora. Fica combinado assim: quando chegar o dia, me avisa aqui que eu te mando o link atualizado. Qualquer dúvida sobre o tratamento nesse meio tempo, pode mandar.`,
+        `Tranquilo${nomeV}. Então deixa combinado: ${echo}, você me chama aqui que eu te passo o link e seguimos. Se surgir alguma dúvida antes, tô por perto.`,
+      ]);
+
+    case "dated":
+      return pickRandom([
+        `Combinado${nomeV}. Te espero ${echo}. Quando chegar o dia, me manda uma mensagem aqui que eu te envio o link atualizado e a gente agenda o horário. Se tiver dúvida antes, me chama.`,
+        `Então fica assim${nomeV}: ${echo}, você me avisa e a gente fecha. Tô por aqui até lá pra qualquer dúvida.`,
+      ]);
+
+    case "event":
+      return pickRandom([
+        `Sem problema${nomeV}. Faz sentido resolver isso primeiro. ${capitalizeFirst(echo)}, me chama aqui que a gente retoma sem atropelar nada. Enquanto isso, qualquer pergunta sobre o tratamento, manda.`,
+        `Beleza${nomeV}. Prioriza o que é urgente agora, ${echo} a gente segue. Tô por aqui.`,
+      ]);
+
+    case "decisional":
+      if (kind === "consult_family") {
+        return pickRandom([
+          `Claro${nomeV}, decisão assim é pra se conversar mesmo. Se quiser, posso te mandar um resumo curto do que o Dr. Alef prescreve e como funciona a consulta — aí fica mais fácil mostrar em casa. Quando tiverem alinhado, me avisa aqui.`,
+          `Faz todo sentido${nomeV}. Se ajudar, te mando um material explicando o tratamento pra você ler junto com a família. Quando decidirem, é só voltar aqui.`,
+        ]);
+      }
+      return pickRandom([
+        `Tranquilo${nomeV}. Pensa com calma — decisão boa é a que a gente toma sem pressão. Se alguma dúvida ajudar a clarear, pode me mandar. Quando decidir, volta aqui que a gente segue.`,
+        `Sem pressa${nomeV}. Pensa com cuidado. Se quiser tirar alguma dúvida antes de decidir, pode mandar à vontade.`,
+      ]);
+
+    case "vague":
+    default:
+      return pickRandom([
+        `Tranquilo${nomeV}. Quando quiser retomar, me manda mensagem aqui que eu te passo o link atualizado. Tô por perto.`,
+        `Beleza${nomeV}. Fica à vontade pra voltar quando fizer sentido. Tô por aqui.`,
+      ]);
+  }
+}
+
+function capitalizeFirst(s) { return String(s || "").replace(/^./, (c) => c.toUpperCase()); }
+
 function farewellReply(state) {
   const nome = state.nome ? `, ${state.nome}` : "";
   return pickRandom([
@@ -1827,15 +2095,54 @@ function updateConversationHistory(state, userMsg, botMsg) {
   if (state.conversation_history.length > 30) state.conversation_history = state.conversation_history.slice(-30);
 }
 
+/* V30.2 — anti-repeat hard guard: compara com as últimas 3 respostas do bot,
+   diversifica progressivamente e, após 2 repetições, CEDE graciosamente. */
+const DIVERSIFY_POOL = [
+  (nome) => `${nome}fica à vontade pra me responder quando puder, sem pressa.`,
+  (nome) => `${nome}tô por aqui quando quiser continuar. Qualquer dúvida, me chama.`,
+  (nome) => `${nome}já vi sua resposta, obrigada. Se precisar, eu fico à disposição.`,
+  (nome) => `${nome}combinado. Quando decidir seguir, me avisa.`,
+  (nome) => `${nome}tranquilo. Tô aqui pra ajudar no que precisar.`,
+];
+
 async function ensureNoRepeat(reply, state, incomingText, flags) {
   if (!reply) return reply;
-  const last = state.last_bot_reply || "";
-  if (similar(last, reply)) {
-    // pequeno fallback: reformulação curta
-    const nome = state.nome ? `${state.nome}, ` : "";
-    return `${nome}me ajuda a entender — o que está pesando mais agora?`;
+  const nome = state.nome ? `${state.nome}, ` : "";
+
+  // Histórico das últimas 3 respostas do bot (de conversation_history + last_bot_reply)
+  const hist = (state.conversation_history || []).slice(-4).map(t => t.bot || "").filter(Boolean);
+  const last3 = [state.last_bot_reply || "", ...hist].filter(Boolean).slice(0, 3);
+
+  let repeatCount = 0;
+  for (const prev of last3) {
+    if (similar(prev, reply)) repeatCount++;
   }
-  return reply;
+
+  if (repeatCount === 0) {
+    // Reset contador se não repetiu
+    state.repeat_strike = 0;
+    return reply;
+  }
+
+  // Incrementa o "strike" de repetição
+  state.repeat_strike = (state.repeat_strike || 0) + 1;
+
+  // 1ª repetição: diversifica com item do pool que ainda não foi usado
+  if (state.repeat_strike === 1) {
+    const used = new Set((state.diversify_used || []));
+    const available = DIVERSIFY_POOL.filter((_, i) => !used.has(i));
+    const pool = available.length ? available : DIVERSIFY_POOL;
+    const idx = Math.floor(Math.random() * pool.length);
+    const picked = pool[idx];
+    const globalIdx = DIVERSIFY_POOL.indexOf(picked);
+    state.diversify_used = [...used, globalIdx];
+    return picked(nome);
+  }
+
+  // 2ª+ repetição: fecha a conversa graciosamente e agenda followup de 24h
+  state.followup_needed_at = Date.now() + 24 * 60 * 60 * 1000;
+  state.repeat_strike = 0;
+  return `${nome}acho que já te passei o essencial por enquanto. Quando você estiver pronto(a), é só me chamar aqui — tô à disposição.`;
 }
 
 function computeHumanDelay(flags, state) {
@@ -1972,7 +2279,18 @@ async function processLiaMessage(phone, incomingText, meta = {}) {
     return await finalize(state, phone, incomingText, reply, flags);
   }
 
-  // Sleepy / wantsLater / fim de papo
+  // V30.3 — Postponement estruturado (compromisso futuro: financeiro, data, evento, decisional, vago)
+  // Rodar antes do catch-all de sleepy/wantsLater pra extrair referência temporal
+  // e responder com eco específico + followup calculado.
+  if (!["PAY_WAIT","POST_PAY_DATA","SCHEDULE","CONFIRMED"].includes(state.stage) && state.payment?.status !== "approved") {
+    const postpone = detectPostponement(incomingText);
+    if (postpone.detected) {
+      reply = postponementReply(state, postpone, incomingText);
+      return await finalize(state, phone, incomingText, reply, flags);
+    }
+  }
+
+  // Sleepy / wantsLater / fim de papo (fallback quando nenhum compromisso estruturado foi detectado)
   if (flags.isSleepy || flags.wantsLater || flags.endsConversation) {
     state.followup_needed_at = Date.now() + 24 * 60 * 60 * 1000;
     reply = farewellReply(state);
@@ -2877,6 +3195,42 @@ async function sendFollowupMessage(phone, message, state) {
   return false;
 }
 
+/* V30.3 — Followup quando o compromisso do lead chega (ex: "quarto dia útil",
+   "quando cair o salário", "semana que vem"). Usa state.commitment pra mandar
+   mensagem contextualizada que referencia a razão que ele mesmo deu. */
+function buildCommitmentFollowup(state) {
+  const nome = state.nome ? `, ${state.nome}` : "";
+  const c = state.commitment || {};
+  const kind = c.timeRef?.kind || "later";
+
+  if (c.type === "financial") {
+    if (kind === "business_days") return `Oi${nome}. Hoje é o dia que combinamos — o ${c.timeRef.value}º dia útil chegou. Quer que eu te mande o link da consulta pra a gente fechar?`;
+    if (kind === "salary")        return `Oi${nome}. Passei pra lembrar — quando você me escreveu, falou que ia dar conta quando o salário caísse. Se já caiu, posso te mandar o link da consulta.`;
+    if (kind === "benefit")       return `Oi${nome}. Lembrei de te chamar — você tinha combinado de retomar quando o benefício caísse. Já entrou? Posso te mandar o link.`;
+    if (kind === "fortnight")     return `Oi${nome}. Chegamos na quinzena que você tinha falado. Quer que eu te mande o link pra agendar?`;
+    if (kind === "next_month")    return `Oi${nome}. Virou o mês — você tinha me pedido pra voltar nessa data. Quer seguir com a consulta?`;
+    return `Oi${nome}. Tô voltando aqui conforme você me pediu. Quer que eu te mande o link da consulta?`;
+  }
+
+  if (c.type === "dated") {
+    if (kind === "month_day")  return `Oi${nome}. Chegou o dia ${c.timeRef.value} — quando você me escreveu, falou que ia retomar a partir dessa data. Quer que eu te mande o link?`;
+    if (kind === "nextweek")   return `Oi${nome}. Voltando aqui, como você tinha pedido na semana passada. Quer seguir com a consulta?`;
+    return `Oi${nome}. Tô voltando como combinado. Quer que eu te mande o link da consulta pra a gente fechar?`;
+  }
+
+  if (c.type === "event") {
+    if (kind === "holiday") return `Oi${nome}. Feriado passou — quer que a gente retome a consulta?`;
+    return `Oi${nome}. Tô voltando aqui — espero que aquele compromisso já tenha sido resolvido. Quer seguir com a consulta?`;
+  }
+
+  if (c.type === "decisional") {
+    if (kind === "consult_family") return `Oi${nome}. Só passando pra saber — conseguiu conversar em casa sobre a consulta? Qualquer dúvida que ficou, pode me mandar.`;
+    return `Oi${nome}. Lembrei de você. Conseguiu pensar com calma? Se quiser seguir ou se ficou alguma dúvida, tô aqui.`;
+  }
+
+  return `Oi${nome}. Só passando pra saber se você ainda quer retomar a conversa sobre a consulta.`;
+}
+
 /* Gera mensagem de re-engajamento 2h pra lead que parou de responder ANTES de pagar.
    Varia pelo track da campanha e aperta a dor suavemente. */
 function buildPrePay2hFollowup(state) {
@@ -2975,7 +3329,31 @@ app.get("/cron/followups", async (_req, res) => {
         if (ok) sent++;
       }
     }
-    return res.json({ ok: true, processed_prepay: prePay.rows.length, processed_paywait: rows.length, sent });
+    /* ── TRILHA 3: Leads com commitment (postponement) — dispara no dia que o lead combinou ── */
+    const committed = await pool.query(
+      `SELECT phone, state FROM wa_users
+       WHERE state->'commitment' IS NOT NULL
+       AND (state->>'commitment_followup_sent' IS NULL)
+       AND (state->'payment'->>'status' IS NULL OR state->'payment'->>'status' NOT IN ('approved'))`
+    );
+    for (const row of committed.rows) {
+      const state = row.state || {};
+      const phone = row.phone;
+      const c = state.commitment;
+      if (!c?.estimated_at) continue;
+      if (now < c.estimated_at) continue;
+      // Janela diurna BR
+      const brHour = ((new Date().getUTCHours() - 3) + 24) % 24;
+      if (brHour >= 21 || brHour < 9) continue;
+      const msg = buildCommitmentFollowup(state);
+      const ok = await sendFollowupMessage(phone, msg, state);
+      state.commitment_followup_sent = true;
+      state.commitment_followup_at = now;
+      await saveUserState(phone, state);
+      if (ok) sent++;
+    }
+
+    return res.json({ ok: true, processed_prepay: prePay.rows.length, processed_paywait: rows.length, processed_commitment: committed.rows.length, sent });
   } catch (err) {
     console.error("❌ /cron/followups:", err);
     return res.status(500).json({ ok: false, error: err.message });
