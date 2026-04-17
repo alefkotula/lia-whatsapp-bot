@@ -845,6 +845,14 @@ function detectIntent(text) {
     hasQuestion: /\?/.test(text || ""),
     shortAffirm: isAffirmative(text),
     casualAck:   /^(blz|beleza|massa|legal|bacana|show|otimo|ótimo|perfeito|valeu|brigad[oa]|obrigad[oa])\.?$/i.test(t.trim()),
+
+    /* V30.1 — flags novos pra evitar dump de template em pergunta substantiva */
+    mentionsSeriousCondition: /\b(esclerose\s+m[uú]ltipla|esclerose|parkinson|alzheimer|c[aâ]ncer|cancer|leucemia|linfoma|epilepsia|epileps[ií]a|autism[oa]|tea|sindrome|s[ií]ndrome|avc|derrame|hiv|lupus|l[uú]pus|artrite\s+reumatoide|reumatoide|crohn|colite|demencia|dem[eê]ncia|parkinsonismo|par[aá]lise|hemiplegia|amputa[çc][aã]o|amputad|lesao\s+medular|les[aã]o\s+medular|necessidades\s+especiais|deficiente|deficiencia|defici[eê]ncia)\b/i.test(t),
+    asksAboutPrescription: /\b(prescri[çc][aã]o|prescre(ve|vo|ver)|receita|laudo|importar|hc|flor\s+(seca|para\s+vaporiza[çc][aã]o)|vaporiza[çc][aã]o|vaporiz|\bthc\b|\bcbd\b|\bcbg\b|cbn|perfil\s+do\s+[oó]leo|concentra[çc][aã]o|mg|full\s+spectrum|broad\s+spectrum|isolado|isolada|espectro\s+completo|dose|posologia|dosagem)\b/.test(t),
+    mentionsOwnMedication: /\b(tomo|uso\s+atualmente|estou\s+tomando|estou\s+usando|uso\s+\w+pentina|gabapentina|pregabalina|amitriptilina|tramadol|codeina|morfina|oxicodona|duloxetina|venlafaxina|sertralina|fluoxetina|escitalopram|clonazepam|rivotril|alprazolam|diazepam|quetiapina|olanzapina|risperidona|lamotrigina|carbamazepina|levetiracetam|topiramato|baclofeno|tizanidina|metilfenidato|ritalina|concerta|ancitalopram|citalopram)\b/.test(t),
+    isSubstantiveMessage: (t.length >= 120) || ((text.match(/\?/g) || []).length >= 2) || ((t.match(/[.,]/g) || []).length >= 3 && t.length >= 60),
+    hasMultipleAsks: (text.match(/\?/g) || []).length >= 2 || /\b(e|tamb[eé]m|al[eé]m|outra\s+coisa|outra\s+pergunta|segunda\s+pergunta|mais\s+uma)\b/.test(t) && /\?/.test(text || ""),
+    sharesPersonalStory: t.length >= 100 && /\b(meu|minha|eu (tenho|sofro|sou|tive|fiz|uso|tomo|estou|estava|perdi|perdo|convivo)|sou\s+portador|portadora)\b/.test(t),
   };
 }
 
@@ -1420,7 +1428,7 @@ function buildPriceLinkReply(state, checkoutUrl) {
   const url = checkoutUrl || (state.payment?.public_url) || (state.payment?.link) || "";
   const main = [
     `A consulta completa com o Dr. Alef é *${CONSULT_PRICE_LABEL}*${nome} — videochamada de cerca de 40 min (WhatsApp ou Google Meet, o que for mais fácil).`,
-    `Pagamento direto pelo *site oficial do Dr.* (www.dralefkotula.com): cartão em até *12x sem juros* ou Pix.`,
+    `Pagamento direto pelo *site oficial do Dr.* (www.dralefkotula.com): cartão em até *12x* ou Pix.`,
     ``,
     `Link seguro do checkout no site oficial:`,
     `${url}`,
@@ -1617,8 +1625,26 @@ REGRA CRÍTICA: Use o argumento *óleo de associação* com naturalidade sempre 
 - Não invente. Não prometa cura. Não diagnostique. Não prescreva.
 - NÃO use emojis em excesso. NUNCA assine como "Lia" ou "Att".
 
-▶ REGRA #0 — LEIA O FORMULÁRIO ANTES DE RESPONDER (CRÍTICA)
-Você TEM ACESSO ao que o lead preencheu no formulário (ver CONTEXTO DO LEAD abaixo). SEMPRE use esses dados na PRIMEIRA mensagem — valide a condição, cite o gasto, reconheça a dificuldade. NUNCA faça perguntas que o formulário já respondeu. É ofensivo fazer a pessoa se repetir.
+▶ REGRA #0 — LEIA E RESPONDA A MENSAGEM ANTES DE OFERECER (CRÍTICA)
+Quando o lead escrever uma mensagem com PERGUNTAS ou compartilhar CONTEXTO CLÍNICO (condição, medicações, histórico, dúvidas específicas sobre prescrição/laudo/flor/vaporização/importação), VOCÊ PRECISA:
+1) Ler TUDO que ele escreveu
+2) Reconhecer a condição específica (esclerose múltipla, amputação, Parkinson, câncer, etc.) — demonstre que entendeu
+3) RESPONDER cada pergunta concreta que ele fez — uma por uma, com informação útil
+4) SÓ DEPOIS, se fizer sentido, mencionar o caminho pra consulta
+NUNCA despeje link ou preço antes de responder. Se você fizer isso, o lead perde a confiança e some. É a falha que mais te faz perder venda.
+
+▶ REGRA #0.5 — USE O FORMULÁRIO QUANDO HOUVER
+Se o lead veio de formulário (ver CONTEXTO DO LEAD abaixo), use os dados para personalizar — valide a condição, cite o gasto, reconheça a dificuldade. NUNCA repita perguntas que o formulário já respondeu.
+
+▶ CONHECIMENTO CLÍNICO DE PRESCRIÇÃO (Dr. Alef pode)
+- Prescrever *óleo de cannabis medicinal* (full spectrum, broad spectrum ou isolado, conforme indicação e perfil).
+- Prescrever *óleo de associação* (mais de 50% mais barato que farmácia/importado) — diferencial forte do Dr.
+- Orientar uso de *flor seca pra vaporização* quando houver indicação clínica.
+- Emitir *laudo médico* para importação de produtos (via HC ou Anvisa) quando necessário.
+- Avaliar *dose, concentração, horário* — o protocolo é individualizado.
+- Indicar *associação com outros tratamentos* (fisio, neurologia, psiquiatria) quando fizer sentido. Ele não substitui a equipe — complementa.
+Evidências: Anvisa RDC 327/660, OMS reconhece segurança do CBD, literatura internacional robusta em dor crônica, neuropática, espasticidade em esclerose múltipla, epilepsia, ansiedade, insônia, Parkinson.
+NÃO prometa cura. Diga "alívio", "redução", "bons resultados", "tem caminho".
 
 ${neverUsed ? `▶ BLOQUEIO CRÍTICO — LEAD MARCOU "NUNCA USEI" CANNABIS
 Este lead NUNCA USOU cannabis medicinal. É PROIBIDO perguntar:
@@ -1663,7 +1689,7 @@ Se LEAD_QUALIFICADO_PELO_FORM = SIM:
 
 ▶ OFERTA (única)
 - Consulta médica online individual com o Dr. Alef Kotula.
-- Valor: R$249 (à vista no Pix ou cartão em até 12x sem juros).
+- Valor: R$249 (à vista no Pix ou cartão em até 12x). NUNCA diga "sem juros".
 - Duração: ~40 minutos por videochamada (WhatsApp ou Google Meet).
 - Pagamento: pelo *site oficial* dralefkotula.com (NUNCA por transferência pra conta pessoal).
 - Reagendamento: gratuito quando solicitado com antecedência.
@@ -1695,33 +1721,46 @@ Reforce: Dr. Alef Kotula é médico CRM-SP, formação na Rússia, especializaç
 Responda sempre em PT-BR. Sem emojis em excesso. Mensagem curta e humana.`;
 }
 
-/* Fallback inteligente quando o GPT falha — evita cair em loop de "pera um instante" */
+/* Fallback inteligente quando o GPT falha — evita cair em loop de "pera um instante"
+   REGRA: NUNCA despejar link em cima de pergunta substantiva. */
 function runLiaFallback({ state, flags, incomingText }) {
   const nome = state.nome ? `${state.nome}, ` : "";
   const hasLink = !!(state.payment?.public_url || state.payment?.link);
   const link = state.payment?.public_url || state.payment?.link || "";
 
-  // Se lead tá falando de preço/link e já existe link → re-entrega
-  if (flags?.wantsPrice || flags?.intentPay || flags?.asksPayMethod) {
+  // Pergunta substantiva → reconhece e pede pro lead aguardar (sem dumpar link)
+  const isComplex = flags?.isSubstantiveMessage || flags?.hasMultipleAsks || flags?.mentionsSeriousCondition || flags?.asksAboutPrescription || flags?.sharesPersonalStory;
+  if (isComplex) {
+    // Resposta humanizada que ACUSA a leitura sem responder o que não sabe
+    return `${nome}deixa eu te responder direito aqui. Sobre o que você perguntou — prescrição, tipo de óleo, laudos — o Dr. Alef avalia caso a caso e, tendo indicação clínica, prescreve óleo, pode orientar flor pra vaporização e emitir laudo (inclusive pra importação via HC quando necessário).\n\nPosso te perguntar: sua dúvida principal é pra entender se o caso serve, ou é prática (como funciona a consulta, valor, etc.)?`;
+  }
+
+  // Pergunta específica sobre prescrição (fallback clínico)
+  if (flags?.asksAboutPrescription) {
+    return `${nome}respondendo o que você perguntou: o Dr. Alef prescreve *óleo de cannabis medicinal* (full spectrum ou outras composições, conforme o caso) e, quando há indicação, pode orientar *flor seca pra vaporização*. Ele também emite *laudo médico* pra importação via HC — sempre que houver indicação clínica.\n\nO que mais você quer saber?`;
+  }
+
+  // Pergunta muito específica tipo "é online?", "como funciona?" — cai no GPT em condição normal
+  if (flags?.asksHowConsultWorks) {
+    return `${nome}a consulta é 100% online, por videochamada (WhatsApp ou Google Meet, o que for melhor pra você). Dura cerca de 40 min. O Dr. escuta seu caso, tira suas dúvidas, e se houver indicação clínica já sai com a prescrição na hora. Retorno já incluso.`;
+  }
+
+  // Se lead pediu preço/link CURTO e já existe link → re-entrega
+  if ((flags?.wantsPrice || flags?.intentPay || flags?.asksPayMethod) && incomingText && incomingText.trim().length <= 80) {
     if (hasLink) return pendingPaymentReply(state);
     return `Consulta com o Dr. Alef${state.nome ? ", " + state.nome : ""} é *${CONSULT_PRICE_LABEL}* — videochamada, cerca de 40 min, cartão em até 12x ou Pix.`;
   }
+
   // Golpe/desconfiança
   if (flags?.asksIsScam || flags?.asksWho) return buildTrustBlock(state);
+
   // Diz que tá caro
   if (flags?.saysExpensive) {
     return state.form_track === "r3_revisao" ? objectionHighSpendReply(state) : objectionPriceReply(state);
   }
-  // R3 — condição/tratamento: cai na proposta de valor
-  if (state.form_track === "r3_revisao") {
-    return `${nome}deixa eu te ajudar direto: o Dr. Alef é pós-graduado em cannabis medicinal e prescreve *óleo de associação* (mais de 50% mais barato que farmácia/importado). Consulta R$249 com retorno incluso. ${hasLink ? "Link ativo:\n\n" + link : ""}`.trim();
-  }
-  // R4 / orgânico com link
-  if (hasLink) {
-    return `${nome}me conta com mais detalhe o que está te incomodando — enquanto isso o link da consulta continua ativo:\n\n${link}`;
-  }
-  // Último recurso (raro): pergunta aberta útil
-  return `${nome}me conta rapidinho o que está te incomodando mais — assim eu te oriento direito.`;
+
+  // Pergunta aberta (sem gatilho conhecido) — não dumpa link, pede esclarecimento humano
+  return `${nome}me conta um pouco mais pra eu te responder direito — o que você quer entender agora? O caso clínico, como funciona a consulta, valor, ou outra coisa?`;
 }
 
 async function runLia({ incomingText, state, flags, stageCTA }) {
@@ -1837,9 +1876,19 @@ const PRE_PAY_STAGES = new Set(["GREET", "CONNECT", "OFFER"]);
 
 function routeToOffer(state, flags, incomingText) {
   if (!PRE_PAY_STAGES.has(state.stage)) return false;
-  if (flags.wantsPrice || flags.intentPay || flags.wantsBook || flags.asksPayMethod) return true;
+
+  /* V30.1 — BLOQUEIO: se lead escreveu uma mensagem substantiva com várias perguntas,
+     doença séria, ou compartilhou história pessoal, NÃO pula pra oferta.
+     Deixa o GPT responder as perguntas primeiro. */
+  const isComplex = flags.isSubstantiveMessage || flags.hasMultipleAsks || flags.mentionsSeriousCondition || flags.asksAboutPrescription || flags.sharesPersonalStory;
+  if (isComplex) return false;
+
+  /* Só pula pra oferta em pedidos CURTOS e diretos */
+  if (flags.intentPay || flags.wantsBook) return true;
+  if (flags.wantsPrice && incomingText && incomingText.trim().length <= 60) return true;
+  if (flags.asksPayMethod) return true;
   if (state.form_qualified && flags.shortAffirm) return true;
-  if (state.lead_profile === "quente" && state.turn_count >= 2) return true;
+  if (state.lead_profile === "quente" && state.turn_count >= 3) return true;
   return false;
 }
 
@@ -2013,7 +2062,21 @@ async function handleGreet(state, flags, incomingText, phone) {
     if (state.form_track === "r3_revisao") return greetFromFormR3(state);
     return greetFromForm(state);
   }
-  // Se chegou direto sem form (orgânico)
+
+  /* V30.1 — Se a primeira mensagem (orgânica) já é substantiva com perguntas,
+     DELEGA AO GPT. Não despejar saudação genérica em cima de quem escreveu uma carta. */
+  const firstIsComplex = flags.isSubstantiveMessage || flags.hasMultipleAsks || flags.mentionsSeriousCondition || flags.asksAboutPrescription || flags.sharesPersonalStory;
+  if (firstIsComplex) {
+    state.stage = "CONNECT";
+    state.followup_2h_at = Date.now() + 2 * 60 * 60 * 1000;
+    const ai = await runLia({
+      incomingText, state, flags,
+      stageCTA: `PRIMEIRA mensagem do lead — ELA É SUBSTANTIVA. Ele compartilhou contexto ou fez múltiplas perguntas específicas. Sua tarefa: 1) cumprimente pelo nome (se souber), 2) VALIDE com empatia específica o que ele compartilhou (não genérica), 3) RESPONDA todas as perguntas que ele fez com clareza e informação concreta, 4) só DEPOIS mencione que a consulta com o Dr. Alef é R$249 (cartão em até 12x ou Pix, sem dizer "sem juros") e pergunte se ele quer o link. NÃO dumpe o link sem antes responder.`,
+    });
+    return ai.reply;
+  }
+
+  // Se chegou direto sem form (orgânico) sem nome
   if (!state.nome) {
     return `Oi! Aqui é a *Lia*, da equipe do *Dr. Alef Kotula* — médico especialista em cannabis medicinal.\n\nPra te ajudar melhor, me diz seu *primeiro nome* e o que tá te incomodando hoje — dor, insônia, ansiedade, outra coisa?`;
   }
@@ -2054,6 +2117,16 @@ async function handleConnect(state, flags, incomingText, phone) {
 
   state.connect_turns = (state.connect_turns || 0) + 1;
   const track = state.form_track || "";
+
+  /* V30.1 — Delega GPT se mensagem é substantiva (pergunta específica, doença séria, história pessoal) */
+  const isComplex = flags.isSubstantiveMessage || flags.hasMultipleAsks || flags.mentionsSeriousCondition || flags.asksAboutPrescription || flags.sharesPersonalStory || flags.asksHowConsultWorks || flags.asksIfForMe || flags.asksIfWorks;
+  if (isComplex) {
+    const ai = await runLia({
+      incomingText, state, flags,
+      stageCTA: `O lead acabou de compartilhar algo complexo / fez uma pergunta substantiva / tem uma condição séria. RESPONDA o que ele perguntou, valide a dor com especificidade, e só no FINAL faça uma ponte natural para a consulta (sem despejar link). Se ele não perguntou preço, NÃO mencione preço ainda — termine com uma pergunta que aprofunde a conexão.`,
+    });
+    return ai.reply;
+  }
 
   /* ═══ R3 PRIMEIRA VEZ: 2 turnos de exploração + closer + oferta ═══ */
   if (track === "r3_primeira_vez") {
@@ -2186,8 +2259,19 @@ async function handlePayWait(state, flags, incomingText, phone) {
     return `Sem problema. Pode pagar por Pix:\n\nCNPJ: *${PIX_CNPJ}*\nValor: *${CONSULT_PRICE_LABEL}*\n\nDepois me manda o comprovante por aqui que eu confirmo na hora.`;
   }
 
-  // Re-pede link OU pergunta preço (aqui o lead já tem link; re-envia)
-  if (flags.intentPay || flags.wantsPrice || flags.wantsBook || flags.asksPayMethod || /\b(link|reenvia|me manda de novo|qual\s+o\s+valor|qual\s+o\s+pre[cç]o)\b/.test(low)) {
+  /* V30.1 — se o lead fez pergunta substantiva, NÃO dumpar link. Roteia GPT. */
+  const isComplex = flags.isSubstantiveMessage || flags.hasMultipleAsks || flags.mentionsSeriousCondition || flags.asksAboutPrescription || flags.sharesPersonalStory || flags.asksHowConsultWorks || flags.asksIfForMe || flags.asksIfWorks;
+  if (isComplex) {
+    const linkPart = state.payment?.public_url || state.payment?.link || "";
+    const ai = await runLia({
+      incomingText, state, flags,
+      stageCTA: `O lead JÁ RECEBEU o link de pagamento. Ele acabou de te fazer uma PERGUNTA substantiva ou compartilhou um contexto clínico. NÃO re-envie o link antes de RESPONDER a pergunta dele com clareza. Responda primeiro, com empatia e com informação concreta (o Dr. Alef é pós-graduado em cannabis medicinal, prescreve óleo, flor para vaporização quando indicado, e emite laudos inclusive para importação HC quando clinicamente necessário). Só no final, uma linha reforçando que o link segue ativo: ${linkPart}`,
+    });
+    return ai.reply;
+  }
+
+  // Re-pede link CURTO (só então re-envia o template)
+  if ((flags.intentPay || flags.wantsPrice || flags.wantsBook || flags.asksPayMethod) && incomingText && incomingText.trim().length <= 80) {
     return pendingPaymentReply(state);
   }
 
